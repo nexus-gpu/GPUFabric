@@ -1,0 +1,18 @@
+[server]
+addr = "127.0.0.1"
+control_port = 17000
+proxy_port = 17001
+
+
+[client]
+client_id = "6e1131b4b9cc454aa6ce3294ab860b2d"
+engine_type = "vllm"
+worker_type = "tcp"
+cert_chain_path = "ca-cert.pem"
+local_addr = "127.0.0.1"
+local_port = 11434
+auto_models = true
+
+#hugging_face_hub_token = ""
+
+#chat_template_path = ""
