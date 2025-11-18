@@ -23,7 +23,11 @@ use tracing::{debug, error, warn};
 
 #[cfg(unix)]
 use std::os::fd::FromRawFd;
+#[cfg(unix)]
+use socket2::{Socket, TcpKeepalive};
 use tokio::net::TcpStream;
+#[cfg(unix)]
+use std::mem;
 
 impl ServerState {
     pub async fn handle_client_connections(self: Arc<Self>, listener: TcpListener) -> Result<()> {
