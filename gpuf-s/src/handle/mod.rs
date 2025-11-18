@@ -52,6 +52,7 @@ pub struct SystemInfo {
 }
 
 
+#[allow(dead_code)]
 #[derive(Serialize)]
 struct ServerStats {
     active_clients: usize,
@@ -97,6 +98,7 @@ impl Drop for ServerState {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ChatCompletionRequest {

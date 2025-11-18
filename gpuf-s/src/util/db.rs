@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use rdkafka::config::ClientConfig;
 use rdkafka::producer::FutureProducer;
 use redis::{Client};

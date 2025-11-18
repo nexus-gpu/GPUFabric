@@ -4,18 +4,20 @@ use chrono::{DateTime, Utc};
 use lru::LruCache;
 use sqlx::{Pool, Postgres};
 use std::num::NonZeroUsize;
-use std::{mem, sync::Arc};
+use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 use crate::db::GPU_ASSETS_TABLE;
 use common::{DevicesInfo,PodModel,EngineType,OsType};
 
 #[derive(Clone)]
 pub struct HotModelClass {
     pool: Arc<Pool<Postgres>>,
+    #[allow(dead_code)] // TODO: Implement caching functionality
     cache: Arc<RwLock<LruCache<u32, String>>>,
 }
 
+#[allow(dead_code)]
 const GB50_IN_MB: u32 = 50 * 1024;
 
 impl HotModelClass {
@@ -25,6 +27,7 @@ impl HotModelClass {
             cache: Arc::new(RwLock::new(LruCache::new(NonZeroUsize::new(1000).unwrap()))),
         }
     }
+    #[allow(dead_code)]
     fn align_gpu_memory(mem_mb: u32) -> u32 {
         (mem_mb / GB50_IN_MB) * GB50_IN_MB
     }
@@ -167,8 +170,8 @@ pub async fn create_or_update_model(
         RETURNING id, name, version, version_code, is_active, min_memory_mb, engine_type, min_gpu_memory_gb, created_at
         ",GPU_ASSETS_TABLE)
     )
-    .bind(name.clone())
-    .bind(version.clone())
+    .bind(name)
+    .bind(version)
     .bind(version_code)
     .bind(is_active)
     .bind(min_memory_mb)

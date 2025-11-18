@@ -17,7 +17,7 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ../scripts/db.sql:/docker-entrypoint-initdb.d/db.sql:ro
+      - ./scripts/db.sql:/docker-entrypoint-initdb.d/db.sql:ro
     networks:
       - frpx-net
     healthcheck:
@@ -162,8 +162,8 @@ services:
       - "17001:17001"  # Proxy port
       - "18080:18080"  # Public port
     volumes:
-      - ../cert.pem:/app/cert.pem:ro
-      - ../key.pem:/app/key.pem:ro
+      - ./cert.pem:/app/cert.pem:ro
+      - ./key.pem:/app/key.pem:ro
       # - ../config:/app/config  # Currently unused, all configs via CLI args
     environment:
       DATABASE_URL: postgres://postgres:password@postgres:5432/GPUFabric

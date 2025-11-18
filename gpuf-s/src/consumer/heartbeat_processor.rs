@@ -6,7 +6,7 @@ use tracing::{debug, error, info};
 
 use crate::util::{protoc};
 use crate::db::stats::{insert_heartbeat, ClientDailyStats, DeviceDailyStats};
-use common::{format_bytes, format_duration};
+use common::format_bytes;
 
 #[allow(dead_code)]
 pub async fn start_processor(

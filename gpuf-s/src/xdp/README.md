@@ -25,7 +25,7 @@ sudo ip link set dev <interface> xdp off
 
 show XDP program
 ```bash
-sudo bpftool prog show #或者 sudo ip -d link show  <interface>
+sudo bpftool prog show #or sudo ip -d link show  <interface>
 ```
 
 add API key

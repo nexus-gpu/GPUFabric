@@ -9,16 +9,13 @@ use std::time::Duration;
 use rdkafka::producer::{FutureProducer, FutureRecord};
 
 
-#[cfg(os = "linux")]
-use tokio_uring::io::AsyncBufReadExt;
-#[cfg(os = "linux")]
+#[cfg(target_os = "linux")]
 use tokio_uring::net::TcpStream as UringTcpStream;
 
 use crate::util::{
     protoc::{ClientId, ProxyConnId, RequestIDAndClientIDMessage},
 };
 use bytes::BytesMut;
-use httparse;
 
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -26,12 +23,12 @@ use std::task::{Context, Poll};
 use tokio::io::{self, AsyncRead, AsyncReadExt, AsyncWrite};
 use twoway;
 
-use anyhow::{anyhow, Context as AnyhowContext, Result};
+use anyhow::{anyhow, Result};
 use simd_json;
 use sqlx::{Pool, Postgres};
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
-use tokio::net::{tcp::OwnedWriteHalf, TcpListener};
+use tokio::net::TcpListener;
 use tokio_rustls::{
     rustls::{crypto::aws_lc_rs, server::ServerConfig},
     TlsAcceptor,
@@ -105,8 +102,8 @@ impl ServerState {
                             request_str.len(),
                             buf.len()
                         );
-                        tls_proxy_stream.write_all(buf.as_ref()).await;
-                        tls_proxy_stream.flush().await;
+                        let _ = tls_proxy_stream.write_all(buf.as_ref()).await;
+                        let _ = tls_proxy_stream.flush().await;
                         buffer_pool.put(buf).await;
 
                         tokio::spawn(async move {
@@ -130,7 +127,7 @@ impl ServerState {
 
    pub async fn handle_public_connections(self: Arc<Self>, listener: TcpListener) -> Result<()> {
         loop {
-            let (mut user_stream, addr) = listener.accept().await?;
+            let (user_stream, addr) = listener.accept().await?;
             info!("New public connection from: {}", addr);
             let active_clients_clone = self.active_clients.clone();
             let pending_connections_clone = self.pending_connections.clone();
@@ -165,14 +162,21 @@ impl ServerState {
         }
     }
 
-    #[cfg(os = "linux")]
-   pub async fn handle_public_connections_uring(
+    #[cfg(target_os = "linux")]
+   pub async fn handle_proxy_connections_uring(
         self: Arc<Self>,
         listener: TcpListener,
         api_key: String,
     ) -> Result<()> {
+        let active_clients = self.active_clients.clone();
+        let pending_connections = self.pending_connections.clone();
+        let db_pool = self.db_pool.clone();
+        let redis_client = self.redis_client.clone();
+        let producer = self.producer.clone();
+        
         tokio_uring::start(async {
-            let listener = tokio_uring::net::TcpListener::from_std(listener.into_std()?)?;
+            let std_listener = listener.into_std()?;
+            let listener = tokio_uring::net::TcpListener::from_std(std_listener);
 
             loop {
                 match listener.accept().await {
@@ -213,33 +217,30 @@ impl ServerState {
 
 }
 
-#[cfg(os = "linux")]
+#[cfg(target_os = "linux")]
 async fn route_public_connection_uring(
-    user_stream: UringTcpStream,
-    active_clients: ActiveClients,
-    pending_connections: PendingConnections,
-    api_key: String,
-    db_pool: Arc<Pool<Postgres>>,
-    redis_client: Arc<RedisClient>,
-    producer: Arc<FutureProducer>,
+    _user_stream: UringTcpStream,
+    _active_clients: ActiveClients,
+    _pending_connections: PendingConnections,
+    _api_key: String,
+    _db_pool: Arc<Pool<Postgres>>,
+    _redis_client: Arc<RedisClient>,
+    _producer: Arc<FutureProducer>,
 ) -> Result<()> {
-    // Request Parsing Module - Handle HTTP request parsing and validation
-    // Authentication Module - Handle API key validation
-    // Client Selection Module - Logic for selecting the appropriate client
-    // Proxy Connection Module - Handle proxy connection setup and management
-    // Main Router - Orchestrate the flow between modules
+    // TODO: Implement uring version of route_public_connection
+    info!("Handling connection with io_uring (not yet implemented)");
+    Ok(())
 }
 
-#[cfg(os = "linux")]
-async fn parse_request_uring(user_stream: UringTcpStream) -> Result<()> {
-    let mut buf = BytesMut::with_capacity(4096);
-    let n = user_stream
-        .read_buf(&mut buf)
-        .await
-        .context("Failed to read from stream")?;
+#[cfg(target_os = "linux")]
+async fn parse_request_uring(_user_stream: UringTcpStream) -> Result<()> {
+    // TODO: Implement uring version of parse_request
+    info!("Parsing request with io_uring (not yet implemented)");
+    Ok(())
 }
 
-#[cfg(not(os = "linux"))]
+#[cfg(not(target_os = "linux"))]
+#[allow(dead_code)]
 async fn parse_request(
     user_stream: &TcpStream,
 ) -> Result<(Option<String>, Option<String>, Option<String>)> {
@@ -334,6 +335,7 @@ async fn authenticate_and_select_client(
     }
 }
 
+#[allow(dead_code)]
 struct TeeReader<R> {
     reader: R,
     writer: Option<tokio::io::DuplexStream>,
@@ -362,6 +364,7 @@ impl<R: AsyncRead + Unpin> AsyncRead for TeeReader<R> {
     }
 }
 /// A wrapper around TcpStream that allows peeking at the data without consuming it
+#[allow(dead_code)]
 pub struct PeekableTcpStream {
     inner: TcpStream,
     peek_buf: Vec<u8>,
@@ -670,6 +673,7 @@ async fn extract_chat_info<R: AsyncRead + Unpin>(
     Ok(chat_info)
 }
 
+#[allow(dead_code)]
 async fn parse_json_body<R: AsyncRead + Unpin>(
     reader: &mut R,
     mut buffer: Vec<u8>,
@@ -719,6 +723,7 @@ fn try_parse_model_from_slice(data: &[u8]) -> Option<String> {
     None
 }
 
+#[allow(dead_code)]
 fn try_parse_chat_info(data: &[u8]) -> io::Result<Option<String>> {
     let mut data = data.to_vec();
     let json: Result<OwnedValue, _> = simd_json::from_slice(&mut data);

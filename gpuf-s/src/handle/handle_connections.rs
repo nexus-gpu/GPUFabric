@@ -2,13 +2,12 @@ use super::*;
 
 use crate::db::{models::{HotModelClass,self},client};
 use crate::util::{
-    db,
-    protoc::{ClientId, HeartbeatMessage, ProxyConnId},
+    protoc::{ClientId, HeartbeatMessage},
 };
 use bytes::BytesMut;
 use std::collections::HashMap;
 
-use anyhow::{anyhow, Context as AnyhowContext, Result};
+use anyhow::{anyhow, Result};
 use common::{os_type_str, Model, PodModel, OsType};
 use redis::Client as RedisClient;
 use sqlx::{Pool, Postgres};
@@ -22,9 +21,7 @@ use rdkafka::producer::{FutureProducer, FutureRecord};
 use std::time::Duration;
 use tracing::{debug, error, warn};
 
-use socket2::{Socket, TcpKeepalive};
-use std::mem;
-use std::os::fd::AsRawFd;
+#[cfg(unix)]
 use std::os::fd::FromRawFd;
 use tokio::net::TcpStream;
 
@@ -58,7 +55,10 @@ impl ServerState {
     }
 }
 
+#[cfg(unix)]
 fn set_keepalive(stream: &TcpStream) -> std::io::Result<()> {
+    use std::os::unix::io::AsRawFd;
+    
     let fd = stream.as_raw_fd();
     let socket = unsafe { Socket::from_raw_fd(fd) };
 
@@ -74,16 +74,23 @@ fn set_keepalive(stream: &TcpStream) -> std::io::Result<()> {
     result
 }
 
+#[cfg(not(unix))]
+fn set_keepalive(_stream: &TcpStream) -> std::io::Result<()> {
+    // Windows TCP keepalive is handled differently
+    // For now, just return Ok
+    Ok(())
+}
+
 async fn handle_single_client(
     stream: TcpStream,
     active_clients: ActiveClients,
-    client_models: Arc<ClientModelClass>,
+    _client_models: Arc<ClientModelClass>,
     hot_models: Arc<HotModelClass>,
     db_pool: Arc<Pool<Postgres>>,
     producer: Arc<FutureProducer>,
     redis_client: Arc<RedisClient>,
 ) -> Result<()> {
-    if let Err(e) = set_keepalive(&stream) {
+    if let Err(_e) = set_keepalive(&stream) {
         error!("handle_single_client set_keepalive err");
         return Ok(());
     }
@@ -99,7 +106,7 @@ async fn handle_single_client(
         match read_command(&mut reader, &mut buf).await {
             Ok(Command::V1(CommandV1::Login {
                 version,
-                auto_models,
+                auto_models: _,
                 client_id: id,
                 os_type,
                 system_info,
@@ -217,7 +224,8 @@ async fn handle_single_client(
             }
         }
     }
-    Ok(())
+    #[allow(unreachable_code)]
+    Ok(()) // This is theoretically unreachable but required by compiler
 }
 
 async fn handle_login(

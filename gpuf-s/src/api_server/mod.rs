@@ -9,6 +9,7 @@ use anyhow::Result;
 use std::sync::Arc;
 use tracing::error;
 
+#[allow(dead_code)] // API server structures and endpoints
 pub struct ApiServer {
     pub db_pool: Pool<Postgres>,
     pub redis_client: Arc<RedisClient>,
@@ -32,8 +33,9 @@ impl ApiServer {
     }
 }
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use chrono::{DateTime, Utc};
+#[allow(dead_code)] // API response structures
 #[derive(Serialize)]
 pub struct ClientInfoResponse {
     pub client_id: String,
@@ -42,6 +44,7 @@ pub struct ClientInfoResponse {
     pub connected_at: DateTime<Utc>,
 }
 
+#[allow(dead_code)] // API response structures
 #[derive(Serialize)]
 struct SystemInfoResponse {
     cpu_usage: u8,

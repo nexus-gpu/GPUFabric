@@ -2,7 +2,6 @@ use super::*;
 
 use anyhow::Result;
 use axum::{
-    extract::{Query, State},
     routing::{get, post},
     Router,
 };
@@ -12,6 +11,7 @@ use tower_http::cors::CorsLayer;
 use tracing::info;
 use crate::api_server::{client, models};
 
+#[allow(dead_code)] // API server utility methods
 impl ApiServer {
     pub async fn run_api_server(self: Arc<Self>, port: u16) -> Result<()> {
         let app = self.create_api_router().await;

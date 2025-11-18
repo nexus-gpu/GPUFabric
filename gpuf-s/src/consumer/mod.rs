@@ -12,6 +12,7 @@ use tracing::error;
 use sqlx::{Pool, Postgres};
 
 
+#[allow(dead_code)] // Consumer service management
 pub async fn start_consumer_services(
     bootstrap_servers: &str,
     group_id: &str,

@@ -186,11 +186,18 @@ curl -H "Authorization: Bearer your-api-key" \
 
 Comprehensive documentation is available in the `docs/` directory:
 
+### Core Components
 - **[gpuf-s Documentation](./docs/gpuf-s.md)** - Server component documentation
 - **[gpuf-c Documentation](./docs/gpuf-c.md)** - Client component documentation
 - **[API Server Documentation](./docs/api_server.md)** - RESTful API reference
 - **[Heartbeat Consumer Documentation](./docs/heartbeat_consumer.md)** - Kafka consumer documentation
 - **[XDP Documentation](./docs/xdp.md)** - Kernel-level packet filtering
+
+### Mobile SDK (In Planning)
+- **[Mobile SDK Summary](./docs/MOBILE_SDK_SUMMARY.md)** - Overview and quick reference
+- **[Mobile SDK Requirements](./docs/mobile-sdk-requirements.md)** - Detailed technical requirements
+- **[Mobile SDK Quick Start](./docs/mobile-sdk-quickstart.md)** - Implementation guide
+- **[Mobile SDK Checklist](./MOBILE_SDK_CHECKLIST.md)** - Development progress tracker
 
 ## 🛠️ Configuration
 

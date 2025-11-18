@@ -29,11 +29,11 @@ impl FromStr for ClientId {
 
 impl Display for ClientId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", hex::encode(self.0))
+        write!(f, "{}", hex::encode(&self.0))
     }
 }
 
-use sqlx::{Encode, Type, postgres::{PgArgumentBuffer, PgTypeInfo, PgValueRef, PgValueFormat, PgHasArrayType}};
+use sqlx::{Encode, Type, postgres::{PgArgumentBuffer, PgTypeInfo, PgHasArrayType}};
 
 impl Type<sqlx::Postgres> for ClientId {
     fn type_info() -> PgTypeInfo {
@@ -161,6 +161,7 @@ pub struct HeartbeatMessage {
 
 }
 
+#[allow(dead_code)]
 fn deserialize_client_id<'de, D>(deserializer: D) -> Result<ClientId, D::Error>
 where
     D: serde::Deserializer<'de>,

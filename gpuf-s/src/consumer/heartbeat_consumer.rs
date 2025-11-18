@@ -1,14 +1,15 @@
 use anyhow::Result;
 use rdkafka::consumer::stream_consumer::StreamConsumer;
-use rdkafka::message::{BorrowedMessage, OwnedHeaders, OwnedMessage};
+use rdkafka::message::OwnedMessage;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
 
+#[allow(dead_code)] // Heartbeat consumer service
 pub async fn start_consumer(
     consumer: Arc<StreamConsumer>,
-    mut tx: mpsc::Sender<Vec<OwnedMessage>>,
+    tx: mpsc::Sender<Vec<OwnedMessage>>,
     batch_size: usize,
 ) -> Result<()> {
     info!(

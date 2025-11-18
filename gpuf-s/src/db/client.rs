@@ -66,7 +66,7 @@ pub async fn get_user_client_by_token(
         .map(|row| {
             let client_id = row.client_id;
 
-            client_id.try_into().map(ClientId).map_err(|e| {
+            client_id.try_into().map(ClientId).map_err(|_| {
                 anyhow!(
                     "invalid client_id length: expected 16 bytes, actual {}",
                     client_id.len()
@@ -301,6 +301,7 @@ pub struct DeviceInfoResponse {
     pub power_usage: u8,
 }
 
+#[allow(dead_code)] // API endpoints and database utility functions
 #[derive(sqlx::FromRow)]
 pub struct SystemInfoDetail {
     pub cpu_usage: i16,
@@ -311,6 +312,7 @@ pub struct SystemInfoDetail {
 }
 
 #[derive(sqlx::FromRow)]
+#[allow(dead_code)] // Fields are used by sqlx::FromRow for database mapping
 struct ClientInfo {
     client_id: [u8; 16],
     client_name: String,
@@ -320,6 +322,7 @@ struct ClientInfo {
     last_online: chrono::DateTime<chrono::Utc>,
 }
 
+#[allow(dead_code)] // API endpoints and database utility functions
 #[derive(sqlx::FromRow)]
 pub struct GpuDeviceInfo {
     pub device_index: i16,
@@ -330,6 +333,7 @@ pub struct GpuDeviceInfo {
     pub device_powerusage: i16,
 }
 
+#[allow(dead_code)] // API endpoint for client device details
 pub async fn get_client_device_detail(
     pool: &Pool<Postgres>,
     user_id: &str,
@@ -473,7 +477,7 @@ pub async fn upsert_client_info(
     pool: &Pool<Postgres>,
     user_id: &str,
     client_id: &ClientId,
-    os_type: &Option<String>,
+    _os_type: &Option<String>,
     client_status: &str,
     name: &str,
 ) -> Result<()> {
@@ -515,6 +519,7 @@ pub async fn upsert_client_status(
 
 
 // redis
+#[allow(dead_code)] // Redis utility function for heartbeat info
 pub async fn upsert_heartbeat_info_in_redis<F, Fut>(
     redis_client: &RedisClient,
     client_id: &ClientId,
@@ -548,6 +553,7 @@ pub async fn upsert_heartbeat_info_in_redis<F, Fut>(
 }
 
 
+#[allow(dead_code)] // Network delay calculation utility
 fn calculate_network_delay(client_timestamp: u64) -> (u64, u64) {
     let server_timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -607,7 +613,7 @@ pub async fn validate_client(
         .await.map_err(|e| anyhow!("Database query failed: {}", e))?;
     
     let is_valid = match row {
-        Some(row) => {
+        Some(_row) => {
             true
         }
         None => false,

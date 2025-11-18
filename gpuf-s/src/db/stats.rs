@@ -4,11 +4,11 @@ use crate::db::{
 };
 use crate::util::protoc::ClientId;
 use anyhow::Result;
-use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, Utc};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use common::{get_u16_from_u128, get_u8_from_u64, DevicesInfo, SystemInfo};
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, PgPool, Pool, Postgres, QueryBuilder, Transaction};
-use tracing::{debug, error, info};
+use tracing::{debug, info};
 use validator::Validate;
 
 #[derive(Debug, FromRow, Serialize, Deserialize)]
@@ -409,7 +409,7 @@ pub async fn get_client_stats(
     pool: &sqlx::PgPool,
     user_id: &str,
     recent_interval: Option<time::Duration>, 
-    analysis_window: Option<time::Duration>, 
+    _analysis_window: Option<time::Duration>, 
 ) -> Result<ClientStatResponse> {
 
     let recent_interval = recent_interval.unwrap_or_else(|| time::Duration::minutes(5));
@@ -507,7 +507,7 @@ async fn test_device_daily_stats() {
     let start_date = Utc::now().date_naive();
     let end_date = Utc::now().date_naive();
     let mut tx = pool.begin().await.unwrap();
-    let stats = DeviceDailyStats::upsert_batch(&mut tx, &ClientId(client_id), &vec![device_info])
+    let _ = DeviceDailyStats::upsert_batch(&mut tx, &ClientId(client_id), &vec![device_info])
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -604,7 +604,7 @@ pub async fn update_gpu_asset_status(
             .client_id
             .clone()
             .parse::<ClientId>()
-            .map_err(|e| anyhow::anyhow!("Invalid client_id"))?,
+            .map_err(|_| anyhow::anyhow!("Invalid client_id"))?,
     );
 
     // Execute the query
@@ -686,7 +686,7 @@ pub async fn get_client_monitor(
     ));
 
     // Add client_id filter if provided
-    if let Some(cid) = &client_id {
+    if let Some(_cid) = &client_id {
         query_builder.push(" AND ga.client_id = $2");
     }
 
@@ -805,7 +805,7 @@ pub async fn get_client_heartbeats(
     if let Some(end) = &end_datetime {
         query.push_str(&format!(" AND h.timestamp < ${}::timestamp", param_count));
         params.push(end.to_string());
-        param_count += 1;
+        let _ = param_count + 1; // param_count is only used for SQL parameter numbering
     }
 
     // Order by timestamp in descending order

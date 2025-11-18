@@ -481,8 +481,7 @@ fn test_format_bytes() {
     let mut value = 0;
     set_u8_to_u64(&mut value, 0, 255);
     println!("value: {}", value);
-    let mut value2 = 0;
-    value2 = 255;
+    let value2 = 255;
     println!("value2: {}", value2);
     assert_eq!(value, value2);
 }
@@ -552,9 +551,9 @@ async fn test_command_serialization_roundtrip() {
             match (cmd_v1, deser_v1) {
                 (
                     CommandV1::Login {
-                        auto_models,
+                        auto_models: _,
                         client_id: original_id,
-                        os_type: original_OsType,
+                        os_type: _,
                         system_info: original_sys,
                         devices_info: original_devices,
                         version: _,
@@ -562,9 +561,9 @@ async fn test_command_serialization_roundtrip() {
                         device_total_tflops: _,
                     },
                     CommandV1::Login {
-                        auto_models: deserialized_auto_models,
+                        auto_models: _,
                         client_id: deserialized_id,
-                        os_type: deserialized_os_type,
+                        os_type: _,
                         system_info: deserialized_sys,
                         devices_info: deserialized_devices,
                         version: _,

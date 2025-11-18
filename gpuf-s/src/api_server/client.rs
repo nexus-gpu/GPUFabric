@@ -1,15 +1,13 @@
 use validator::Validate;
 use serde::{Deserialize, Serialize};
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Query, State},
     http::StatusCode,
-    routing::{delete, get, post},
-    Json, Router,
+    Json,
 };
 
 use tracing::{error, info};
-use std::sync::{Arc, Mutex};
-use std::collections::HashMap;
+use std::sync::Arc;
 use crate::util::msg::ApiResponse;
 use crate::util::protoc::ClientId;
 

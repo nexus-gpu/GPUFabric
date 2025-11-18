@@ -1,6 +1,12 @@
-use sysinfo::Networks;
 use std::time::{Duration, Instant};
+
+#[cfg(not(target_os = "android"))]
 use std::net::UdpSocket;
+
+#[cfg(not(target_os = "android"))]
+use sysinfo::Networks;
+
+#[cfg(not(target_os = "android"))]
 pub struct SessionNetworkMonitor {
     networks: Networks,
     interface_name: String,
@@ -11,6 +17,15 @@ pub struct SessionNetworkMonitor {
     start_time: Instant,
 }
 
+#[cfg(target_os = "android")]
+pub struct SessionNetworkMonitor {
+    interface_name: String,
+    session_total_rx: u64,
+    session_total_tx: u64,
+    start_time: Instant,
+}
+
+#[cfg(not(target_os = "android"))]
 fn detect_default_interface() -> Option<String> {
     // Create a UDP socket and connect to an external address
     let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
@@ -32,6 +47,7 @@ fn detect_default_interface() -> Option<String> {
 }
 
 
+#[cfg(not(target_os = "android"))]
 impl SessionNetworkMonitor {
     pub fn new(interface_name: Option<&str>) -> Option<Self> {
         let mut networks = Networks::new_with_refreshed_list();
@@ -112,6 +128,37 @@ impl SessionNetworkMonitor {
     }
 }
 
+#[cfg(target_os = "android")]
+impl SessionNetworkMonitor {
+    pub fn new(interface_name: Option<&str>) -> Option<Self> {
+        let interface = interface_name.unwrap_or("android").to_string();
+        
+        Some(Self {
+            interface_name: interface,
+            session_total_rx: 0,
+            session_total_tx: 0,
+            start_time: Instant::now(),
+        })
+    }
+    
+    pub fn refresh(&mut self) -> Option<(u64, u64)> {
+        // Android network monitoring not implemented - return zero values
+        Some((0, 0))
+    }
+    
+    pub fn get_session_stats(&self) -> (u64, u64, Duration) {
+        (self.session_total_rx, self.session_total_tx, self.start_time.elapsed())
+    }
+    
+    #[allow(dead_code)]
+    pub fn reset_session(&mut self) {
+        self.session_total_rx = 0;
+        self.session_total_tx = 0;
+        self.start_time = Instant::now();
+    }
+}
+
+#[cfg(not(target_os = "android"))]
 #[test]
 fn test_detect_default_interface() {
     let interface = detect_default_interface();

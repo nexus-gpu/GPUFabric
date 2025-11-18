@@ -10,6 +10,7 @@ use anyhow::Result;
 use clap::Parser;
 use std::sync::Arc;
 use tokio::net::TcpListener;
+#[cfg(target_os = "linux")]
 use tokio::signal::unix::{signal, SignalKind};
 use tracing::{info, Level};
 
@@ -47,16 +48,25 @@ async fn main() -> Result<()> {
     let server_state3 = Arc::clone(&server_state);
 
     tokio::spawn(async move {
-        let mut sigterm = signal(SignalKind::terminate()).expect("Failed to create SIGTERM listener");
-        let mut sigint = signal(SignalKind::interrupt()).expect("Failed to create SIGINT listener");
+        #[cfg(target_os = "linux")]
+        {
+            let mut sigterm = signal(SignalKind::terminate()).expect("Failed to create SIGTERM listener");
+            let mut sigint = signal(SignalKind::interrupt()).expect("Failed to create SIGINT listener");
+            
+            tokio::select! {
+                _ = sigterm.recv() => {
+                    info!("Received SIGTERM, shutting down gracefully...");
+                }
+                _ = sigint.recv() => {
+                    info!("Received SIGINT, shutting down gracefully...");
+                }
+            }
+        }
         
-        tokio::select! {
-            _ = sigterm.recv() => {
-                info!("Received SIGTERM, shutting down gracefully...");
-            }
-            _ = sigint.recv() => {
-                info!("Received SIGINT, shutting down gracefully...");
-            }
+        #[cfg(not(target_os = "linux"))]
+        {
+            // On Windows, we'll use Ctrl-C handling through tokio's default signal handling
+            info!("Running on Windows - signal handling through default mechanisms");
         }
         
         // Send shutdown signal
