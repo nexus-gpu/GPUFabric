@@ -9,55 +9,55 @@
 #include <stdlib.h>
 
 /**
- * 初始化 GPUFabric 库
- * 返回: 0 成功, -1 失败
+ * Initialize GPUFabric library
+ * Returns: 0 for success, -1 for failure
  */
 int32_t gpuf_init(void);
 
 /**
- * 获取最后一次错误信息
- * 返回: 错误信息字符串指针，调用者需要调用 gpuf_free_string 释放
+ * Get last error information
+ * Returns: Error message string pointer, caller needs to call gpuf_free_string to release
  */
 char *gpuf_get_last_error(void);
 
 /**
- * 释放由库分配的字符串
+ * Release string allocated by the library
  */
 void gpuf_free_string(char *s);
 
 /**
- * 创建 Worker 配置
- * 返回: 配置句柄，失败返回 null
+ * Create Worker configuration
+ * Returns: Configuration handle, returns null on failure
  */
 void *gpuf_create_config(const char *server_addr,
-                         uint16_t control_port,
-                         const char *local_addr,
-                         uint16_t local_port);
+                         uint16_t _control_port,
+                         const char *_local_addr,
+                         uint16_t _local_port);
 
 /**
- * 释放配置
+ * Release configuration
  */
 void gpuf_free_config(void *config);
 
 /**
- * 获取版本信息
+ * Get version information
  */
 const char *gpuf_version(void);
 
 /**
- * 初始化 LLM 引擎
- * model_path: 模型文件路径
- * n_ctx: 上下文大小
- * n_gpu_layers: GPU 层数（0 表示 CPU only）
- * 返回: 0 成功, -1 失败
+ * Initialize LLM engine
+ * model_path: Model file path
+ * n_ctx: Context size
+ * n_gpu_layers: Number of GPU layers (0 means CPU only)
+ * Returns: 0 for success, -1 for failure
  */
 int32_t gpuf_llm_init(const char *model_path, uint32_t n_ctx, uint32_t n_gpu_layers);
 
 /**
- * 生成文本
- * prompt: 输入提示词
- * max_tokens: 最大生成 token 数
- * 返回: 生成的文本指针，需要调用 gpuf_free_string 释放
+ * Generate text
+ * prompt: Input prompt
+ * max_tokens: Maximum number of tokens to generate
+ * Returns: Generated text pointer, needs to call gpuf_free_string to release
  */
 char *gpuf_llm_generate(const char *prompt, uintptr_t max_tokens);
 

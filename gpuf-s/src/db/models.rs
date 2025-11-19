@@ -114,7 +114,7 @@ struct ClientModel {
     model_version: Option<String>,
 }
 
-//@# get client model
+// Get client model
 async fn get_client_model_impl(pool: &Pool<Postgres>, client_id: &ClientId) -> Result<String> {
 
     let client = sqlx::query_as::<_, ClientModel>(

@@ -265,7 +265,7 @@ async fn parse_request(
                 .map(str::to_string);
 
             info!("authorization api_key: {:?}", api_key);
-            // 获取 Content-Length
+            // Get Content-Length
             let content_length = req
                 .headers
                 .iter()
@@ -543,7 +543,7 @@ async fn extract_chat_info<R: AsyncRead + Unpin>(
         buffer.extend_from_slice(&temp_buf[..n]);
 
         if let Some(pos) = twoway::find_bytes(&buffer, b"\r\n\r\n") {
-            let headers_data = &buffer[..pos + 4]; // 包含 \r\n\r\n
+            let headers_data = &buffer[..pos + 4]; // Include \r\n\r\n
             headers = Some(parse_headers(headers_data)?);
             body_start = pos + 4;
             break 'header_loop;

@@ -148,7 +148,7 @@ impl OllamaEngine {
         self.container_id = Some(OLLAMA_CONTAINER_NAME.to_string());
 
         let wait_time = if cfg!(target_os = "macos") {
-            info!("macOS 环境下，增加容器启动等待时间...");
+            info!("Increasing container startup wait time on macOS...");
             10
         } else {
             2

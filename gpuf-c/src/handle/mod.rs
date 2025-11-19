@@ -9,16 +9,17 @@ use anyhow::{anyhow, Result};
 use tokio_tungstenite::{WebSocketStream, tungstenite::Message};
 use futures_util::stream::{SplitStream, SplitSink};
 use std::sync::Arc;
+use std::future::Future;
 use tokio::io::{ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use crate::llm_engine::AnyEngine;
 
 pub trait WorkerHandle: Send + Sync {
-    async fn login(&self) -> Result<()>;
-    async fn handler(&self) -> Result<()>;
-    async fn model_task(&self, get_last_models: &str) -> Result<()>;
-    async fn heartbeat_task(&self) -> Result<()>;
+    fn login(&self) -> impl Future<Output = Result<()>> + Send;
+    fn handler(&self) -> impl Future<Output = Result<()>> + Send;
+    fn model_task(&self, get_last_models: &str) -> impl Future<Output = Result<()>> + Send;
+    fn heartbeat_task(&self) -> impl Future<Output = Result<()>> + Send;
 }
 
 pub struct TCPWorker {

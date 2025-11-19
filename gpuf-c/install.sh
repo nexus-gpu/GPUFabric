@@ -196,13 +196,33 @@ install_docker_official() {
     if [ "$NUM_GPUS" -gt 0 ] && [ "$OS" = "linux" ]; then
         log "${YELLOW}detect GPU, install NVIDIA Container Toolkit...${NC}"
         
-        # add NVIDIA Container Toolkit repository
-        distribution=$(. /etc/os-release;echo $ID$VERSION_ID) \
-        && curl -s -L https://nvidia.github.io/libnvidia-container/gpgkey | sudo apt-key add - \
-        && curl -s -L https://nvidia.github.io/libnvidia-container/$distribution/libnvidia-container.list | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
-        
-        # update package list and install nvidia-container-toolkit
-        sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit
+        # Check if nvidia-container-toolkit is already installed
+        if dpkg -l | grep -q nvidia-container-toolkit; then
+            log "${YELLOW}NVIDIA Container Toolkit already installed, skipping installation...${NC}"
+        else
+            # Backup existing sources file if it exists
+            if [ -f "/etc/apt/sources.list.d/nvidia-container-toolkit.list" ]; then
+                sudo cp /etc/apt/sources.list.d/nvidia-container-toolkit.list /etc/apt/sources.list.d/nvidia-container-toolkit.list.backup
+                log "${YELLOW}Backing up existing nvidia-container-toolkit.list...${NC}"
+            fi
+            
+            # add NVIDIA Container Toolkit repository
+            distribution=$(. /etc/os-release;echo $ID$VERSION_ID) \
+            && curl -s -L https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg \
+            && curl -s -L https://nvidia.github.io/libnvidia-container/$distribution/libnvidia-container.list | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+            
+            # Check if the repository file was created correctly
+            if [ ! -s "/etc/apt/sources.list.d/nvidia-container-toolkit.list" ] || grep -q "<!doctype" "/etc/apt/sources.list.d/nvidia-container-toolkit.list"; then
+                log "${YELLOW}Distribution-specific repository not found, using generic Ubuntu repository...${NC}"
+                # Remove the corrupted file
+                sudo rm -f /etc/apt/sources.list.d/nvidia-container-toolkit.list
+                # Use generic Ubuntu repository as fallback with new keyring format
+                echo "deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://nvidia.github.io/libnvidia-container/stable/deb/ /" | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+            fi
+            
+            # update package list and install nvidia-container-toolkit
+            sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit
+        fi
         
         # configure Docker to use nvidia runtime
         sudo nvidia-ctk runtime configure --runtime=docker --set-as-default
@@ -793,10 +813,8 @@ main() {
             fi
             ;;
         darwin*)
-            if ! install_ollama_fallback; then
-                log "${RED}install ollama fallback failed${NC}"
-                exit 1
-            fi
+            # Ollama will be installed in the dedicated section below
+            log "${YELLOW}macOS detected, Ollama will be installed separately${NC}"
             ;;
         cygwin*|mingw*|msys*|nt|win*)
             install_windows
@@ -806,6 +824,18 @@ main() {
             exit 1
             ;;
     esac
+
+    # Only install Ollama on macOS
+    if [ "$OS" = "darwin" ]; then
+        log "${GREEN}=== Installing Ollama on macOS ===${NC}"
+        if ! install_ollama_official; then
+            log "${YELLOW}official script install failed, trying fallback method...${NC}"
+            if ! install_ollama_fallback; then
+                log "${RED}Ollama installation failed${NC}"
+                exit 1
+            fi
+        fi
+    fi
 
     log "${GREEN} downloading gpuf-c$ {NC}"
 

@@ -28,10 +28,10 @@ pub async fn start_consumer_services(
             .set("group.id", group_id)
             .set("enable.partition.eof", "false")
             .set("enable.auto.commit", "false")
-            .set("session.timeout.ms", "30000")  // 增加会话超时
-            .set("max.poll.interval.ms", "300000")  // 增加最大轮询间隔
-            .set("fetch.max.bytes", "1048576")  // 每次 fetch 的最大字节
-            .set("max.partition.fetch.bytes", "1048576") // 每个分区 fetch 的最大字节
+            .set("session.timeout.ms", "30000")  // Increase session timeout
+            .set("max.poll.interval.ms", "300000")  // Increase max poll interval
+            .set("fetch.max.bytes", "1048576")  // Max bytes per fetch
+            .set("max.partition.fetch.bytes", "1048576") // Max bytes per partition fetch
             .create()?
     );
     

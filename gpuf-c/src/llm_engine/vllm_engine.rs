@@ -240,7 +240,7 @@ impl VLLMEngine {
         while start.elapsed() < timeout {
             match client
                 .get(&endpoint)
-                .timeout(Duration::from_secs(2)) // 添加超时
+                .timeout(Duration::from_secs(2)) // Add timeout
                 .send()
                 .await
             {

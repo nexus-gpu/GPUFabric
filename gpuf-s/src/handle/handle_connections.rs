@@ -21,8 +21,6 @@ use rdkafka::producer::{FutureProducer, FutureRecord};
 use std::time::Duration;
 use tracing::{debug, error, warn};
 
-#[cfg(unix)]
-use std::os::fd::FromRawFd;
 use tokio::net::TcpStream;
 
 impl ServerState {
@@ -58,6 +56,8 @@ impl ServerState {
 #[cfg(unix)]
 fn set_keepalive(stream: &TcpStream) -> std::io::Result<()> {
     use std::os::unix::io::AsRawFd;
+    use socket2::{Socket, TcpKeepalive};
+    use std::mem;
     
     let fd = stream.as_raw_fd();
     let socket = unsafe { Socket::from_raw_fd(fd) };
@@ -68,7 +68,7 @@ fn set_keepalive(stream: &TcpStream) -> std::io::Result<()> {
         .with_retries(3);
 
     let result = socket.set_tcp_keepalive(&keepalive);
-    // 防止 socket 被自动关闭
+    // Prevent socket from being automatically closed
     mem::forget(socket);
 
     result

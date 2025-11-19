@@ -174,9 +174,9 @@ pub fn get_pci_ids_by_lspci(device_index: u32) -> Result<(u16, u16)> {
 
 #[cfg(not(target_os = "macos"))]
 pub fn get_gpu_count() -> Result<usize, Box<dyn std::error::Error>> {
-    // 初始化 NVML
+    // Initialize NVML
     let nvml = Nvml::init()?;
-    // 获取 GPU 设备数量
+    // Get GPU device count
     let device_count = nvml.device_count()?;
     if device_count > 1 && !is_power_of_two_divide(device_count as i32) {
         return Ok(1);
@@ -499,7 +499,7 @@ pub fn get_apple_gpu_cores() -> Option<usize> {
     let output_str = String::from_utf8_lossy(&output.stdout);
     let parsed: serde_json::Value = serde_json::from_str(&output_str).ok()?;
 
-    // 提取 GPU 核心数
+    // Extract GPU core count
     parsed["SPDisplaysDataType"][0]["spdisplays_gpu_cores"]
         .as_array()?
         .first()?
@@ -543,7 +543,7 @@ pub fn pct_to_u8(pct: f32) -> u8 {
     if pct.is_nan() {
         return 0;
     }
-    // 直接对0-100之间的值进行四舍五入并限制范围
+    // Round and clamp values between 0-100
     pct.round().clamp(0.0, 100.0) as u8
 }
 

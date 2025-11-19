@@ -6,6 +6,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_tungstenite::connect_async;
 use futures_util::StreamExt;
+use std::future::Future;
 
 //use futures_util::SinkExt;
 //use tokio_tungstenite::{WebSocketStream,tungstenite::protocol::Message};
@@ -25,19 +26,27 @@ impl WSWorker {
 
 
 impl WorkerHandle for WSWorker {
-    async fn login(&self) -> Result<()> {
-        todo!()
+    fn login(&self) -> impl Future<Output = Result<()>> + Send {
+        async move {
+            todo!()
+        }
     }
 
-    async fn handler(&self) -> Result<()> {
-        todo!()
+    fn handler(&self) -> impl Future<Output = Result<()>> + Send {
+        async move {
+            todo!()
+        }
     }
 
-    async fn model_task(&self, _get_last_models: &str) -> Result<()> {
-        todo!()
+    fn model_task(&self, _get_last_models: &str) -> impl Future<Output = Result<()>> + Send {
+        async move {
+            todo!()
+        }
     }
 
-    async fn heartbeat_task(&self) -> Result<()> {
-        todo!()
+    fn heartbeat_task(&self) -> impl Future<Output = Result<()>> + Send {
+        async move {
+            todo!()
+        }
     }
 }
