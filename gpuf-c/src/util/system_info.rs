@@ -19,7 +19,7 @@ use tracing::warn;
 #[cfg(target_os = "macos")]
 use crate::util::device_info::read_power_metrics;
 
-#[cfg(all(not(target_os = "macos"), not(target_os = "android")))]
+#[cfg(all(not(target_os = "macos"), not(target_os = "android"), feature = "nvml"))]
 use nvml_wrapper::NVML;
 
 #[cfg(not(target_os = "macos"))]
@@ -30,6 +30,7 @@ use std::process::Command;
 
 //TODO: pci not support sxm
 #[cfg(target_os = "windows")]
+#[allow(dead_code)]
 fn get_pci_ids(device_index: u32) -> Result<(u16, u16)> {
     use std::collections::HashMap;
     use wmi::{COMLibrary, Variant, WMIConnection};
@@ -172,7 +173,7 @@ pub fn get_pci_ids_by_lspci(device_index: u32) -> Result<(u16, u16)> {
     Ok((vendor_id, device_id))
 }
 
-#[cfg(all(not(target_os = "macos"), not(target_os = "android")))]
+#[cfg(all(not(target_os = "macos"), not(target_os = "android"), feature = "nvml"))]
 pub fn get_gpu_count() -> Result<usize, Box<dyn std::error::Error>> {
     // Initialize NVML
     let nvml = NVML::init()?;
@@ -183,6 +184,14 @@ pub fn get_gpu_count() -> Result<usize, Box<dyn std::error::Error>> {
     }
     Ok(device_count as usize)
 }
+
+// Fallback implementation when NVML is not available
+#[cfg(all(not(target_os = "macos"), not(target_os = "android"), not(feature = "nvml")))]
+pub fn get_gpu_count() -> Result<usize, Box<dyn std::error::Error>> {
+    debug!("NVML feature disabled. GPU count unavailable.");
+    Ok(0)
+}
+
 #[cfg(target_os = "android")]
 pub async fn collect_device_info() -> Result<(DevicesInfo, u32)> {
     // Lightweight Android version - no GPU monitoring
@@ -206,7 +215,198 @@ pub async fn collect_device_info() -> Result<(DevicesInfo, u32)> {
     };
     Ok((devices_info, 0))
 }
-#[cfg(all(not(target_os = "macos"), not(target_os = "android")))]
+
+// Fallback implementation when NVML is not available (Windows/Linux without CUDA Toolkit)
+#[cfg(all(not(target_os = "macos"), not(target_os = "android"), not(feature = "nvml")))]
+pub async fn collect_device_info() -> Result<(DevicesInfo, u32)> {
+    debug!("NVML feature disabled. Using system API for device info.");
+    
+    #[cfg(target_os = "windows")]
+    {
+        collect_device_info_wmi().await
+    }
+    
+    #[cfg(target_os = "linux")]
+    {
+        collect_device_info_sysfs().await
+    }
+}
+
+// Windows WMI-based device info collection
+#[cfg(all(target_os = "windows", not(feature = "nvml")))]
+async fn collect_device_info_wmi() -> Result<(DevicesInfo, u32)> {
+    use std::collections::HashMap;
+    use wmi::{COMLibrary, Variant, WMIConnection};
+    
+    // Perform WMI query synchronously to avoid Send issues
+    let gpu_info: Result<Option<(u64, String, usize)>, String> = (|| {
+        let com_con = COMLibrary::new()
+            .map_err(|e| format!("Failed to initialize COM: {}", e))?;
+        
+        let wmi_con = WMIConnection::new(com_con)
+            .map_err(|e| format!("Failed to connect to WMI: {}", e))?;
+        
+        // Query GPU information
+        let query = "SELECT Name, AdapterRAM, VideoProcessor FROM Win32_VideoController";
+        let results: Vec<HashMap<String, Variant>> = wmi_con.raw_query(query)
+            .map_err(|e| format!("Failed to query GPU info: {}", e))?;
+        
+        if let Some(gpu) = results.first() {
+            let vram = gpu.get("AdapterRAM")
+                .and_then(|v| match v {
+                    Variant::UI4(val) => Some(*val as u64),
+                    Variant::UI8(val) => Some(*val),
+                    _ => None,
+                })
+                .unwrap_or(0);
+            
+            let gpu_name = gpu.get("Name")
+                .and_then(|v| match v {
+                    Variant::String(s) => Some(s.clone()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| "Unknown GPU".to_string());
+            
+            Ok(Some((vram, gpu_name, results.len())))
+        } else {
+            Ok(None)
+        }
+        // COM objects are dropped here, before any await
+    })();
+    
+    match gpu_info {
+        Ok(Some((vram, gpu_name, count))) => {
+            println!("Found GPU: {}, VRAM: {} bytes", gpu_name, vram);
+
+            let device_info = DevicesInfo {
+                num: count as u16,
+                pod_id: 0,
+                total_tflops: 0, // Cannot estimate without specific GPU info
+                memtotal_gb: (vram >> 30) as u16,
+                port: 0,
+                ip: 0,
+                os_type: common::OsType::WINDOWS,
+                engine_type: common::EngineType::Llama,
+                usage: 0,
+                mem_usage: 0,
+                power_usage: 0,
+                temp: 0,
+                vendor_id: 0,
+                device_id: 0,
+                memsize_gb: (vram >> 30) as u128,
+                powerlimit_w: 0,
+            };
+            
+            Ok((device_info, (vram >> 30) as u32))
+        }
+        Ok(None) => {
+            debug!("No GPU found via WMI, falling back to CPU info");
+            collect_device_info_cpu().await
+        }
+        Err(e) => {
+            debug!("{}", e);
+            collect_device_info_cpu().await
+        }
+    }
+}
+
+// Linux sysfs-based device info collection
+#[cfg(all(target_os = "linux", not(feature = "nvml")))]
+async fn collect_device_info_sysfs() -> Result<(DevicesInfo, u32)> {
+    use std::fs;
+    
+    // Try to read DRM device information
+    let drm_path = "/sys/class/drm";
+    let mut gpu_count = 0u8;
+    let mut total_memory = 0u64;
+    
+    if let Ok(entries) = fs::read_dir(drm_path) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if name.starts_with("card") && !name.contains('-') {
+                    gpu_count += 1;
+                    
+                    // Try to read VRAM size (AMD GPUs)
+                    let mem_path = path.join("device/mem_info_vram_total");
+                    if let Ok(mem_str) = fs::read_to_string(&mem_path) {
+                        if let Ok(mem) = mem_str.trim().parse::<u64>() {
+                            total_memory += mem;
+                            debug!("Found GPU memory: {} bytes", mem);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    if gpu_count > 0 {
+        debug!("Found {} GPU(s) via sysfs, total VRAM: {} bytes", gpu_count, total_memory);
+        
+        let device_info = DevicesInfo {
+            num: gpu_count as u16,
+            pod_id: 0,
+            total_tflops: 0,
+            memtotal_gb: (total_memory >> 30) as u16,
+            port: 0,
+            ip: 0,
+            os_type: common::OsType::LINUX,
+            engine_type: common::EngineType::Llama,
+            usage: 0,
+            mem_usage: 0,
+            power_usage: 0,
+            temp: 0,
+            vendor_id: 0,
+            device_id: 0,
+            memsize_gb: (total_memory >> 30) as u128,
+            powerlimit_w: 0,
+        };
+        
+        Ok((device_info, (total_memory >> 30) as u32))
+    } else {
+        debug!("No GPU found via sysfs, falling back to CPU info");
+        collect_device_info_cpu().await
+    }
+}
+
+// CPU-based device info collection (universal fallback)
+#[cfg(all(not(target_os = "macos"), not(target_os = "android"), not(feature = "nvml")))]
+async fn collect_device_info_cpu() -> Result<(DevicesInfo, u32)> {
+    let mut sys = System::new_all();
+    sys.refresh_all();
+    
+    let total_memory = sys.total_memory();
+    let used_memory = sys.used_memory();
+    
+    debug!("Using CPU mode: {} GB total memory", total_memory >> 30);
+    
+    let device_info = DevicesInfo {
+        num: 1, // CPU as a single "device"
+        pod_id: 0,
+        total_tflops: 0, // CPU TFLOPS estimation is complex
+        memtotal_gb: (total_memory >> 30) as u16,
+        port: 0,
+        ip: 0,
+        os_type: if cfg!(target_os = "windows") {
+            common::OsType::WINDOWS
+        } else {
+            common::OsType::LINUX
+        },
+        engine_type: common::EngineType::Llama,
+        usage: sys.global_cpu_usage() as u64,
+        mem_usage: ((used_memory as f32 / total_memory as f32) * 100.0) as u64,
+        power_usage: 0,
+        temp: 0,
+        vendor_id: 0,
+        device_id: 0,
+        memsize_gb: (total_memory >> 30) as u128,
+        powerlimit_w: 0,
+    };
+    
+    Ok((device_info, (total_memory >> 30) as u32))
+}
+
+#[cfg(all(not(target_os = "macos"), not(target_os = "android"), feature = "nvml"))]
 pub async fn collect_device_info() -> Result<(DevicesInfo, u32)> {
     static INIT: Once = Once::new();
     static mut NVML: Option<Result<NVML, nvml_wrapper::error::Error>> = None;
@@ -715,4 +915,13 @@ async fn test_run_ollama_model() {
         Ok(output) => println!("Model output: {}", output),
         Err(e) => eprintln!("Error: {}", e),
     }
+}
+
+#[tokio::test]
+#[cfg(target_os = "windows")]
+async fn test_collect_device_info() {
+    
+    let device_info = collect_device_info_wmi().await;
+    println!("device_info: {:?}", device_info);
+    assert!(device_info.is_ok());
 }

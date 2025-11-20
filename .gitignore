@@ -15,6 +15,7 @@ zookeeper_logs
 kafka_data
 kafka_logs
 jniLibs*
+*.gguf
 gpuf-android-sdk
 .\config\
 ./config/

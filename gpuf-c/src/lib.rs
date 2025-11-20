@@ -1,9 +1,9 @@
 mod handle;
-mod util;
+pub mod util;
 
 // LLM modules are excluded in lightweight Android version
-#[cfg(not(target_os = "android"))]
-mod llm_engine;
+
+pub mod llm_engine;
 #[cfg(not(target_os = "android"))]
 mod llama_wrapper;
 

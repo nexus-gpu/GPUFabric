@@ -17,14 +17,14 @@ if ($Platform -eq "android" -or $Platform -eq "all") {
         exit 1
     }
     
-    # Android 使用 Vulkan 或 CPU
+    # Android uses Vulkan or CPU
     cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 build --release --features vulkan
-    # 或者 CPU only: cargo ndk ... build --release --features cpu
+    # Or CPU only: cargo ndk ... build --release --features cpu
     
     if ($LASTEXITCODE -eq 0) {
         Write-Host "Android build successful!" -ForegroundColor Green
         
-        # UPX 压缩（如果 UPX 可用）
+        # UPX compression (if UPX available)
         $upxAvailable = Get-Command upx -ErrorAction SilentlyContinue
         if ($upxAvailable) {
             Write-Host "`nCompressing .so files with UPX..." -ForegroundColor Cyan
@@ -75,7 +75,7 @@ if ($Platform -eq "ios" -or $Platform -eq "all") {
     Write-Host "`n=== Building for iOS ===" -ForegroundColor Cyan
     
     if ($IsMacOS) {
-        # iOS targets - 使用 Metal 加速
+        # iOS targets - use Metal acceleration
         cargo build --target aarch64-apple-ios --release --features metal
         cargo build --target x86_64-apple-ios --release --features metal
         cargo build --target aarch64-apple-ios-sim --release --features metal

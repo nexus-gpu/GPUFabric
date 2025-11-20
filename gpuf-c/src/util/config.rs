@@ -112,6 +112,7 @@ impl DockerConfig {
         let service_name = match engine_type {
             EngineType::VLLM => "vllm",
             EngineType::OLLAMA => "ollama",
+            EngineType::LLAMA => "llama",
         };
 
         let service = match engine_type {
@@ -130,6 +131,23 @@ impl DockerConfig {
                 runtime: None,
                 devices: None,
             },
+            EngineType::LLAMA => Service {
+                image: "ghcr.io/ggerganov/llama.cpp:server".to_string(),
+                container_name: "llama_engine_container".to_string(),
+                ports: vec!["8080:8080".to_string()],
+                volumes: vec![
+                    "~/.llama/models:/models".to_string(),
+                ],
+                environment: Some(HashMap::from([
+                    ("LLAMA_ARG_MODEL".to_string(), "/models/model.gguf".to_string()),
+                    ("LLAMA_ARG_CTX_SIZE".to_string(), "2048".to_string()),
+                    ("LLAMA_ARG_N_GPU_LAYERS".to_string(), "99".to_string()),
+                ])),
+                shm_size: Some("2g".to_string()),
+                runtime: Some("nvidia".to_string()),
+                devices: None,
+            },
+
             EngineType::OLLAMA => Service {
                 image: "ollama/ollama:latest".to_string(),
                 container_name: "ollama_engine_container".to_string(),

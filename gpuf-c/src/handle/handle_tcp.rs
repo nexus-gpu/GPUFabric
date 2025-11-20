@@ -7,7 +7,7 @@ use crate::util::{
 #[cfg(not(target_os = "macos"))]
 // LLM engine is not available in lightweight Android version
 #[cfg(not(target_os = "android"))]
-use crate::llm_engine;
+use crate::llm_engine::{self, llama_engine::LlamaEngine};
 use anyhow::Result;
 use common::{
     format_bytes, format_duration, join_streams, read_command, write_command, Command,
@@ -79,11 +79,12 @@ impl TCPWorker {
         let engine_type = match args.engine_type {
             EngineType::VLLM => ClientEngineType::Vllm,
             EngineType::OLLAMA => ClientEngineType::Ollama,
+            EngineType::LLAMA => ClientEngineType::Llama,
         };
         #[cfg(all(not(target_os = "macos"), not(target_os = "android")))]
-let mut engine: Option<AnyEngine> = None;
-#[cfg(any(target_os = "macos", target_os = "android"))]
-let mut engine: Option<()> = None;
+        let mut engine: Option<AnyEngine> = None;
+        #[cfg(any(target_os = "macos", target_os = "android"))]
+        let mut engine: Option<()> = None;
         #[cfg(all(not(target_os = "macos"), not(target_os = "android")))]
         {
             if args.engine_type == EngineType::VLLM {
@@ -97,6 +98,70 @@ let mut engine: Option<()> = None;
                     Err(e) => error!("VLLM init failed: {}", e),
                 }
                 engine = Some(llvm_worker);
+            } else if args.engine_type == EngineType::LLAMA {
+                // Initialize LLAMA engine (single shared instance for both worker and HTTP server)
+                let mut llama_worker = if let Some(model_path) = &args.llama_model_path {
+                    // Use provided model path
+                    info!("Creating LLAMA engine with model: {}", model_path);
+                    llm_engine::AnyEngine::Llama(LlamaEngine::with_config(
+                        model_path.clone(),
+                        2048,  // context size
+                        35,    // GPU layers (adjust based on your GPU)
+                    ))
+                } else {
+                    // Create engine without model (will be set later)
+                    info!("Creating LLAMA engine without model (will be set later)");
+                    llm_engine::create_engine(
+                        args.engine_type.clone(),
+                        args.hugging_face_hub_token.clone(),
+                        args.chat_template_path.clone(),
+                    )
+                };
+                
+                // Initialize the engine (only once)
+                match llama_worker.init().await {
+                    Ok(_) => {
+                        info!("LLAMA engine init success");
+                        // Start worker
+                        match llama_worker.start_worker().await {
+                            Ok(_) => info!("LLAMA worker started"),
+                            Err(e) => error!("LLAMA worker start failed: {}", e),
+                        }
+                    },
+                    Err(e) => error!("LLAMA init failed: {}", e),
+                }
+                
+                // Clone the engine for HTTP server (same instance, shared data via Arc)
+                let server_engine = match llama_worker {
+                    AnyEngine::Llama(ref e) => e.clone(),
+                    _ => unreachable!(),
+                };
+                
+                // Store engine for GPUFabric worker
+                engine = Some(llama_worker);
+                
+                // Start local HTTP API server for LLAMA (for proxy forwarding)
+                // Use the SAME engine instance for both worker and HTTP server
+                let local_addr = args.local_addr.clone();
+                let local_port = args.local_port;
+                let local_addr_clone = local_addr.clone();
+                info!("Starting LLAMA HTTP API server on {}:{}", local_addr, local_port);
+                
+                use std::sync::Arc;
+                use tokio::sync::RwLock;
+                use crate::llm_engine::llama_server::start_server;
+                
+                // Wrap the shared engine in Arc<RwLock> for HTTP server
+                let engine_arc = Arc::new(RwLock::new(server_engine));
+                
+                // Spawn server in background
+                tokio::spawn(async move {
+                    if let Err(e) = start_server(engine_arc, &local_addr_clone, local_port).await {
+                        error!("LLAMA HTTP server error: {}", e);
+                    }
+                });
+                
+                info!("LLAMA HTTP API server started successfully on {}:{}", local_addr, local_port);
             }
         }
         #[cfg(target_os = "macos")]

@@ -16,9 +16,6 @@ use llama_cpp_2::{
     context::params::LlamaContextParams,
     llama_batch::LlamaBatch,
     sampling::LlamaSampler,
-    token::data_array::LlamaTokenDataArray,
-    token::data::LlamaTokenData,
-    token::LlamaToken,
 };
 
 // Global model instance for singleton pattern
@@ -85,19 +82,24 @@ impl LlamaInstance {
         batch.clear();
         
         // Add prompt tokens to batch
+        let last_index = tokens.len() - 1;
         for (i, &token) in tokens.iter().enumerate() {
-            batch.add(token, i as i32, &[0], false)?;
+            // Only the last token needs logits for generation
+            let needs_logits = i == last_index;
+            batch.add(token, i as i32, &[0], needs_logits)?;
         }
         
         // Decode batch
         context.decode(&mut batch)
             .map_err(|e| anyhow!("Failed to decode prompt batch: {}", e))?;
         
-        // Create sampler
+        // Create sampler chain
+        // Note: The chain must end with a final sampler like dist() or greedy()
         let mut sampler = LlamaSampler::chain_simple([
             LlamaSampler::temp(0.7f32),
             LlamaSampler::top_k(40i32),
             LlamaSampler::top_p(0.95f32, 1usize),
+            LlamaSampler::dist(1234u32),  // Final sampler - required!
         ]);
         
         // Start generation
@@ -106,22 +108,11 @@ impl LlamaInstance {
         let mut pos = tokens.len() as i32;
         
         while remaining_tokens > 0 {
-            // Get logits
-            let logits = context.get_logits();
+            // Sample token from the last token in batch
+            let token = sampler.sample(&context, batch.n_tokens() - 1);
             
-            // Create token data array
-            let mut token_data_array = LlamaTokenDataArray::new(
-                logits.iter().enumerate()
-                    .map(|(i, &logit)| LlamaTokenData::new(LlamaToken::new(i as i32), logit, 0.0f32))
-                    .collect(),
-                false,
-            );
-            
-            // Apply sampler
-            sampler.apply(&mut token_data_array);
-            
-            // Sample token
-            let token = sampler.sample(&context, pos - 1);
+            // Accept the token
+            sampler.accept(token);
             
             // Check if it's end token
             if token == self.model.token_eos() {
@@ -134,18 +125,15 @@ impl LlamaInstance {
             // Clear batch
             batch.clear();
             
-            // Add generated token to batch
-            batch.add(token, pos, &[0], false)?;
+            // Add generated token to batch (needs logits for next generation)
+            batch.add(token, pos, &[0], true)?;
+            
+            pos += 1;
+            remaining_tokens -= 1;
             
             // Decode
             context.decode(&mut batch)
                 .map_err(|e| anyhow!("Failed to decode generated token: {}", e))?;
-            
-            // Accept token
-            sampler.accept(token);
-            
-            pos += 1;
-            remaining_tokens -= 1;
         }
         
         // Convert generated tokens back to text

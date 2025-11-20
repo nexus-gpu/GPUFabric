@@ -252,47 +252,55 @@ impl OllamaEngine {
 
 impl Engine for OllamaEngine {
 
-    async fn init(&mut self) -> Result<()> {
-        info!("Initializing Ollama engine...");
-        self.start_container().await?;
-        Ok(())
+    fn init(&mut self) -> impl std::future::Future<Output = Result<()>> + Send {
+        async move {
+            info!("Initializing Ollama engine...");
+            self.start_container().await?;
+            Ok(())
+        }
     }
 
-    async fn set_models(&mut self, models: Vec<String>) -> Result<()> {
-        if models.is_empty() {
-            return Err(anyhow!("Model list cannot be empty"));
-        }
-
-        info!("Setting Ollama models: {:?}", models);
-        self.models_name = models;
-
-        Ok(())
-    }
-
-    async fn start_worker(&mut self) -> Result<()> {
-        if self.models.is_empty() {
-            return Err(anyhow!("No models loaded, cannot start worker"));
-        }
-
-        if !self.is_container_running().await {
-            return Err(anyhow!("Ollama container is not running"));
-        }
-
-        for model in &self.models_name {
-            if let Err(e) = self.pull_model(model).await {
-                error!("Failed to load model {}: {}", model, e);
-                return Err(e);
+    fn set_models(&mut self, models: Vec<String>) -> impl std::future::Future<Output = Result<()>> + Send {
+        async move {
+            if models.is_empty() {
+                return Err(anyhow!("Model list cannot be empty"));
             }
-        }
 
-        info!("Ollama worker started successfully");
-        Ok(())
+            info!("Setting Ollama models: {:?}", models);
+            self.models_name = models;
+
+            Ok(())
+        }
     }
 
-    async fn stop_worker(&mut self) -> Result<()> {
-        info!("Stopping Ollama worker...");
-        self.stop_container().await?;
-        Ok(())
+    fn start_worker(&mut self) -> impl std::future::Future<Output = Result<()>> + Send {
+        async move {
+            if self.models.is_empty() {
+                return Err(anyhow!("No models loaded, cannot start worker"));
+            }
+
+            if !self.is_container_running().await {
+                return Err(anyhow!("Ollama container is not running"));
+            }
+
+            for model in &self.models_name {
+                if let Err(e) = self.pull_model(model).await {
+                    error!("Failed to load model {}: {}", model, e);
+                    return Err(e);
+                }
+            }
+
+            info!("Ollama worker started successfully");
+            Ok(())
+        }
+    }
+
+    fn stop_worker(&mut self) -> impl std::future::Future<Output = Result<()>> + Send {
+        async move {
+            info!("Stopping Ollama worker...");
+            self.stop_container().await?;
+            Ok(())
+        }
     }
 }
 

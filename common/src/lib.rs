@@ -237,6 +237,7 @@ pub enum EngineType {
     Vllm = 2,    
     TensorRT = 3,
     ONNX = 4, 
+    Llama = 6,
     None = 5,
 }
 
@@ -247,6 +248,7 @@ impl EngineType {
             EngineType::Vllm => 2,
             EngineType::TensorRT => 3,
             EngineType::ONNX => 4,
+            EngineType::Llama => 6,
             EngineType::None => 5,
         }
     }
@@ -260,6 +262,7 @@ impl fmt::Display for EngineType {
             EngineType::Vllm => write!(f, "vLLM"),
             EngineType::TensorRT => write!(f, "TensorRT"),
             EngineType::ONNX => write!(f, "ONNX"),
+            EngineType::Llama => write!(f, "Llama"),
             EngineType::None => write!(f, "None"),
         }
     }

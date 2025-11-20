@@ -1,135 +1,135 @@
 # GPUFabric Mobile SDK Scripts
 
-这个目录包含了构建和测试 GPUFabric Mobile SDK 的所有脚本。
+This directory contains all scripts for building and testing the GPUFabric Mobile SDK.
 
-## 📁 脚本说明
+## 📁 Script Overview
 
-### 🔧 `build_mobile.ps1` - 主构建脚本
-**用途**：构建 Android 和 iOS 库文件
+### 🔧 `build_mobile.ps1` - Main Build Script
+**Purpose**: Build Android and iOS library files
 ```powershell
-# 构建所有平台
+# Build all platforms
 .\build_mobile.ps1
 
-# 只构建 Android
+# Build Android only
 .\build_mobile.ps1 -Platform android
 
-# 只构建 iOS（需要 macOS）
+# Build iOS only (requires macOS)
 .\build_mobile.ps1 -Platform ios
 ```
 
-**功能**：
-- ✅ Android NDK 构建（arm64-v8a, armeabi-v7a, x86_64）
-- ✅ iOS 构建（aarch64-apple-ios, x86_64-apple-ios）
-- ✅ 自动 UPX 压缩（如果已安装）
-- ✅ 生成 C 头文件
+**Features**:
+- ✅ Android NDK build (arm64-v8a, armeabi-v7a, x86_64)
+- ✅ iOS build (aarch64-apple-ios, x86_64-apple-ios)
+- ✅ Automatic UPX compression (if installed)
+- ✅ Generate C header files
 
-### ⚙️ `setup_ndk.ps1` - 环境配置
-**用途**：设置 Android NDK 环境
+### ⚙️ `setup_ndk.ps1` - Environment Setup
+**Purpose**: Configure Android NDK environment
 ```powershell
-# 修改脚本中的 NDK_PATH，然后运行
+# Modify NDK_PATH in the script, then run
 .\setup_ndk.ps1
 ```
 
-**功能**：
-- ✅ 检查 NDK 安装
-- ✅ 设置 ANDROID_NDK_HOME 环境变量
-- ✅ 验证配置
+**Features**:
+- ✅ Check NDK installation
+- ✅ Set ANDROID_NDK_HOME environment variable
+- ✅ Verify configuration
 
-### 📱 `test_android.ps1` - 测试准备
-**用途**：准备 Android 测试文件
+### 📱 `test_android.ps1` - Test Preparation
+**Purpose**: Prepare Android test files
 ```powershell
 .\test_android.ps1
 ```
 
-**功能**：
-- ✅ 复制 .so 文件到测试目录
-- ✅ 生成测试项目结构
-- ✅ 验证文件完整性
+**Features**:
+- ✅ Copy .so files to test directory
+- ✅ Generate test project structure
+- ✅ Verify file integrity
 
-## 🚀 快速开始
+## 🚀 Quick Start
 
-### 1. 环境准备
+### 1. Environment Setup
 ```powershell
-# 安装 NDK（如果还没有）
+# Install NDK (if not already installed)
 .\setup_ndk.ps1
 
-# 安装 UPX（可选，用于压缩）
-# 下载：https://upx.github.io/
-# 或运行：winget install UPX
+# Install UPX (optional, for compression)
+# Download: https://upx.github.io/
+# Or run: winget install UPX
 ```
 
-### 2. 构建 SDK
+### 2. Build SDK
 ```powershell
-# 构建 Android 库
+# Build Android library
 .\build_mobile.ps1 -Platform android
 
-# 准备测试文件
+# Prepare test files
 .\test_android.ps1
 ```
 
-### 3. 测试
-1. 打开 Android Studio
-2. 导入 `C:\temp\android_test` 项目
-3. 连接 ARM64 设备
-4. 运行测试
+### 3. Testing
+1. Open Android Studio
+2. Import `C:\temp\android_test` project
+3. Connect ARM64 device
+4. Run tests
 
-## 📂 输出文件
+## 📂 Output Files
 
-构建完成后，重要文件位于：
+After build completion, important files are located at:
 
 ```
 gpuf-c/
 ├── target/aarch64-linux-android/release/
-│   └── libgpuf_c.so                    # Android ARM64 库
+│   └── libgpuf_c.so                    # Android ARM64 library
 ├── target/armv7-linux-androideabi/release/
-│   └── libgpuf_c.so                    # Android ARMv7 库
+│   └── libgpuf_c.so                    # Android ARMv7 library
 ├── target/x86_64-linux-android/release/
-│   └── libgpuf_c.so                    # Android x86_64 库
-└── gpuf_c.h                            # C 头文件
+│   └── libgpuf_c.so                    # Android x86_64 library
+└── gpuf_c.h                            # C header file
 
-C:\temp\android_test\                    # 测试项目
-├── jniLibs/arm64-v8a/libgpuf_c.so      # 测试用库文件
-└── README.md                            # 测试说明
+C:\temp\android_test\                    # Test project
+├── jniLibs/arm64-v8a/libgpuf_c.so      # Test library files
+└── README.md                            # Test instructions
 ```
 
-## ⚠️ 注意事项
+## ⚠️ Important Notes
 
-1. **Windows 专用**：这些脚本为 Windows PowerShell 设计
-2. **管理员权限**：某些操作可能需要管理员权限
-3. **网络要求**：首次构建需要下载依赖
-4. **磁盘空间**：完整构建需要约 2GB 空间
+1. **Windows Only**: These scripts are designed for Windows PowerShell
+2. **Admin Rights**: Some operations may require administrator privileges
+3. **Network Required**: First build requires downloading dependencies
+4. **Disk Space**: Complete build requires approximately 2GB space
 
-## 🔍 故障排除
+## 🔍 Troubleshooting
 
-### NDK 相关问题
+### NDK Related Issues
 ```powershell
-# 检查 NDK 是否正确设置
+# Check if NDK is correctly configured
 echo $env:ANDROID_NDK_HOME
 
-# 重新设置 NDK
+# Reconfigure NDK
 .\setup_ndk.ps1
 ```
 
-### 构建失败
+### Build Failures
 ```powershell
-# 清理构建缓存
+# Clean build cache
 cargo clean
 
-# 重新构建
+# Rebuild
 .\build_mobile.ps1 -Platform android
 ```
 
-### UPX 压缩问题
+### UPX Compression Issues
 ```powershell
-# 检查 UPX 是否安装
+# Check if UPX is installed
 upx --version
 
-# 手动压缩
+# Manual compression
 upx --best --lzma libgpuf_c.so
 ```
 
-## 📝 更新日志
+## 📝 Changelog
 
-- **2025-11-18**: 创建脚本目录，整理构建流程
-- **2025-11-18**: 添加 UPX 自动压缩
-- **2025-11-18**: 集成 llama.cpp 支持
+- **2025-11-18**: Created scripts directory, organized build process
+- **2025-11-18**: Added automatic UPX compression
+- **2025-11-18**: Integrated llama.cpp support

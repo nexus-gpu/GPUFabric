@@ -27,6 +27,17 @@ pub struct SessionNetworkMonitor {
 
 #[cfg(not(target_os = "android"))]
 fn detect_default_interface() -> Option<String> {
+    // Try to detect via UDP socket connection
+    if let Some(iface) = detect_via_udp_socket() {
+        return Some(iface);
+    }
+    
+    // Fallback: find the first non-loopback interface with an IP
+    detect_first_active_interface()
+}
+
+#[cfg(not(target_os = "android"))]
+fn detect_via_udp_socket() -> Option<String> {
     // Create a UDP socket and connect to an external address
     let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
     socket.connect("8.8.8.8:53").ok()?;
@@ -46,15 +57,49 @@ fn detect_default_interface() -> Option<String> {
     None
 }
 
+#[cfg(not(target_os = "android"))]
+fn detect_first_active_interface() -> Option<String> {
+    use std::net::IpAddr;
+    
+    let networks = Networks::new_with_refreshed_list();
+    for (iface_name, network_data) in &networks {
+        // Skip loopback interfaces
+        if iface_name.starts_with("lo") || iface_name == "Loopback Pseudo-Interface 1" {
+            continue;
+        }
+        
+        // Find first interface with a non-loopback IP
+        for ip in network_data.ip_networks() {
+            match ip.addr {
+                IpAddr::V4(ipv4) if !ipv4.is_loopback() && !ipv4.is_link_local() => {
+                    return Some(iface_name.clone());
+                }
+                IpAddr::V6(ipv6) if !ipv6.is_loopback() => {
+                    return Some(iface_name.clone());
+                }
+                _ => continue,
+            }
+        }
+    }
+    None
+}
+
 
 #[cfg(not(target_os = "android"))]
 impl SessionNetworkMonitor {
     pub fn new(interface_name: Option<&str>) -> Option<Self> {
         let mut networks = Networks::new_with_refreshed_list();
         networks.refresh(true);
-        let default_interface = detect_default_interface().expect("Failed to detect default interface");
-        let interface = interface_name.unwrap_or_else(|| &default_interface);
-        if let Some(network_data) = networks.get(interface) {
+        
+        // Determine which interface to use
+        let interface = if let Some(name) = interface_name {
+            name.to_string()
+        } else {
+            // Try to detect default interface, return None if detection fails
+            detect_default_interface()?
+        };
+        
+        if let Some(network_data) = networks.get(&interface) {
             let initial_rx = network_data.total_received();
             let initial_tx = network_data.total_transmitted();
             
