@@ -1,10 +1,10 @@
-# GPUFabric Mobile SDK Scripts
+# 🔧 GPUFabric Build Scripts
 
-This directory contains all scripts for building and testing the GPUFabric Mobile SDK.
+This directory contains build and deployment scripts for the GPUFabric project.
 
 ## 📁 Script Overview
 
-### 🔧 `build_mobile.ps1` - Main Build Script
+### 🚀 `build_mobile.ps1` - Mobile Platform Build Script
 **Purpose**: Build Android and iOS library files
 ```powershell
 # Build all platforms
@@ -18,118 +18,158 @@ This directory contains all scripts for building and testing the GPUFabric Mobil
 ```
 
 **Features**:
-- ✅ Android NDK build (arm64-v8a, armeabi-v7a, x86_64)
-- ✅ iOS build (aarch64-apple-ios, x86_64-apple-ios)
-- ✅ Automatic UPX compression (if installed)
-- ✅ Generate C header files
+- Automatic NDK and toolchain detection
+- Cross-compile Android ARM64/x86_64
+- Generate iOS static library (macOS)
+- Output artifacts to `target/mobile/`
 
-### ⚙️ `setup_ndk.ps1` - Environment Setup
-**Purpose**: Configure Android NDK environment
+### ⚙️ `setup_ndk.ps1` - NDK Environment Configuration
+**Purpose**: Automatically download and configure Android NDK
 ```powershell
-# Modify NDK_PATH in the script, then run
+# Install latest NDK
 .\setup_ndk.ps1
+
+# Specify NDK version
+.\setup_ndk.ps1 -Version 21
 ```
 
 **Features**:
-- ✅ Check NDK installation
-- ✅ Set ANDROID_NDK_HOME environment variable
-- ✅ Verify configuration
+- Download Android NDK 21+
+- Automatically configure environment variables
+- Verify toolchain integrity
 
-### 📱 `test_android.ps1` - Test Preparation
-**Purpose**: Prepare Android test files
+### ✅ `verify_client_sdk.ps1` - SDK Integration Verification
+**Purpose**: Verify client SDK integration status
 ```powershell
-.\test_android.ps1
+# Complete verification
+.\verify_client_sdk.ps1
+
+# Quick check
+.\verify_client_sdk.ps1 -Quick
 ```
 
-**Features**:
-- ✅ Copy .so files to test directory
-- ✅ Generate test project structure
-- ✅ Verify file integrity
+**Verification Items**:
+- Compilation environment check
+- Dependency library integrity
+- Platform compatibility testing
+- Example code execution
+
+## 🛠️ Environment Requirements
+
+### Basic Environment
+- PowerShell 5.1+ (Windows) or PowerShell Core 7+
+- Rust 1.70+ with Cargo
+- Git
+
+### Platform-Specific Requirements
+- **Android Development**: Android Studio or Android SDK
+- **iOS Development**: Xcode 14+ (macOS only)
+- **Linux Development**: GCC/Clang toolchain
 
 ## 🚀 Quick Start
 
-### 1. Environment Setup
+### 1. Environment Preparation
 ```powershell
-# Install NDK (if not already installed)
-.\setup_ndk.ps1
+# Install Rust (if not already installed)
+winget install Rustlang.Rust.MSVC
 
-# Install UPX (optional, for compression)
-# Download: https://upx.github.io/
-# Or run: winget install UPX
+# Clone project
+git clone https://github.com/your-org/GPUFabric.git
+cd GPUFabric/gpuf-c
 ```
 
-### 2. Build SDK
+### 2. Build Mobile Libraries
 ```powershell
 # Build Android library
-.\build_mobile.ps1 -Platform android
+.\scripts\build_mobile.ps1 -Platform android
 
-# Prepare test files
-.\test_android.ps1
+# Build iOS library (macOS)
+.\scripts\build_mobile.ps1 -Platform ios
 ```
 
-### 3. Testing
-1. Open Android Studio
-2. Import `C:\temp\android_test` project
-3. Connect ARM64 device
-4. Run tests
-
-## 📂 Output Files
-
-After build completion, important files are located at:
-
-```
-gpuf-c/
-├── target/aarch64-linux-android/release/
-│   └── libgpuf_c.so                    # Android ARM64 library
-├── target/armv7-linux-androideabi/release/
-│   └── libgpuf_c.so                    # Android ARMv7 library
-├── target/x86_64-linux-android/release/
-│   └── libgpuf_c.so                    # Android x86_64 library
-└── gpuf_c.h                            # C header file
-
-C:\temp\android_test\                    # Test project
-├── jniLibs/arm64-v8a/libgpuf_c.so      # Test library files
-└── README.md                            # Test instructions
-```
-
-## ⚠️ Important Notes
-
-1. **Windows Only**: These scripts are designed for Windows PowerShell
-2. **Admin Rights**: Some operations may require administrator privileges
-3. **Network Required**: First build requires downloading dependencies
-4. **Disk Space**: Complete build requires approximately 2GB space
-
-## 🔍 Troubleshooting
-
-### NDK Related Issues
+### 3. Verify Integration
 ```powershell
-# Check if NDK is correctly configured
-echo $env:ANDROID_NDK_HOME
-
-# Reconfigure NDK
-.\setup_ndk.ps1
+# Run complete verification
+.\scripts\verify_client_sdk.ps1
 ```
 
-### Build Failures
+## 📦 Build Artifacts
+
+After successful build, artifacts are located at:
+```
+target/mobile/
+├── android/
+│   ├── arm64-v8a/
+│   │   └── libgpuf_c.so
+│   ├── x86_64/
+│   │   └── libgpuf_c.so
+│   └── java/
+│       └── GPUFabricClientSDK.java
+└── ios/ (macOS only)
+    ├── libgpuf_c.a
+    └── GPUFabricClientSDK.h
+```
+
+## 🔧 Troubleshooting
+
+### Common Issues
+
+**Q: NDK download failed**
 ```powershell
-# Clean build cache
+# Manually set NDK path
+$env:ANDROID_NDK_ROOT = "C:\Android\NDK\21.4.7075529"
+```
+
+**Q: iOS build failed**
+- Ensure running on macOS
+- Check Xcode command line tools: `xcode-select --install`
+
+**Q: Cross-compilation error**
+```powershell
+# Clean and rebuild
 cargo clean
-
-# Rebuild
-.\build_mobile.ps1 -Platform android
+.\scripts\build_mobile.ps1 -Clean
 ```
 
-### UPX Compression Issues
+### Debug Mode
 ```powershell
-# Check if UPX is installed
-upx --version
+# Enable verbose output
+.\scripts\build_mobile.ps1 -Verbose
 
-# Manual compression
-upx --best --lzma libgpuf_c.so
+# Debug mode
+.\scripts\build_mobile.ps1 -Debug
 ```
 
-## 📝 Changelog
+## 📋 Script Parameters
 
-- **2025-11-18**: Created scripts directory, organized build process
-- **2025-11-18**: Added automatic UPX compression
-- **2025-11-18**: Integrated llama.cpp support
+### build_mobile.ps1
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| Platform | String | all | Build platform (android/ios/all) |
+| Clean | Switch | false | Clean build cache |
+| Debug | Switch | false | Enable debug mode |
+| Verbose | Switch | false | Verbose output |
+
+### setup_ndk.ps1
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| Version | String | 21 | NDK version |
+| Force | Switch | false | Force reinstall |
+
+### verify_client_sdk.ps1
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| Quick | Switch | false | Quick verification mode |
+| Platform | String | all | Verification platform |
+
+## 🤝 Contributing
+
+When adding new scripts:
+1. Follow existing naming conventions
+2. Add detailed comments and help information
+3. Include error handling and logging
+4. Update this README file
+
+---
+
+*Last updated: 2025-11-21*

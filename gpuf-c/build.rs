@@ -4,6 +4,7 @@ use std::path::PathBuf;
 fn main() {
     let crate_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
     
+    // Configure cbindgen directly, without relying on external config files
     cbindgen::Builder::new()
         .with_crate(crate_dir)
         .with_language(cbindgen::Language::C)

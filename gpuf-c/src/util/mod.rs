@@ -4,6 +4,7 @@ pub mod asm;
 pub mod config;
 pub mod network_info;
 pub mod system_info;
+pub mod system_info_vulkan;
 pub mod device_info;
 pub mod model_downloader;
 pub mod model_downloader_example;

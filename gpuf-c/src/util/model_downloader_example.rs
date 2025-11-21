@@ -167,7 +167,7 @@ pub async fn download_and_initialize_llama() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
+    // use tempfile::tempdir; // Reserved for future test implementations
 
     #[tokio::test]
     async fn test_download_config_creation() {

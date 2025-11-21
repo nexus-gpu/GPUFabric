@@ -1,74 +1,38 @@
-# GPUFabric Client (gpuf-c)
+# 🚀 GPUFabric Client (gpuf-c)
 
-GPUFabric client supporting distributed inference with multiple LLM engines.
-
-## 🚀 Quick Start
-
-### Build
-```powershell
-cargo build --release
-```
-
-### Standalone LLAMA Mode
-```powershell
-.\target\release\gpuf-c.exe --standalone-llama
-```
-
-### Worker Mode
-```powershell
-.\target\release\gpuf-c.exe `
-    --engine-type llama `
-    --llama-model-path ./model.gguf `
-    --server-addr 192.168.1.100
-```
-
-## 📁 Project Structure
-
-```
-gpuf-c/
-├── src/           # Source code
-├── docs/          # Documentation
-├── scripts/       # Build scripts
-├── tests/         # Test scripts
-├── examples/      # Example code
-└── jniLibs/       # Android libraries
-```
+High-performance distributed LLM inference client with multi-engine and cross-platform support.
 
 ## 📖 Documentation
 
-- [Windows Build Guide](docs/WINDOWS_BUILD.md) - Build instructions for Windows
+For complete documentation, see [docs/README.md](docs/README.md)
 
-## 🧪 Testing
+### 🎯 Quick Links
+- [Android Integration Guide](docs/mobile/ANDROID_DEVELOPMENT_GUIDE.md)
+- [Build Guide](docs/BUILD_GUIDE.md)  
+- [API Reference](docs/api/API_REFERENCE.md)
+- [Examples](examples/README.md)
 
-```powershell
-# Run LLAMA tests
-.\tests\test_llama_worker.ps1
+## 🚀 Quick Start
 
-# Run API tests
-.\tests\test_api.ps1
+```bash
+# Build
+cargo build --release
 
-# Run Vulkan tests
-.\tests\test_vulkan.ps1
+# Android SDK
+cargo ndk -t arm64-v8a build --release --features android
+
+# Run examples
+cargo run --example test_client_sdk
 ```
 
-## 🔧 Supported Engines
+## ✨ Key Features
 
-- **llama.cpp** - High-performance local inference
-- **Ollama** - Containerized LLM service
-- **VLLM** - High-performance inference service
+- 🤖 Multi-engine support (llama.cpp, Ollama, VLLM)
+- 📱 Cross-platform support (Android, Windows, Linux, macOS)
+- ⚡ GPU acceleration (Vulkan, CUDA, Metal)
+- 🌐 Distributed inference
+- 🔌 OpenAI-compatible API
 
-## 🎯 Features
+---
 
-- ✅ Standalone and cluster modes
-- ✅ OpenAI compatible API
-- ✅ GPU acceleration (Vulkan/CUDA)
-- ✅ Automatic model download
-- ✅ Cross-platform support
-
-## 🤝 Contributing
-
-Issues and Pull Requests are welcome!
-
-## 📄 License
-
-[MIT License](LICENSE)
+**See [docs/README.md](docs/README.md) for complete documentation**

@@ -137,7 +137,7 @@ pub fn create_router(engine: Arc<RwLock<LlamaEngine>>) -> Router {
         .with_state(state)
 }
 
-/// 健康检查
+/// Health check
 async fn health_check(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
     let engine = state.engine.read().await;
     let model_loaded = engine.is_ready().await;
@@ -217,7 +217,7 @@ async fn chat_completions(
     Ok(Json(response))
 }
 
-/// 文本完成
+/// Text completion
 async fn completions(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CompletionRequest>,

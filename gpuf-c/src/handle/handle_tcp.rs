@@ -417,11 +417,11 @@ impl WorkerHandle for TCPWorker {
                             }
                         };
 
-                    // TODO: device_info is local device info
+                    // device_info should be real-time for monitoring
                     let (device_info, device_memtotal_mb) = match collect_device_info().await {
                         Ok(info) => info,
                         Err(e) => {
-                            error!("Failed to collect system info: {}", e);
+                            error!("Failed to collect device info: {}", e);
                             (DevicesInfo::default(), 0)
                         }
                     };

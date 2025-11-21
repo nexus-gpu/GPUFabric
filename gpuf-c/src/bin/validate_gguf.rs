@@ -103,7 +103,7 @@ fn validate_gguf_file(file_path: &PathBuf) -> Result<()> {
     println!("📖 Reading metadata...");
     
     // Read KV pairs (simplified - just show first few)
-    for i in 0..std::cmp::min(kv_count, 10) {
+    for _i in 0..std::cmp::min(kv_count, 10) {
         let mut key_len_bytes = [0u8; 8];
         file.read_exact(&mut key_len_bytes)?;
         let key_len = u64::from_le_bytes(key_len_bytes);

@@ -519,7 +519,7 @@ pub async fn download_model_with_progress(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
+    // use tempfile::tempdir; // Reserved for future test implementations
 
     #[tokio::test]
     async fn test_download_config_default() {
