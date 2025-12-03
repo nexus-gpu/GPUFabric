@@ -1,287 +1,82 @@
-# 🚀 GPUFabric Client (gpuf-c)
+# GPUFabric Documentation
 
-High-performance distributed LLM inference client with multi-engine and cross-platform support.
+Complete documentation for the GPUFabric Android SDK project.
 
-## ✨ Core Features
+## 📚 Documentation Index
 
-- 🤖 **Multi-engine support**: llama.cpp, Ollama, VLLM
-- 🌐 **Distributed inference**: Cluster mode and standalone mode
-- 📱 **Cross-platform**: Android, Windows, Linux, macOS
-- ⚡ **GPU acceleration**: Vulkan, CUDA, Metal support
-- 🔌 **OpenAI-compatible**: Standard API interface
-- 📊 **Real-time monitoring**: Performance metrics and status management
+### 🚀 Getting Started
+- **[Quick Start Guide](QUICK_START.md)** - Setup and build in 5 minutes
 
-## 🚀 Quick Start
+### 🔧 Android Development
+- **[Android Build Lessons](ANDROID_BUILD_LESSONS_LEARNED.md)** - Architecture limitations and best practices
+- **[JNI Network Build Guide](ANDROID_JNI_NETWORK_BUILD_GUIDE.md)** - Network integration and JNI setup
+- **[Android x86_64 Deployment Guide](ANDROID_X86_64_DEPLOYMENT_GUIDE.md)** - Multi-platform deployment
 
-### Basic Build
-```bash
-# Clone project
-git clone https://github.com/your-org/GPUFabric.git
-cd GPUFabric/gpuf-c
+### 🏗️ Architecture & Design
+- **[Build Guide](BUILD_GUIDE.md)** - Complete build system documentation
+- **[Initialization Guide](INITIALIZATION_GUIDE.md)** - System initialization procedures
+- **[Inference Service Architecture](INFERENCE_SERVICE_ARCHITECTURE.md)** - Service design and patterns
 
-# Build project
-cargo build --release
+### 📊 Model Management
+- **[Model Management Guide](MODEL_MANAGEMENT_GUIDE.md)** - Model loading and management
+- **[Model Status Examples](MODEL_STATUS_EXAMPLES.md)** - Practical model usage examples
 
-# Run examples
-./target/release/gpuf-c --help
-```
+### 🔌 API Reference
+- **[API Documentation](api/)** - Low-level API reference
+- **[Mobile Integration](mobile/)** - Mobile-specific APIs
 
-### Android Integration
-```bash
-# Build Android SDK
-cargo ndk -t arm64-v8a build --release --features android
+### 📈 Platform Guides
+- **[Platform Guides](PLATFORM_GUIDES/)** - Cross-platform compatibility
+- **[Platform Documentation](platform/)** - Platform-specific details
 
-# Integrate into Android project
-cp target/aarch64-linux-android/release/libgpuf_c.so \
-   your-android-app/app/src/main/jniLibs/arm64-v8a/
-```
+### 🔄 Advanced Features
+- **[Compute Sharing Diagrams](COMPUTE_SHARING_DIAGRAMS.md)** - Resource sharing architecture
+- **[Offline Mode Guide](OFFLINE_MODE_GUIDE.md)** - Offline inference capabilities
 
-### Usage Examples
-```java
-// Android Java example
-GPUFabricClientSDK sdk = new GPUFabricClientSDK();
-sdk.init();
+### 📊 Architecture Diagrams
+- **[SDK Compute Sharing Flow](sdk-compute-sharing-flow.mmd)** - Resource flow visualization
+- **[SDK Compute Sharing Sequence](sdk-compute-sharing-sequence.mmd)** - Sequence diagrams
 
-// Initialize LLM model
-if (sdk.initializeModel("/path/to/model.gguf")) {
-    String response = sdk.generateResponse("Hello, GPUFabric!");
-    System.out.println(response);
-}
-```
+## 🎯 Android Development Focus
 
-```rust
-// Rust example
-use gpuf_c::{init, gpuf_llm_init, gpuf_llm_generate};
+### 📱 Android Platform Support
+- ✅ **ARM64**: Full functionality with real llama.cpp API
+- ⚠️ **x86_64**: Compatibility layer API for development and testing
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    init()?;
-    
-    // Initialize LLM (requires unsafe block)
-    let model_path = std::ffi::CString::new("model.gguf")?;
-    unsafe {
-        gpuf_llm_init(model_path.as_ptr(), 2048, 0);
-        let result = gpuf_llm_generate(
-            std::ffi::CString::new("Hello!")?.as_ptr(), 
-            100
-        );
-        // Handle result...
-    }
-    
-    Ok(())
-}
-```
+### �� Core Android Documents
+| Document | Description | Use Case |
+|----------|-------------|----------|
+| `ANDROID_BUILD_LESSONS_LEARNED.md` | Build experience and lessons | Technical decisions and problem solving |
+| `ANDROID_JNI_NETWORK_BUILD_GUIDE.md` | JNI network build guide | Complex dependency builds |
+| `ANDROID_X86_64_DEPLOYMENT_GUIDE.md` | x86_64 deployment guide | Emulator development and testing |
 
-## 📱 Platform Support
+### 🏗️ Build Scripts Location
+All build scripts are located in the project root:
+- `generate_sdk.sh` - Main SDK generation script
+- `test_jni_android.sh` - Android JNI testing
 
-| Platform | Architecture | GPU Support | Status |
-|----------|--------------|-------------|--------|
-| Android | ARM64 | Vulkan | ✅ Fully Supported |
-| Windows | x64 | CUDA/Vulkan | ✅ Fully Supported |
-| Linux | x64/ARM64 | CUDA/Vulkan | ✅ Fully Supported |
-| macOS | x64/ARM64 | Metal | ✅ Fully Supported |
+### 📖 Usage Guidelines
+1. **Production Deployment**: Refer to `ANDROID_X86_64_DEPLOYMENT_GUIDE.md`
+2. **Troubleshooting**: Refer to `ANDROID_BUILD_LESSONS_LEARNED.md`
+3. **Advanced Builds**: Refer to `ANDROID_JNI_NETWORK_BUILD_GUIDE.md`
 
-## 🛠️ Build Options
+## 🎯 Quick Navigation
 
-### Features
-```bash
-# CPU version (minimal)
-cargo build --release --features cpu
+### For Android Developers
+1. Start with [Quick Start Guide](QUICK_START.md)
+2. Read [Android Build Lessons](ANDROID_BUILD_LESSONS_LEARNED.md)
+3. Follow [JNI Network Guide](ANDROID_JNI_NETWORK_BUILD_GUIDE.md)
 
-# Vulkan version (cross-platform GPU)
-cargo build --release --features "cpu,vulkan"
+### For System Architects
+1. Study [Inference Service Architecture](INFERENCE_SERVICE_ARCHITECTURE.md)
+2. Explore [Compute Sharing Diagrams](COMPUTE_SHARING_DIAGRAMS.md)
+3. Review [Initialization Guide](INITIALIZATION_GUIDE.md)
 
-# CUDA version (NVIDIA GPU)
-cargo build --release --features "cpu,cuda"
-
-# Metal version (Apple GPU)
-cargo build --release --features "cpu,metal"
-
-# Full version (all GPU backends)
-cargo build --release --features "cpu,vulkan,cuda,metal"
-```
-
-### Android Optimized Versions
-```bash
-# Full version (83.5 MB)
-cargo ndk -t arm64-v8a build --release --features android
-
-# Balanced version (25-35 MB)
-cargo ndk -t arm64-v8a build --release --features android-balanced
-
-# Minimal version (15-25 MB)
-cargo ndk -t arm64-v8a build --release --features android-minimal
-```
-
-## 📚 Documentation
-
-### 🎯 Integration Guides
-- [Android Integration Guide](mobile/ANDROID_DEVELOPMENT_GUIDE.md) - Complete Android SDK integration
-- [Build Guide](BUILD_GUIDE.md) - Detailed build configuration and optimization
-- [API Reference](api/API_REFERENCE.md) - Complete API interface documentation
-
-### 🖥️ Platform Guides
-- [Windows Build](PLATFORM_GUIDES/WINDOWS_BUILD.md) - Windows-specific build instructions
-- [Examples](../examples/README.md) - Multi-language usage examples
-
-## 🏗️ Project Structure
-
-```
-gpuf-c/
-├── src/                    # Rust source code
-│   ├── lib.rs             # Library entry point
-│   ├── client_sdk.rs      # Client SDK
-│   ├── llama_wrapper.rs   # LLM wrapper
-│   └── util/              # Utility modules
-├── docs/                   # 📚 Documentation directory
-│   ├── README.md          # Main documentation (this file)
-│   ├── mobile/            # Mobile development docs
-│   ├── platform/          # Platform-specific docs
-│   ├── api/               # API documentation
-│   ├── BUILD_GUIDE.md
-│   └── PLATFORM_GUIDES/
-├── examples/               # Example code
-│   ├── android/           # Android examples
-│   └── rust/              # Rust examples
-├── scripts/               # Build scripts
-└── tests/                 # Test code
-```
-
-## 🎯 Use Cases
-
-### 🤖 Mobile AI Applications
-- Chatbots and conversational assistants
-- Text generation and content creation
-- Offline AI inference services
-
-### ☁️ Distributed Computing
-- Edge device clusters
-- Hybrid cloud inference
-- Load balancing and scheduling
-
-### 🔬 Enterprise Deployment
-- Private LLM services
-- High-concurrency inference
-- Real-time performance monitoring
-
-## 📊 Performance Metrics
-
-### Inference Performance (ARM64 Android)
-| Model Size | GPU Layers | Inference Speed | Memory Usage |
-|------------|------------|-----------------|--------------|
-| 3B | 0 (CPU) | 5-8 tokens/s | 2GB |
-| 3B | 10 (Vulkan) | 15-25 tokens/s | 2.5GB |
-| 7B | 0 (CPU) | 2-4 tokens/s | 5GB |
-| 7B | 20 (Vulkan) | 8-15 tokens/s | 6GB |
-
-### Desktop Performance (RTX 3080)
-| Model Size | GPU Layers | Inference Speed | Memory Usage |
-|------------|------------|-----------------|--------------|
-| 13B | 0 (CPU) | 1-2 tokens/s | 8GB |
-| 13B | 40 (CUDA) | 40-60 tokens/s | 10GB |
-| 34B | 0 (CPU) | 0.5 tokens/s | 20GB |
-| 34B | 40 (CUDA) | 15-25 tokens/s | 24GB |
-
-## 🧪 Testing
-
-### Running Tests
-```bash
-# Rust unit tests
-cargo test
-
-# Integration tests
-cargo test --test integration_tests
-
-# Android tests
-cargo ndk -t arm64-v8a test --release --features android
-```
-
-### Performance Tests
-```bash
-# LLM inference tests
-./tests/test_llama_performance.sh
-
-# Network connectivity tests
-./tests/test_client_connectivity.sh
-
-# GPU acceleration tests
-./tests/test_gpu_acceleration.sh
-```
-
-## 🔧 Configuration Options
-
-### Environment Variables
-```bash
-# Rust compilation optimization
-export RUSTFLAGS="-C target-cpu=native"
-
-# Android NDK path
-export ANDROID_NDK_HOME="/path/to/android/ndk"
-
-# CUDA path (optional)
-export CUDA_ROOT="/usr/local/cuda"
-```
-
-### Runtime Configuration
-```json
-{
-  "server_addr": "127.0.0.1",
-  "control_port": 17000,
-  "proxy_port": 17001,
-  "client_id": "device-12345",
-  "device_name": "GPUFabric Device",
-  "llm": {
-    "model_path": "./model.gguf",
-    "context_size": 2048,
-    "gpu_layers": 10,
-    "batch_size": 512
-  },
-  "monitoring": {
-    "enable_metrics": true,
-    "heartbeat_interval": 30
-  }
-}
-```
-
-## 🤝 Contributing Guidelines
-
-### Development Environment Setup
-```bash
-# Install Rust toolchain
-rustup update stable
-rustup component add clippy rustfmt
-
-# Install development dependencies
-cargo install cargo-watch cargo-tarpaulin
-
-# Run development server
-cargo watch -x run
-```
-
-### Code Standards
-```bash
-# Format code
-cargo fmt
-
-# Static analysis
-cargo clippy -- -D warnings
-
-# Run tests and generate coverage
-cargo tarpaulin --out Html
-```
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](../../LICENSE) file for details.
-
-## 🔗 Related Links
-
-- [GPUFabric Main Project](../../README.md)
-- [Issue Tracker](../../issues)
-- [Changelog](../../CHANGELOG.md)
-- [Community Discussions](../../discussions)
+### For Model Engineers
+1. Read [Model Management Guide](MODEL_MANAGEMENT_GUIDE.md)
+2. Check [Model Status Examples](MODEL_STATUS_EXAMPLES.md)
+3. Review [Offline Mode Guide](OFFLINE_MODE_GUIDE.md)
 
 ---
 
-**Version**: v1.0.0  
-**Last Updated**: 2025-11-21  
-**Maintainers**: GPUFabric Development Team
+> 💡 **Tip**: Most guides include practical examples and code snippets. Start with the Quick Start Guide for hands-on experience.

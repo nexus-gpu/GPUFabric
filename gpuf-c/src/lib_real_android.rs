@@ -1,7 +1,7 @@
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int, c_void, c_float};
 
-// 真实的 llama.cpp API 绑定（用于 ARM64 Android）
+// Real llama.cpp API bindings (for ARM64 Android)
 #[repr(C)]
 pub struct llama_model {
     _private: [u8; 0],
@@ -49,7 +49,7 @@ pub struct llama_context_params {
 
 pub type llama_token = i32;
 
-// 外部 llama.cpp C API 函数声明
+// External llama.cpp C API function declarations
 #[link(name = "llama")]
 extern "C" {
     fn llama_backend_init();
@@ -83,7 +83,7 @@ extern "C" {
     ) -> c_int;
 }
 
-// JNI 导出函数 - 使用真实的 llama.cpp API
+// JNI export functions - using real llama.cpp API
 #[no_mangle]
 pub extern "C" fn gpuf_init() -> c_int {
     unsafe {
@@ -165,18 +165,18 @@ pub extern "C" fn gpuf_generate_final_solution_text(
     }
     
     unsafe {
-        // 将提示文本转换为 tokens
+        // Convert prompt text to tokens
         let prompt_cstr = CStr::from_ptr(prompt);
         let prompt_str = match prompt_cstr.to_str() {
             Ok(s) => s,
             Err(_) => return -1,
         };
         
-        // 简化的生成逻辑（实际实现会更复杂）
+        // Simplified generation logic (actual implementation would be more complex)
         let result = format!("Generated response for: {}", prompt_str);
         let result_cstring = CString::new(result).unwrap();
         
-        // 复制结果到输出缓冲区
+        // Copy result to output buffer
         let result_bytes = result_cstring.as_bytes_with_nul();
         let copy_len = std::cmp::min(result_bytes.len(), output_len as usize);
         
@@ -202,7 +202,7 @@ pub extern "C" fn gpuf_system_info() -> *mut c_char {
     info.into_raw()
 }
 
-// 辅助函数
+// Helper functions
 #[no_mangle]
 pub extern "C" fn gpuf_free_model(model: *mut llama_model) {
     if !model.is_null() {

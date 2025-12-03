@@ -15,9 +15,13 @@ zookeeper_logs
 kafka_data
 kafka_logs
 jniLibs*
+*.so
+backup_llama_android_ndk/
+llama-android-ndk/
+llama.cpp/
 *.gguf
+*.rlib
 gpuf-android-sdk
-.\config\
+config/
 ./config/
 /target
-/__pycache__

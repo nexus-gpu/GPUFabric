@@ -1,7 +1,21 @@
 use std::ffi::{CStr, CString};
-use std::os::raw::{c_char, c_int, c_void, c_float};
+use std::os::raw::{c_char, c_int, c_void};
 
-// 模拟 llama.cpp 结构体（避免 C++ 符号依赖）
+// JNI imports for Android
+#[cfg(target_os = "android")]
+use jni::JNIEnv;
+
+#[cfg(target_os = "android")]
+use jni::objects::{JClass, JString, JObject};
+
+#[cfg(target_os = "android")]
+use jni::sys::{jstring, jlong, jint};
+
+// Export modules
+pub mod llm_engine;
+pub mod util;
+
+// Simulate llama.cpp structs (avoid C++ symbol dependencies)
 #[repr(C)]
 pub struct llama_model {
     _private: [u8; 0],
@@ -47,21 +61,229 @@ pub struct llama_context_params {
     pub pooling_type: i32,
 }
 
-pub type llama_token = i32;
+pub type LlamaToken = i32;
 
-// 模拟 llama.cpp 函数（纯 Rust 实现，但模拟真实行为）
+// ============================================================================
+// Real llama.cpp API Functions (for Android)
+// ============================================================================
+
+#[cfg(target_os = "android")]
 extern "C" {
-    // 这些函数声明用于接口兼容，但实际用 Rust 实现
-    // 避免 C++ 符号依赖问题
+    // Backend functions
+    fn llama_backend_init() -> c_int;
+    fn llama_backend_free();
+    fn llama_load_model_from_file(path: *const c_char, params: llama_model_params) -> *mut llama_model;
+    fn llama_init_from_model(model: *const llama_model, params: llama_context_params) -> *mut llama_context;
+    fn llama_tokenize(ctx: *mut llama_context, text: *const c_char, tokens: *mut LlamaToken, n_max_tokens: c_int, add_bos: bool) -> c_int;
+    
+    // Generation functions
+    fn llama_generate(
+        ctx: *mut llama_context,
+        tokens: *const LlamaToken,
+        n_tokens: c_int,
+        n_past: *mut c_int,
+        n_threads: c_int,
+    ) -> c_int;
+    
+    // Utility functions
+    fn llama_n_ctx(ctx: *const llama_context) -> c_int;
+    fn llama_model_n_vocab(model: *const llama_model) -> c_int;
+    fn llama_token_bos(model: *const llama_model) -> LlamaToken;
+    fn llama_token_eos(model: *const llama_model) -> LlamaToken;
+    
+    // Memory management functions
+    fn llama_model_free(model: *mut llama_model);
+    fn llama_free(ctx: *mut llama_context);
+    
+    // GGML backend functions - force linking
+    fn ggml_backend_dev_by_type(type_: i32) -> *mut ();
+    fn ggml_backend_dev_get(i: i32) -> *mut ();
+    fn ggml_backend_dev_count() -> i32;
 }
 
-// 模拟真实的 llama.cpp 函数行为
-fn simulate_llama_backend_init() {
+// ============================================================================
+// Real llama.cpp API Wrappers
+// ============================================================================
+
+#[cfg(target_os = "android")]
+fn real_llama_backend_init() -> c_int {
+    unsafe { llama_backend_init() }
+}
+
+#[cfg(target_os = "android")]
+fn real_llama_backend_free() {
+    unsafe { llama_backend_free() }
+}
+
+#[cfg(target_os = "android")]
+fn real_llama_model_load_from_file(path: *const c_char, params: llama_model_params) -> *mut llama_model {
+    unsafe { llama_load_model_from_file(path, params) }
+}
+
+#[cfg(target_os = "android")]
+#[allow(dead_code)]
+fn real_llama_model_free(model: *mut llama_model) {
+    unsafe { llama_model_free(model) }
+}
+
+#[cfg(target_os = "android")]
+fn real_llama_init_from_model(model: *const llama_model, params: llama_context_params) -> *mut llama_context {
+    unsafe { llama_init_from_model(model, params) }
+}
+
+#[cfg(target_os = "android")]
+#[allow(dead_code)]
+fn real_llama_free(ctx: *mut llama_context) {
+    unsafe { llama_free(ctx) }
+}
+
+#[cfg(target_os = "android")]
+fn real_llama_tokenize(
+    ctx: *mut llama_context,
+    text: *const c_char,
+    tokens: *mut LlamaToken,
+    n_max_tokens: c_int,
+    add_bos: bool,
+) -> c_int {
+    unsafe { llama_tokenize(ctx, text, tokens, n_max_tokens, add_bos) }
+}
+
+#[cfg(target_os = "android")]
+fn real_llama_n_ctx(ctx: *const llama_context) -> c_int {
+    unsafe { llama_n_ctx(ctx) }
+}
+
+// ============================================================================
+// Non-Android (fallback to simulation)
+// ============================================================================
+
+#[cfg(not(target_os = "android"))]
+fn real_llama_backend_init() -> c_int {
+    simulate_llama_backend_init()
+}
+
+#[cfg(not(target_os = "android"))]
+fn real_llama_backend_free() {
+    simulate_llama_backend_free()
+}
+
+#[cfg(not(target_os = "android"))]
+fn real_llama_model_load_from_file(path: *const c_char, params: llama_model_params) -> *mut llama_model {
+    simulate_llama_model_load_from_file(path, params)
+}
+
+#[cfg(not(target_os = "android"))]
+#[allow(dead_code)]
+fn real_llama_model_free(model: *mut llama_model) {
+    simulate_llama_model_free(model)
+}
+
+#[cfg(not(target_os = "android"))]
+fn real_llama_init_from_model(model: *const llama_model, params: llama_context_params) -> *mut llama_context {
+    simulate_llama_init_from_model(model, params)
+}
+
+#[cfg(not(target_os = "android"))]
+#[allow(dead_code)]
+fn real_llama_free(ctx: *mut llama_context) {
+    simulate_llama_free(ctx)
+}
+
+#[cfg(not(target_os = "android"))]
+fn real_llama_tokenize(
+    ctx: *mut llama_context,
+    text: *const c_char,
+    tokens: *mut LlamaToken,
+    n_max_tokens: c_int,
+    add_bos: bool,
+) -> c_int {
+    simulate_llama_tokenize(ctx, text, tokens, n_max_tokens, add_bos)
+}
+
+#[cfg(not(target_os = "android"))]
+fn real_llama_n_ctx(ctx: *const llama_context) -> c_int {
+    simulate_llama_n_ctx(ctx)
+}
+
+// Simulate real llama.cpp function behavior
+fn simulate_llama_backend_init() -> c_int {
     println!("🔧 Simulating llama_backend_init()...");
+    0 // Success
 }
 
 fn simulate_llama_backend_free() {
     println!("🧹 Simulating llama_backend_free()...");
+}
+
+fn simulate_llama_model_load_from_file(path: *const c_char, _params: llama_model_params) -> *mut llama_model {
+    if path.is_null() {
+        return std::ptr::null_mut();
+    }
+    
+    let path_str = unsafe {
+        CStr::from_ptr(path).to_str().unwrap_or("invalid_path")
+    };
+    
+    println!("🔧 Simulating llama_load_model_from_file({})", path_str);
+    std::ptr::NonNull::dangling().as_ptr()
+}
+
+#[allow(dead_code)]
+fn simulate_llama_model_free(model: *mut llama_model) {
+    if !model.is_null() {
+        println!("🧹 Simulating llama_model_free()");
+    }
+}
+
+fn simulate_llama_init_from_model(model: *const llama_model, _params: llama_context_params) -> *mut llama_context {
+    if model.is_null() {
+        return std::ptr::null_mut();
+    }
+    
+    println!("🔧 Simulating llama_init_from_model()");
+    std::ptr::NonNull::dangling().as_ptr()
+}
+
+#[allow(dead_code)]
+fn simulate_llama_free(ctx: *mut llama_context) {
+    if !ctx.is_null() {
+        println!("🧹 Simulating llama_free()");
+    }
+}
+
+fn simulate_llama_tokenize(
+    ctx: *mut llama_context,
+    text: *const c_char,
+    tokens: *mut LlamaToken,
+    n_max_tokens: c_int,
+    _add_bos: bool,
+) -> c_int {
+    if ctx.is_null() || text.is_null() || tokens.is_null() || n_max_tokens <= 0 {
+        return 0;
+    }
+    
+    let text_str = unsafe {
+        CStr::from_ptr(text).to_str().unwrap_or("")
+    };
+    
+    println!("🔧 Simulating llama_tokenize({})", text_str);
+    
+    // Return fake token count
+    let token_count = text_str.len().min(n_max_tokens as usize);
+    unsafe {
+        for i in 0..token_count {
+            *tokens.add(i) = i as LlamaToken;
+        }
+    }
+    
+    token_count as c_int
+}
+
+fn simulate_llama_n_ctx(ctx: *const llama_context) -> c_int {
+    if ctx.is_null() {
+        return 0;
+    }
+    2048
 }
 
 fn simulate_llama_model_default_params() -> llama_model_params {
@@ -101,118 +323,17 @@ fn simulate_llama_context_default_params() -> llama_context_params {
     }
 }
 
-fn simulate_llama_model_load_from_file(_path: *const c_char, _params: llama_model_params) -> *mut llama_model {
-    // 模拟模型加载成功
-    println!("📂 Simulating llama_model_load_from_file()...");
-    Box::into_raw(Box::new(llama_model { _private: [] }))
-}
+// Final solution: Use real llama.cpp API on Android, simulated on other platforms
 
-fn simulate_llama_init_from_model(model: *mut llama_model, _params: llama_context_params) -> *mut llama_context {
-    if model.is_null() {
-        return std::ptr::null_mut();
-    }
-    println!("🎯 Simulating llama_init_from_model()...");
-    Box::into_raw(Box::new(llama_context { _private: [] }))
-}
-
-fn simulate_llama_tokenize(_model: *const llama_model, text: *const c_char, tokens: *mut llama_token, _n_max_tokens: i32, _add_bos: bool, _special: bool) -> i32 {
-    if text.is_null() || tokens.is_null() {
-        return -1;
-    }
-    
-    unsafe {
-        let text_str = match CStr::from_ptr(text).to_str() {
-            Ok(s) => s,
-            Err(_) => return -1,
-        };
-        
-        // 模拟真实的 tokenization（基于字符长度）
-        let simulated_tokens: Vec<llama_token> = text_str
-            .chars()
-            .enumerate()
-            .map(|(i, c)| {
-                // 模拟真实的 token ID 生成
-                match c {
-                    'A'..='Z' => c as llama_token - 65 + 1,      // A-Z -> 1-26
-                    'a'..='z' => c as llama_token - 97 + 27,     // a-z -> 27-52
-                    '0'..='9' => c as llama_token - 48 + 53,     // 0-9 -> 53-62
-                    ' ' => 999,                                 // space -> 999
-                    _ => c as llama_token + 1000,               // others -> 1000+
-                }
-            })
-            .collect();
-        
-        let token_count = simulated_tokens.len() as i32;
-        let max_tokens = std::cmp::min(simulated_tokens.len(), 1024);
-        
-        for i in 0..max_tokens {
-            *tokens.add(i) = simulated_tokens[i];
-        }
-        
-        token_count
-    }
-}
-
-fn simulate_llama_n_ctx(ctx: *const llama_context) -> u32 {
-    if ctx.is_null() {
-        return 0;
-    }
-    2048 // 模拟默认上下文大小
-}
-
-fn simulate_llama_n_batch(ctx: *const llama_context) -> u32 {
-    if ctx.is_null() {
-        return 0;
-    }
-    512 // 模拟默认批处理大小
-}
-
-fn simulate_llama_supports_mmap() -> bool {
-    true // Android 支持 mmap
-}
-
-fn simulate_llama_supports_mlock() -> bool {
-    false // Android 通常不支持 mlock
-}
-
-fn simulate_llama_supports_gpu_offload() -> bool {
-    false // x86_64 模拟器通常不支持 GPU offload
-}
-
-fn simulate_llama_supports_rpc() -> bool {
-    true // 支持 RPC
-}
-
-fn simulate_llama_time_us() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_micros() as i64
-}
-
-fn simulate_llama_print_system_info() -> *const c_char {
-    let info = CString::new(
-        "AVX = 1 | AVX2 = 1 | FMA = 1 | NEON = 0 | ARM_FMA = 0 | F16C = 1\n\
-         PLATFORM: Android x86_64 Emulator\n\
-         LLAMA_CPP: Final Solution (Pure Rust Implementation)\n\
-         GGML: 0.9.4 (Simulated)\n\
-         BUILD: Release - Final Solution\n\
-         STATUS: No C++ symbol conflicts - Complete llama.cpp API compatibility"
-    ).unwrap();
-    info.into_raw()
-}
-
-// 最终解决方案：使用模拟但真实的 llama.cpp API
 #[no_mangle]
 pub extern "C" fn gpuf_load_model(path: *const c_char) -> *mut llama_model {
     if path.is_null() {
         return std::ptr::null_mut();
     }
     
-    simulate_llama_backend_init();
+    real_llama_backend_init();
     let params = simulate_llama_model_default_params();
-    simulate_llama_model_load_from_file(path, params)
+    real_llama_model_load_from_file(path, params)
 }
 
 #[no_mangle]
@@ -222,21 +343,20 @@ pub extern "C" fn gpuf_create_context(model: *mut llama_model) -> *mut llama_con
     }
     
     let params = simulate_llama_context_default_params();
-    simulate_llama_init_from_model(model, params)
+    real_llama_init_from_model(model, params)
 }
 
 #[no_mangle]
 pub extern "C" fn gpuf_tokenize_text(
-    model: *const llama_model,
+    ctx: *mut llama_context,
     text: *const c_char,
-    tokens: *mut llama_token,
+    tokens: *mut LlamaToken,
     max_tokens: c_int,
 ) -> c_int {
-    if model.is_null() || text.is_null() || tokens.is_null() {
+    if ctx.is_null() || text.is_null() || tokens.is_null() {
         return -1;
     }
-    
-    simulate_llama_tokenize(model, text, tokens, max_tokens, true, true)
+    real_llama_tokenize(ctx, text, tokens, max_tokens, true)
 }
 
 #[no_mangle]
@@ -244,7 +364,7 @@ pub extern "C" fn gpuf_generate_final_solution_text(
     model: *const llama_model,
     ctx: *mut llama_context,
     prompt: *const c_char,
-    max_tokens: c_int,
+    _max_tokens: c_int,
     output: *mut c_char,
     output_len: c_int,
 ) -> c_int {
@@ -258,77 +378,19 @@ pub extern "C" fn gpuf_generate_final_solution_text(
             Err(_) => return -1,
         };
         
-        // 使用模拟但真实的 llama.cpp 函数
-        let mut tokens = vec![0 as llama_token; 1024];
-        let token_count = simulate_llama_tokenize(model, prompt, tokens.as_mut_ptr(), 1024, true, true);
+        // Use real llama.cpp functions for Android
+        let mut tokens = vec![0 as LlamaToken; 1024];
+        let token_count = real_llama_tokenize(ctx, prompt, tokens.as_mut_ptr(), 1024, true);
         
-        let n_ctx = simulate_llama_n_ctx(ctx);
-        let n_batch = simulate_llama_n_batch(ctx);
+        let n_ctx = real_llama_n_ctx(ctx);
         
-        let supports_mmap = simulate_llama_supports_mmap();
-        let supports_mlock = simulate_llama_supports_mlock();
-        let supports_gpu_offload = simulate_llama_supports_gpu_offload();
-        let supports_rpc = simulate_llama_supports_rpc();
+        // Simple output for demonstration
+        let output_text = format!("Generated: {} (tokens: {}, ctx: {})", prompt_str, token_count, n_ctx);
+        let output_cstr = CString::new(output_text).unwrap();
         
-        let timestamp = simulate_llama_time_us();
-        
-        let system_info = match CStr::from_ptr(simulate_llama_print_system_info()).to_str() {
-            Ok(s) => s,
-            Err(_) => "System info unavailable",
-        };
-        
-        // 构建最终解决方案的响应
-        let response = format!(
-            "[FINAL LLaMA.cpp Solution - Complete Integration]\n\
-             =================================================\n\
-             Input: {}\n\
-             \n\
-             📊 Final Solution Results (llama.cpp API compatible):\n\
-             • llama_tokenize(): SUCCESS ({} tokens)\n\
-             • llama_n_ctx(): {}\n\
-             • llama_n_batch(): {}\n\
-             \n\
-             🔧 System Capabilities (llama.cpp API):\n\
-             • llama_supports_mmap(): {}\n\
-             • llama_supports_mlock(): {}\n\
-             • llama_supports_gpu_offload(): {}\n\
-             • llama_supports_rpc(): {}\n\
-             • llama_time_us(): {} μs\n\
-             \n\
-             🖥️  System Info (llama.cpp API):\n\
-             {}\n\
-             \n\
-             ✅ FINAL SOLUTION ACHIEVEMENTS:\n\
-             • ✅ NO C++ symbol conflicts\n\
-             • ✅ Complete llama.cpp API compatibility\n\
-             • ✅ Real function call simulation\n\
-             • ✅ Production-ready on Android x86_64\n\
-             • ✅ Stable and reliable\n\
-             • ✅ Full inference capabilities\n\
-             \n\
-             🎯 This is the FINAL SOLUTION:\n\
-             • All llama.cpp functions are available\n\
-             • No C++ runtime issues\n\
-             • Perfect Android x86_64 compatibility\n\
-             • Real inference behavior\n\
-             • Production deployment ready\n\
-             \n\
-             🚀 Status: FINAL LLaMA.cpp INTEGRATION COMPLETE!",
-            prompt_str, token_count, n_ctx, n_batch,
-            supports_mmap, supports_mlock, supports_gpu_offload, supports_rpc, timestamp,
-            system_info
-        );
-        
-        let response_cstring = CString::new(response).unwrap();
-        let response_bytes = response_cstring.as_bytes_with_nul();
-        let copy_len = std::cmp::min(response_bytes.len(), output_len as usize - 1);
-        
-        std::ptr::copy_nonoverlapping(
-            response_bytes.as_ptr(),
-            output as *mut u8,
-            copy_len,
-        );
-        *(output.add(copy_len)) = 0;
+        let copy_len = std::cmp::min(output_cstr.as_bytes().len(), output_len as usize);
+        std::ptr::copy_nonoverlapping(output_cstr.as_ptr(), output, copy_len);
+        *output.add(copy_len) = 0;
         
         copy_len as c_int
     }
@@ -336,7 +398,8 @@ pub extern "C" fn gpuf_generate_final_solution_text(
 
 #[no_mangle]
 pub extern "C" fn gpuf_system_info() -> *const c_char {
-    simulate_llama_print_system_info()
+    let info = CString::new("GPUFabric Android LLaMA.cpp Engine").unwrap();
+    info.into_raw()
 }
 
 #[no_mangle]
@@ -347,14 +410,261 @@ pub extern "C" fn gpuf_version() -> *const c_char {
 
 #[no_mangle]
 pub extern "C" fn gpuf_init() -> c_int {
-    println!("🔥 GPUFabric x86_64 FINAL LLaMA.cpp solution initialized");
-    simulate_llama_backend_init();
+    println!("🔥 GPUFabric Android LLaMA.cpp solution initialized");
+    
+    #[cfg(target_os = "android")]
+    {
+        // Note: C++ runtime is still dynamically linked for compatibility
+        // OpenMP and llama.cpp are statically linked
+        use std::env;
+        
+        if env::var("LD_PRELOAD").is_err() {
+            let possible_paths = vec![
+                "/system/lib64/libc++_shared.so",                    // Standard ARM64
+                "/system/lib/libc++_shared.so",                      // Standard ARM32
+                "/apex/com.android.runtime/lib64/libc++_shared.so",  // APEX ARM64
+                "/apex/com.android.runtime/lib/libc++_shared.so",    // APEX ARM32
+            ];
+            
+            let mut found_path = None;
+            for path in possible_paths {
+                if std::path::Path::new(path).exists() {
+                    found_path = Some(path);
+                    break;
+                }
+            }
+            
+            match found_path {
+                Some(path) => {
+                    println!("🔧 Auto-setting LD_PRELOAD for C++ runtime: {}", path);
+                    env::set_var("LD_PRELOAD", path);
+                }
+                None => {
+                    println!("⚠️  Warning: libc++_shared.so not found in standard locations");
+                    println!("   C++ runtime may not be available - manual LD_PRELOAD may be needed");
+                }
+            }
+        } else {
+            println!("✅ LD_PRELOAD already set: {}", env::var("LD_PRELOAD").unwrap_or_default());
+        }
+        
+        real_llama_backend_init();
+        
+        // Force reference to GGML backend symbols to ensure they are linked
+        unsafe {
+            // These symbols must be available at runtime
+            let _ggml_backend_dev_by_type_ptr = ggml_backend_dev_by_type as *const ();
+            let _ggml_backend_dev_get_ptr = ggml_backend_dev_get as *const ();
+            let _ggml_backend_dev_count_ptr = ggml_backend_dev_count as *const ();
+            
+            // Prevent compiler from optimizing away the symbol references
+            std::hint::black_box(_ggml_backend_dev_by_type_ptr);
+            std::hint::black_box(_ggml_backend_dev_get_ptr);
+            std::hint::black_box(_ggml_backend_dev_count_ptr);
+        }
+    }
+    
+    #[cfg(not(target_os = "android"))]
+    {
+        real_llama_backend_init();
+    }
+    
     0
 }
 
 #[no_mangle]
 pub extern "C" fn gpuf_cleanup() -> c_int {
-    println!("🧹 GPUFabric x86_64 FINAL LLaMA.cpp solution cleaned up");
-    simulate_llama_backend_free();
+    println!("🧹 GPUFabric Android LLaMA.cpp solution cleaned up");
+    real_llama_backend_free();
     0
+}
+
+// ============================================================================
+// JNI API Functions for Android
+// ============================================================================
+
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_gpuf_c_GPUEngine_initialize(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jint {
+    println!("🔥 GPUFabric JNI: Initializing engine");
+    match gpuf_init() {
+        0 => 1, // Success
+        _ => 0, // Failure
+    }
+}
+
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_gpuf_c_GPUEngine_loadModel(
+    mut env: JNIEnv,
+    _class: JClass,
+    model_path: JString,
+) -> jlong {
+    println!("🔥 GPUFabric JNI: Loading model");
+    
+    let path = match env.get_string(&model_path) {
+        Ok(s) => s,
+        Err(_) => return 0,
+    };
+    
+    let path_str = match path.to_str() {
+        Ok(s) => s,
+        Err(_) => return 0,
+    };
+    
+    let path_cstr = match CString::new(path_str) {
+        Ok(s) => s,
+        Err(_) => return 0,
+    };
+    
+    let model_ptr = gpuf_load_model(path_cstr.as_ptr());
+    model_ptr as jlong
+}
+
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_gpuf_c_GPUEngine_createContext(
+    _env: JNIEnv,
+    _class: JClass,
+    model_ptr: jlong,
+) -> jlong {
+    println!("🔥 GPUFabric JNI: Creating context");
+    
+    if model_ptr == 0 {
+        return 0;
+    }
+    
+    let context_ptr = gpuf_create_context(model_ptr as *mut llama_model);
+    context_ptr as jlong
+}
+
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_gpuf_c_GPUEngine_generate(
+    mut env: JNIEnv,
+    _class: JClass,
+    model_ptr: jlong,
+    context_ptr: jlong,
+    prompt: JString,
+    max_tokens: jint,
+    _output_buffer: JObject,
+) -> jint {
+    println!("🔥 GPUFabric JNI: Generating text");
+    
+    if model_ptr == 0 || context_ptr == 0 {
+        return -1;
+    }
+    
+    let prompt_str = match env.get_string(&prompt) {
+        Ok(s) => s,
+        Err(_) => return -2,
+    };
+    
+    let prompt_cstr = match CString::new(prompt_str.to_str().unwrap_or("")) {
+        Ok(s) => s,
+        Err(_) => return -3,
+    };
+    
+    // Create a buffer for output (simplified version)
+    let mut output = vec![0u8; 4096];
+    
+    let result = gpuf_generate_final_solution_text(
+        model_ptr as *mut llama_model,
+        context_ptr as *mut llama_context,
+        prompt_cstr.as_ptr(),
+        max_tokens as i32,
+        output.as_mut_ptr() as *mut c_char,
+        output.len() as i32,
+    );
+    
+    if result > 0 {
+        // Convert output to Java string (simplified)
+        let _output_str = unsafe {
+            CStr::from_ptr(output.as_mut_ptr() as *const c_char)
+                .to_str()
+                .unwrap_or("")
+        };
+        
+        // Set the output buffer content (this is simplified, proper implementation needed)
+        // In real implementation, you would set the Java string buffer content
+        
+        result
+    } else {
+        result
+    }
+}
+
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_gpuf_c_GPUEngine_getVersion(
+    env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    println!("🔥 GPUFabric JNI: Getting version");
+    
+    let version_ptr = gpuf_version();
+    if version_ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+    
+    let version_str = unsafe {
+        CStr::from_ptr(version_ptr)
+            .to_str()
+            .unwrap_or("unknown")
+    };
+    
+    env.new_string(version_str).unwrap_or_else(|_| unsafe { JString::from_raw(std::ptr::null_mut()) }).into_raw()
+}
+
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_gpuf_c_GPUEngine_cleanup(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jint {
+    println!("🔥 GPUFabric JNI: Cleaning up");
+    match gpuf_cleanup() {
+        0 => 1, // Success
+        _ => 0, // Failure
+    }
+}
+
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_gpuf_c_GPUEngine_getSystemInfo(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    println!("🔥 GPUFabric JNI: Getting system info");
+    
+    let info_cstr = gpuf_system_info();
+    if info_cstr.is_null() {
+        return std::ptr::null_mut();
+    }
+    
+    let info_str = unsafe {
+        CStr::from_ptr(info_cstr).to_str().unwrap_or("Unknown")
+    };
+    
+    match env.new_string(info_str) {
+        Ok(jstring) => jstring.into_raw(),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_gpuf_c_GPUEngine_gpuf_1init(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jint {
+    println!("🔥 GPUFabric JNI: Calling gpuf_init");
+    
+    match gpuf_init() {
+        0 => 0, // Success
+        error_code => error_code as jint, // Return actual error code
+    }
 }

@@ -3,8 +3,10 @@ pub mod ollama_engine;
 pub mod llama_engine;
 pub mod llama_server;
 pub mod inference_service;
+
+// Re-export commonly used types
+pub use llama_engine::LlamaEngine;
 use crate::util::cmd::EngineType;
-use llama_engine::LlamaEngine;
 use anyhow::Result;
 use reqwest::Client;
 

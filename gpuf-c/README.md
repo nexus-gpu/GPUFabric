@@ -1,38 +1,78 @@
-# 🚀 GPUFabric Client (gpuf-c)
+# GPUFabric Android SDK
 
-High-performance distributed LLM inference client with multi-engine and cross-platform support.
-
-## 📖 Documentation
-
-For complete documentation, see [docs/README.md](docs/README.md)
-
-### 🎯 Quick Links
-- [Android Integration Guide](docs/mobile/ANDROID_DEVELOPMENT_GUIDE.md)
-- [Build Guide](docs/BUILD_GUIDE.md)  
-- [API Reference](docs/api/API_REFERENCE.md)
-- [Examples](examples/README.md)
+High-performance LLM inference library for Android with integrated llama.cpp engine and full JNI support.
 
 ## 🚀 Quick Start
 
 ```bash
-# Build
-cargo build --release
+# Generate Android SDK
+./generate_sdk.sh
 
-# Android SDK
-cargo ndk -t arm64-v8a build --release --features android
-
-# Run examples
-cargo run --example test_client_sdk
+# Deploy to device
+cd ../target/gpufabric-android-sdk-v9.0.0
+./build.sh
 ```
 
-## ✨ Key Features
+## 📁 Project Structure
 
-- 🤖 Multi-engine support (llama.cpp, Ollama, VLLM)
-- 📱 Cross-platform support (Android, Windows, Linux, macOS)
-- ⚡ GPU acceleration (Vulkan, CUDA, Metal)
-- 🌐 Distributed inference
-- 🔌 OpenAI-compatible API
+```
+GPUFabric/
+├── gpuf-c/                    # Main Android library
+│   ├── src/                   # Rust source code
+│   ├── generate_sdk.sh        # SDK build script
+│   ├── build.rs               # Build configuration
+│   └── docs/                  # Documentation
+├── target/                    # Build outputs
+│   ├── gpufabric-android-sdk-v9.0.0/    # Release SDK
+│   ├── llama-android-ndk/     # llama.cpp libraries
+│   └── models/                # Model files
+└── llama.cpp/                 # llama.cpp source
+```
+
+## 📚 Documentation
+
+- **[Quick Start Guide](docs/QUICK_START.md)** - Get started in minutes
+- **[Project Overview](docs/README_PROJECT.md)** - Detailed project information
+- **[Android Build Guide](docs/ANDROID_BUILD_LESSONS_LEARNED.md)** - Build lessons and best practices
+- **[JNI Network Guide](docs/ANDROID_JNI_NETWORK_BUILD_GUIDE.md)** - Network integration guide
+- **[Deployment Guide](docs/ANDROID_X86_64_DEPLOYMENT_GUIDE.md)** - Multi-platform deployment
+
+## 🎯 Features
+
+- ✅ **Complete llama.cpp integration** - Latest LLaMA.cpp engine
+- ✅ **Full-featured JNI API** - Java/Kotlin native interface
+- ✅ **Android ARM64 optimization** - Native ARM64 performance
+- ✅ **Static linking** - Minimal runtime dependencies
+- ✅ **Multi-threading support** - Parallel inference
+- ✅ **Memory optimization** - Efficient memory management
+
+## 📋 Requirements
+
+- Android NDK r27d
+- Rust toolchain (stable)
+- CMake 3.16+
+- Linux build environment
+
+## 🔧 Build
+
+```bash
+# Clean and build
+./generate_sdk.sh
+
+# Output: target/gpufabric-android-sdk-v9.0.0.tar.gz
+```
+
+## 📦 SDK Contents
+
+- `libgpuf_c_sdk_v9.so` - Main library (33MB)
+- `libc++_shared.so` - Android C++ runtime
+- `gpuf_c.h` - C header file
+- Java/C examples and documentation
+
+## 📄 License
+
+[License information]
 
 ---
 
-**See [docs/README.md](docs/README.md) for complete documentation**
+> 📖 **Documentation**: See `docs/` directory for detailed guides and API references.

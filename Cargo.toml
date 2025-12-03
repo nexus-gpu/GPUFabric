@@ -24,9 +24,14 @@ bincode = { version = "2.0.1", features = ["serde"] }
 hex = "0.4"
 
 [profile.release]
-lto = true
-debug = true  
-opt-level ="z"
+# Aggressive optimization for minimal size
+opt-level = "z"     # Optimize for size
+lto = true          # Link-time optimization
+codegen-units = 1   # Maximum optimization
+strip = true        # Remove debug symbols
+panic = "abort"     # Reduce panic handling code
+overflow-checks = false # Remove overflow checks
+debug-assertions = false
 
 [profile.dev]
 debug = true  

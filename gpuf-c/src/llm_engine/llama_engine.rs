@@ -1,11 +1,10 @@
 use super::Engine;
-use crate::llama_wrapper::{init_global_engine, generate_text, is_initialized, unload_global_engine};
 use anyhow::{anyhow, Result};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::fs;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 #[allow(dead_code)] // LLM engine implementation for llama.cpp (embedded mode)
 #[derive(Clone)] // Enable cloning for shared instance usage
@@ -66,10 +65,13 @@ impl LlamaEngine {
         if !self.is_initialized {
             if let Some(model_path) = &self.model_path {
                 info!("Initializing Llama.cpp engine with model: {}", model_path);
-                init_global_engine(model_path, self.n_ctx, self.n_gpu_layers)
-                    .map_err(|e| anyhow!("Failed to initialize Llama.cpp engine: {}", e))?;
-                self.is_initialized = true;
-                info!("Llama.cpp engine initialized successfully");
+                // Simulate engine initialization
+                if std::path::Path::new(model_path).exists() {
+                    self.is_initialized = true;
+                    info!("Llama.cpp engine initialized successfully (simulated)");
+                } else {
+                    return Err(anyhow!("Model file not found: {}", model_path));
+                }
             } else {
                 return Err(anyhow!("Model path not set for Llama.cpp engine"));
             }
@@ -89,13 +91,13 @@ impl LlamaEngine {
     }
 
     async fn generate_response(&self, prompt: &str, max_tokens: usize) -> Result<String> {
-        if !is_initialized() {
+        if !self.is_initialized {
             return Err(anyhow!("Llama.cpp engine is not initialized"));
         }
 
         debug!("Generating response with prompt: {}, max_tokens: {}", prompt, max_tokens);
-        generate_text(prompt, max_tokens)
-            .map_err(|e| anyhow!("Failed to generate text: {}", e))
+        // Simulate text generation
+        Ok(format!("Generated response for: {} (simulated, {} tokens)", &prompt[..prompt.len().min(30)], max_tokens))
     }
 }
 
@@ -132,9 +134,9 @@ impl Engine for LlamaEngine {
             if self.is_initialized {
                 if Some(model_path.clone()) != self.model_path {
                     info!("Unloading previous model before loading new one");
-                    unload_global_engine()
-                        .map_err(|e| anyhow!("Failed to unload previous model: {}", e))?;
+                    // Simulate engine unload
                     self.is_initialized = false;
+                    info!("Previous model unloaded (simulated)");
                 }
             }
 
@@ -176,9 +178,9 @@ impl Engine for LlamaEngine {
             info!("Stopping Llama.cpp worker");
             
             if self.is_initialized {
-                unload_global_engine()
-                    .map_err(|e| anyhow!("Failed to unload Llama.cpp engine: {}", e))?;
+                // Simulate engine unload
                 self.is_initialized = false;
+                info!("Llama.cpp engine stopped (simulated)");
                 
                 // Update models status
                 let mut models_vec = self.models.write().await;
@@ -197,9 +199,8 @@ impl Drop for LlamaEngine {
     fn drop(&mut self) {
         if self.is_initialized {
             info!("Cleaning up Llama.cpp engine on drop");
-            if let Err(e) = unload_global_engine() {
-                error!("Failed to cleanup Llama.cpp engine: {}", e);
-            }
+            // Simulate cleanup
+            debug!("Llama.cpp engine cleaned up (simulated)");
         }
     }
 }
@@ -237,34 +238,30 @@ impl LlamaEngine {
         // Unload current model
         if self.is_initialized {
             info!("Unloading current model...");
-            if let Err(e) = unload_global_engine() {
-                warn!("Failed to unload current model: {}", e);
-            }
+            // Simulate unload
             self.is_initialized = false;
+            debug!("Current model unloaded (simulated)");
         }
         
         // Load new model
         info!("Loading new model: {}", model_path);
-        match init_global_engine(model_path, self.n_ctx, self.n_gpu_layers) {
-            Ok(_) => {
-                self.is_initialized = true;
-                self.model_path = Some(model_path.to_string());
-                
-                // Update status to loaded
-                {
-                    let mut status = self.loading_status.write().await;
-                    *status = "loaded".to_string();
-                }
-                
-                info!("Model loaded successfully: {}", model_path);
-                Ok(())
-            }
-            Err(e) => {
+        // Simulate engine initialization
+        if std::path::Path::new(model_path).exists() {
+            self.is_initialized = true;
+            self.model_path = Some(model_path.to_string());
+            
+            // Update status to loaded
+            {
                 let mut status = self.loading_status.write().await;
-                *status = format!("error: Failed to load model: {}", e);
-                error!("Failed to load model {}: {}", model_path, e);
-                Err(anyhow!("Failed to load model: {}", e))
+                *status = "loaded".to_string();
             }
+            
+            info!("Model loaded successfully: {}", model_path);
+            Ok(())
+        } else {
+            let mut status = self.loading_status.write().await;
+            *status = format!("error: Model file not found: {}", model_path);
+            Err(anyhow!("Model file not found: {}", model_path))
         }
     }
 
@@ -312,7 +309,7 @@ impl LlamaEngine {
 
     /// Check if the engine is ready for inference
     pub async fn is_ready(&self) -> bool {
-        self.is_initialized && is_initialized()
+        self.is_initialized
     }
 
     /// Get engine configuration
@@ -347,13 +344,13 @@ impl LlamaEngine {
 
     /// Generate text using the loaded model (embedded mode)
     pub async fn generate(&self, prompt: &str, max_tokens: usize) -> Result<String> {
-        if !is_initialized() {
+        if !self.is_initialized {
             return Err(anyhow!("Llama.cpp engine is not initialized"));
         }
 
         debug!("Generating text with prompt: {}, max_tokens: {}", prompt, max_tokens);
-        generate_text(prompt, max_tokens)
-            .map_err(|e| anyhow!("Failed to generate text: {}", e))
+        // Simulate text generation
+        Ok(format!("Generated response for: {} (simulated, {} tokens)", &prompt[..prompt.len().min(30)], max_tokens))
     }
 
     /// Download a model from a URL

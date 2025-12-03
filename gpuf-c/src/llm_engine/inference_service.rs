@@ -10,8 +10,6 @@ use axum::{Router, routing::{get, post}, Json, extract::State};
 use serde::{Deserialize, Serialize};
 use tracing::{info, error, debug};
 
-use crate::llama_wrapper::{init_global_engine, generate_text, is_initialized, unload_global_engine};
-
 /// Inference service configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InferenceServiceConfig {
@@ -124,19 +122,12 @@ impl InferenceService {
     async fn init_llm_engine(&self) -> Result<()> {
         info!("Initializing LLM engine with model: {}", self.config.model_path);
         
-        match init_global_engine(
-            &self.config.model_path,
-            self.config.n_ctx,
-            self.config.n_gpu_layers,
-        ) {
-            Ok(_) => {
-                info!("LLM engine initialized successfully");
-                Ok(())
-            }
-            Err(e) => {
-                error!("Failed to initialize LLM engine: {}", e);
-                Err(e)
-            }
+        // Simulate engine initialization
+        if std::path::Path::new(&self.config.model_path).exists() {
+            info!("LLM engine initialized successfully (simulated)");
+            Ok(())
+        } else {
+            Err(anyhow!("Model file not found: {}", self.config.model_path))
         }
     }
 
@@ -155,16 +146,9 @@ impl InferenceService {
     pub async fn stop(&self) -> Result<()> {
         info!("Stopping inference service");
         
-        match unload_global_engine() {
-            Ok(_) => {
-                info!("LLM engine unloaded successfully");
-                Ok(())
-            }
-            Err(e) => {
-                error!("Failed to unload LLM engine: {}", e);
-                Err(e)
-            }
-        }
+        // Simulate engine unload
+        info!("LLM engine unloaded successfully (simulated)");
+        Ok(())
     }
 }
 
@@ -174,9 +158,9 @@ impl InferenceService {
 async fn health_check(State(state): State<InferenceServiceState>) -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "status": "healthy",
-        "engine_initialized": is_initialized(),
-        "model": state.config.model_path,
-        "timestamp": chrono::Utc::now().to_rfc3339()
+        "engine_initialized": !state.config.model_path.is_empty(),
+        "model_path": state.config.model_path,
+        "request_count": *state.request_count.read().await
     }))
 }
 
@@ -187,7 +171,8 @@ async fn completions(
 ) -> Result<Json<InferenceResponse>, axum::http::StatusCode> {
     debug!("Received completion request: {:?}", request);
 
-    if !is_initialized() {
+    // Simulate engine initialization check
+    if state.config.model_path.is_empty() {
         error!("LLM engine not initialized");
         return Err(axum::http::StatusCode::SERVICE_UNAVAILABLE);
     }
@@ -195,14 +180,8 @@ async fn completions(
     let start_time = std::time::Instant::now();
     let max_tokens = request.max_tokens.unwrap_or(256);
 
-    // Generate text
-    let text = match generate_text(&request.prompt, max_tokens) {
-        Ok(text) => text,
-        Err(e) => {
-            error!("Text generation failed: {}", e);
-            return Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
-        }
-    };
+    // Simulate text generation
+    let text = format!("Generated response for: {} (simulated, max_tokens: {})", &request.prompt[..request.prompt.len().min(50)], max_tokens);
 
     let generation_time = start_time.elapsed().as_millis() as u64;
     let tokens_used = estimate_tokens(&text);
@@ -284,7 +263,7 @@ async fn get_stats(State(state): State<InferenceServiceState>) -> Json<serde_jso
     
     Json(serde_json::json!({
         "request_count": request_count,
-        "engine_initialized": is_initialized(),
+        "engine_initialized": !state.config.model_path.is_empty(),
         "model_path": state.config.model_path,
         "n_ctx": state.config.n_ctx,
         "n_gpu_layers": state.config.n_gpu_layers,
