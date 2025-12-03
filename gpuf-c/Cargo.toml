@@ -59,7 +59,6 @@ sysinfo = "0.37.0"
 log = "0.4"
 reqwest = { version = "0.12.5", default-features = false, features = ["json", "rustls-tls", "stream"] }
 tokio-rustls = { workspace = true }
-chrono = { version = "0.4.38", features = ["serde"] }
 
 # Optional Vulkan dependencies
 ash = { version = "0.37", optional = true }
@@ -101,7 +100,6 @@ cocoa = "0.25"
 android_logger = "0.13"
 chrono = { version = "0.4.38", default-features = false, features = ["clock", "serde"] }
 once_cell = "1.19"
-jni = "0.21"
 
 [features]
 default = ["cpu"]
@@ -134,25 +132,25 @@ tempfile = "3.3"
 cbindgen = "0.26"
 
 [target.aarch64-linux-android]
-rustflags = []
+rustflags = ["-Clink-arg=-Wl,--icf=safe", "-Clink-arg=-Wl,--gc-sections"]
 
 [target.x86_64-linux-android]
-rustflags = []
+rustflags = ["-Clink-arg=-Wl,--icf=safe", "-Clink-arg=-Wl,--gc-sections"]
 
 [target.armv7-linux-androideabi]
-rustflags = []
+rustflags = ["-Clink-arg=-Wl,--icf=safe", "-Clink-arg=-Wl,--gc-sections"]
 
 [target.i686-linux-android]
-rustflags = []
+rustflags = ["-Clink-arg=-Wl,--icf=safe", "-Clink-arg=-Wl,--gc-sections"]
 
 [profile.release]
-# Conservative optimization for Android compatibility
-opt-level = 3        # Standard optimization
-lto = false          # Disable LTO to avoid ELF section issues
-codegen-units = 16   # Allow more units for faster compilation
-strip = false        # Don't strip to preserve ELF structure
-panic = "abort"      # Use abort for smaller binary size
-overflow-checks = false # Remove overflow checks for performance
+# Aggressive optimization for minimal size
+opt-level = "z"     # Optimize for size
+lto = true          # Link-time optimization
+codegen-units = 1   # Maximum optimization
+strip = true        # Remove debug symbols
+panic = "abort"     # Reduce panic handling code
+overflow-checks = false # Remove overflow checks
 
 [profile.release.package.gpuf-c]
 # Strip symbols but preserve JNI exports

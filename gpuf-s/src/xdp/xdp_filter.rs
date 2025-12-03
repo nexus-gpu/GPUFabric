@@ -3,12 +3,14 @@ use aya::{maps::HashMap, Ebpf, EbpfLoader};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+#[allow(dead_code)] // Experimental XDP implementation for high-performance packet filtering
 pub struct XdpFilter {
     bpf: Arc<Mutex<Ebpf>>,
 }
 
 impl XdpFilter {
     
+    #[allow(dead_code)] // Experimental XDP implementation for high-performance packet filtering
     pub async fn new(interface: &str, obj_path: &str) -> Result<Self> {
         let mut bpf = EbpfLoader::new()
         .load_file(obj_path)
@@ -28,6 +30,8 @@ impl XdpFilter {
             bpf: Arc::new(Mutex::new(bpf)),
         })
     }
+    
+    #[allow(dead_code)] // Experimental XDP implementation for high-performance packet filtering
     pub async fn add_api_key(&self, key: &[u8]) -> Result<()> {
         let mut bpf = self.bpf.lock().await;
         // corresponding eBPF map key length is 16
@@ -43,6 +47,7 @@ impl XdpFilter {
         Ok(())
     }
 
+    #[allow(dead_code)] // Experimental XDP implementation for high-performance packet filtering
     pub async fn remove_api_key(&self, key: &[u8]) -> Result<()> {
         let mut bpf = self.bpf.lock().await;
         let mut api_keys: HashMap<_, [u8; 16], u8> =

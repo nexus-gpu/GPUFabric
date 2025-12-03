@@ -163,6 +163,7 @@ impl ServerState {
     }
 
     #[cfg(target_os = "linux")]
+    #[allow(dead_code)] // Experimental io_uring implementation for performance optimization
    pub async fn handle_proxy_connections_uring(
         self: Arc<Self>,
         listener: TcpListener,
@@ -218,6 +219,7 @@ impl ServerState {
 }
 
 #[cfg(target_os = "linux")]
+#[allow(dead_code)] // Experimental io_uring implementation for performance optimization
 async fn route_public_connection_uring(
     _user_stream: UringTcpStream,
     _active_clients: ActiveClients,
@@ -233,6 +235,7 @@ async fn route_public_connection_uring(
 }
 
 #[cfg(target_os = "linux")]
+#[allow(dead_code)] // Experimental io_uring implementation for performance optimization
 async fn parse_request_uring(_user_stream: UringTcpStream) -> Result<()> {
     // TODO: Implement uring version of parse_request
     info!("Parsing request with io_uring (not yet implemented)");

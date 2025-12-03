@@ -77,5 +77,39 @@ fn main() {
         println!("cargo:rustc-link-lib=omp");
     }
     
+    // For Android, link the static llama.cpp library
+    if target_os == "android" {
+        println!("cargo:warning=Linking static llama.cpp library for Android...");
+        
+        // Get the absolute path to the llama library
+        let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
+        let llama_lib_dir = PathBuf::from(&manifest_dir).join("llama-android-ndk");
+        
+        // Use absolute paths for Android NDK
+        let ndk_root = env::var("ANDROID_NDK_ROOT").unwrap_or_else(|_| "/home/jack/android-ndk-r27d".to_string());
+        let sysroot = format!("{}/toolchains/llvm/prebuilt/linux-x86_64/sysroot", ndk_root);
+        let lib_path = format!("{}/usr/lib/aarch64-linux-android/28", sysroot);
+        
+        // Add Android system library paths first
+        println!("cargo:rustc-link-search=native={}", lib_path);
+        println!("cargo:rustc-link-search=native={}/usr/lib/aarch64-linux-android", sysroot);
+        
+        // Link system libraries first
+        println!("cargo:rustc-link-lib=log");
+        println!("cargo:rustc-link-lib=dl");
+        println!("cargo:rustc-link-lib=m");
+        println!("cargo:rustc-link-lib=c++_shared");
+        
+        // Link the static library with whole-archive - each as separate argument
+        let llama_lib_path = llama_lib_dir.join("libllama.a");
+        println!("cargo:rustc-link-arg=-Wl,--whole-archive,{},--no-whole-archive", llama_lib_path.display());
+        
+        // Force export of dynamic symbols
+        println!("cargo:rustc-link-arg=-Wl,--export-dynamic");
+        
+        println!("cargo:warning=Linked static llama.cpp Android library at: {}", llama_lib_dir.display());
+    }
+    
     println!("cargo:rerun-if-changed=src/lib.rs");
+    println!("cargo:rerun-if-changed=build.rs");
 }
