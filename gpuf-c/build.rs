@@ -117,6 +117,21 @@ fn main() {
         
         // Extract the critical backend registration object file and link it directly
         let ggml_backend_reg_obj = llama_lib_dir.join("ggml-backend-reg.cpp.o");
+        
+        // 🆕 Add multimodal libraries
+        let mtmd_lib_path = llama_lib_dir.join("libmtmd.a");
+        println!("cargo:warning=Looking for libmtmd.a at: {}", mtmd_lib_path.display());
+        println!("cargo:warning=Directory exists: {}", llama_lib_dir.exists());
+        println!("cargo:warning=File exists: {}", mtmd_lib_path.exists());
+        
+        // Check if multimodal libraries exist
+        let has_multimodal = mtmd_lib_path.exists(); // Only check libmtmd.a (clip is included)
+        if has_multimodal {
+            println!("cargo:warning=Found libmtmd - enabling multimodal support");
+        } else {
+            println!("cargo:warning=libmtmd not found - multimodal support disabled");
+            println!("cargo:warning=Expected at: {}", mtmd_lib_path.display());
+        }
         if !ggml_backend_reg_obj.exists() {
             // Extract the object file if it doesn't exist
             println!("cargo:warning=Extracting ggml-backend-reg.cpp.o from libggml.a");

@@ -86,6 +86,11 @@ clean_build() {
     
     # Clean llama-android-ndk from target directory
     if [ -d "$WORKSPACE_ROOT/target/llama-android-ndk" ]; then
+        # 🆕 Preserve libmtmd.a before cleaning
+        if [ -f "$WORKSPACE_ROOT/target/llama-android-ndk/libmtmd.a" ]; then
+            echo "🔧 Preserving libmtmd.a before clean..."
+            cp "$WORKSPACE_ROOT/target/llama-android-ndk/libmtmd.a" "/tmp/libmtmd_backup.a"
+        fi
         rm -rf "$WORKSPACE_ROOT/target/llama-android-ndk"
     fi
     
@@ -97,13 +102,16 @@ clean_build() {
     handle_success "Cleanup completed"
 }
 
-# Build Rust Static Library
+# Build Rust Static Library with static linking for Android compatibility
 build_rust_library() {
     handle_step "Building Rust static library..."
     
     cd "$PROJECT_ROOT"
     
-    cargo rustc --target $TARGET_ARCH --release --lib --crate-type=staticlib
+    echo "🔧 Using static C++ runtime for better Android compatibility..."
+    cargo rustc --target $TARGET_ARCH --release --lib --crate-type=staticlib \
+        --features android \
+        -- -C link-arg=-static-libstdc++ -C link-arg=-static-libgcc
     
     if [ $? -ne 0 ]; then
         handle_error "Rust library build failed"
@@ -200,7 +208,7 @@ build_llama_cpp_from_source() {
     cd build-android
     
     # Configure CMake
-    echo "📋 Configuring CMake..."
+    echo "📋 Configuring CMake with multimodal support..."
     cmake .. \
         -DCMAKE_TOOLCHAIN_FILE="$NDK_ROOT/build/cmake/android.toolchain.cmake" \
         -DANDROID_ABI="arm64-v8a" \
@@ -212,6 +220,7 @@ build_llama_cpp_from_source() {
         -DLLAMA_BUILD_SERVER=OFF \
         -DLLAMA_STATIC=ON \
         -DLLAMA_CURL=OFF \
+        -DLLAMA_BUILD_MTMD=ON \
         -DCMAKE_C_FLAGS="-O3 -fno-finite-math-only -DNDEBUG" \
         -DCMAKE_CXX_FLAGS="-O3 -fno-finite-math-only -DNDEBUG"
     
@@ -231,6 +240,20 @@ build_llama_cpp_from_source() {
     echo "📦 Copying generated static libraries..."
     cp src/libllama.a "$LLAMA_ANDROID_NDK_DIR/"
     cp ggml/src/libggml*.a "$LLAMA_ANDROID_NDK_DIR/"
+    
+    # 🆕 Copy multimodal libraries if they exist
+    if [ -f "tools/mtmd/libmtmd.a" ]; then
+        echo "🎨 Copying multimodal libraries..."
+        cp tools/mtmd/libmtmd.a "$LLAMA_ANDROID_NDK_DIR/"
+        echo "✅ libmtmd.a copied successfully"
+    elif [ -f "../build-android/tools/mtmd/libmtmd.a" ]; then
+        echo "🎨 Copying multimodal libraries from build directory..."
+        cp ../build-android/tools/mtmd/libmtmd.a "$LLAMA_ANDROID_NDK_DIR/"
+        echo "✅ libmtmd.a copied successfully"
+    else
+        echo "⚠️ libmtmd.a not found - multimodal support disabled"
+        echo "   Expected at: tools/mtmd/libmtmd.a or ../build-android/tools/mtmd/libmtmd.a"
+    fi
     
     # Extract key object files
     echo "🔧 Extracting ggml-backend-reg.cpp.o..."
@@ -258,6 +281,19 @@ extract_objects() {
         mv ggml-backend-reg.cpp.o "$LLAMA_ANDROID_NDK_DIR/"
     fi
     
+    # 🆕 Copy libmtmd.a after llama.cpp build
+    if [ -f "$LLAMA_CPP_ROOT/build-android/tools/mtmd/libmtmd.a" ]; then
+        echo "🎨 Copying libmtmd.a for multimodal support..."
+        cp "$LLAMA_CPP_ROOT/build-android/tools/mtmd/libmtmd.a" "$LLAMA_ANDROID_NDK_DIR/"
+        echo "✅ libmtmd.a copied successfully"
+    elif [ -f "/tmp/libmtmd_backup.a" ]; then
+        echo "🔄 Restoring libmtmd.a from backup..."
+        cp "/tmp/libmtmd_backup.a" "$LLAMA_ANDROID_NDK_DIR/"
+        echo "✅ libmtmd.a restored from backup"
+    else
+        echo "⚠️ libmtmd.a not found after build"
+    fi
+    
     handle_success "Object files preparation completed"
 }
 
@@ -276,13 +312,13 @@ link_sdk() {
     GGML_LIB="$LLAMA_ANDROID_NDK_DIR/libggml.a"
     GGML_CPU_LIB="$LLAMA_ANDROID_NDK_DIR/libggml-cpu.a"
     GGML_BASE_LIB="$LLAMA_ANDROID_NDK_DIR/libggml-base.a"
+    # 🆕 Add multimodal library
+    MTMD_LIB="$LLAMA_ANDROID_NDK_DIR/libmtmd.a"
     BACKEND_OBJ="$LLAMA_ANDROID_NDK_DIR/ggml-backend-reg.cpp.o"
     OMP_LIB="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/lib/clang/18/lib/linux/aarch64/libomp.a"
     
-    # Execute linking with proper C++ runtime
+    # Execute linking
     echo "Linking command executing..."
-    echo "🔧 Using dynamic C++ runtime for better compatibility..."
-    
     $CLANG -shared \
         -o libgpuf_c_sdk_v9.so \
         $RUST_LIB \
@@ -291,13 +327,11 @@ link_sdk() {
         $GGML_LIB \
         $GGML_CPU_LIB \
         $GGML_BASE_LIB \
+        $MTMD_LIB \
         -llog -ldl -lm \
-        -lc++_shared \
+        -static-libstdc++ -static-libgcc \
         $OMP_LIB \
-        -Wl,--exclude-libs,libomp.a \
-        -Wl,--as-needed \
-        -Wl,--gc-sections \
-        -fPIC
+        -Wl,--exclude-libs,libomp.a
     
     if [ $? -ne 0 ]; then
         handle_error "SDK linking failed"
@@ -338,7 +372,7 @@ verify_sdk() {
     # Check dependencies
     echo ""
     echo "📋 Dependencies:"
-    readelf -d libgpuf_c_sdk_v9_unpacked.so | grep NEEDED | sed 's/Shared library:/Shared library:/'
+    readelf -d libgpuf_c_sdk_v9.so | grep NEEDED | sed 's/Shared library:/Shared library:/'
     
     handle_success "SDK verification completed"
 }

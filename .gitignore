@@ -25,3 +25,8 @@ gpuf-android-sdk
 config/
 ./config/
 /target
+
+# Android test app build artifacts
+android_test_app/.gradle/
+android_test_app/build/
+android_test_app/app/build/

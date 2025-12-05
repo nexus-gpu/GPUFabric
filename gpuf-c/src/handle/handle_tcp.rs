@@ -23,6 +23,7 @@ use std::net::ToSocketAddrs;
 use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::time::interval;
+#[cfg(not(target_os = "android"))]
 use tokio_rustls::{
     rustls::{
         pki_types::{CertificateDer, ServerName},
@@ -562,6 +563,7 @@ impl WorkerHandle for TCPWorker {
     }
 }
 
+#[cfg(not(target_os = "android"))]
 fn load_root_cert(path: &str) -> anyhow::Result<Vec<CertificateDer<'static>>> {
     let f = File::open(path)?;
     let mut reader = BufReader::new(f);
@@ -574,6 +576,23 @@ fn load_root_cert(path: &str) -> anyhow::Result<Vec<CertificateDer<'static>>> {
     Ok(certs)
 }
 
+#[cfg(target_os = "android")]
+fn load_root_cert(path: &str) -> anyhow::Result<Vec<u8>> {
+    let f = File::open(path)?;
+    let mut reader = BufReader::new(f);
+    let certs: Vec<Vec<u8>> = rustls_pemfile::certs(&mut reader)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .map(|cert| cert.to_vec())
+        .collect();
+    
+    if certs.is_empty() {
+        anyhow::bail!("no certificates found in {}", path);
+    }
+    Ok(certs.into_iter().flatten().collect())
+}
+
+#[cfg(not(target_os = "android"))]
 pub async fn create_proxy_connection(
     args: Args,
     addr: std::net::IpAddr,
@@ -703,6 +722,91 @@ pub async fn create_proxy_connection(
                 );
                 return Err(e.into());
             }
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+pub async fn create_proxy_connection(
+    args: Args,
+    addr: std::net::IpAddr,
+    proxy_conn_id: [u8; 16],
+    cert_chain_path: String,
+) -> Result<()> {
+    // Android implementation using native TLS - simplified version
+    warn!("Android TLS proxy connections are simplified - full TLS support requires additional configuration");
+    
+    // For now, just establish TCP connection without TLS
+    let addr_str = format!("{}:{}", addr.to_string(), args.proxy_port);
+    let addr = addr_str.to_socket_addrs()?.next().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Invalid server address or port",
+        )
+    })?;
+
+    let mut tcp_stream = match TcpStream::connect(addr).await {
+        Ok(stream) => stream,
+        Err(e) => {
+            error!("create proxy connection failed {}: {}", addr, e);
+            return Err(e.into());
+        }
+    };
+
+    match tcp_stream.set_nodelay(true) {
+        Ok(_) => info!("Set nodelay for proxy connection {:?}", proxy_conn_id),
+        Err(e) => error!(
+            "Failed to set nodelay for proxy connection {:?}: {}",
+            proxy_conn_id, e
+        ),
+    };
+
+    info!("proxy_conn_id {:?} Connected to proxy port (Android - TCP only).", proxy_conn_id);
+
+    let notify_cmd = Command::V1(CommandV1::NewProxyConn {
+        proxy_conn_id: proxy_conn_id.clone(),
+    });
+
+    match write_command(&mut tcp_stream, &notify_cmd).await {
+        Ok(_) => info!(
+            "proxy_conn_id {:?} Sent new proxy connection notification.",
+            proxy_conn_id
+        ),
+        Err(e) => error!("Failed to send new proxy connection notification: {}", e),
+    };
+
+    let local_stream =
+        match TcpStream::connect(format!("{}:{}", args.local_addr, args.local_port)).await {
+            Ok(stream) => stream,
+            Err(e) => {
+                error!("create local connection failed {}: {}", args.local_addr, e);
+                return Err(e.into());
+            }
+        };
+
+    match local_stream.set_nodelay(true) {
+        Ok(_) => info!("Set nodelay for local connection {:?}", proxy_conn_id),
+        Err(e) => error!(
+            "Failed to set nodelay for local connection {:?}: {}",
+            proxy_conn_id, e
+        ),
+    };
+
+    info!("proxy_conn_id {:?} Connected to local port.", proxy_conn_id);
+
+    info!("proxy_conn_id {:?} Joining streams...", proxy_conn_id);
+
+    match join_streams(tcp_stream, local_stream).await {
+        Ok(_) => {
+            info!(
+                "proxy_conn_id {:?} Streams joined and finished.",
+                proxy_conn_id
+            );
+            return Ok(());
+        }
+        Err(e) => {
+            error!("proxy_conn_id {:?} Failed to join streams: {}", proxy_conn_id, e);
+            return Err(e.into());
         }
     }
 }
