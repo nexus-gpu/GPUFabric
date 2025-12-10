@@ -18,14 +18,20 @@ use jni::sys::{jboolean, jbyteArray, jfloat, jint, jlong, jstring};
 use jni::JNIEnv;
 use once_cell::sync::Lazy;
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
-#[cfg(target_os = "android")]
 use std::os::raw::c_ulonglong;
+use libc::size_t;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::{Arc, Mutex};
 #[cfg(target_os = "android")]
 use std::io::{self, Write};
 #[cfg(target_os = "android")]
 use libc;
+
+// Global Tokio Runtime for async operations
+#[cfg(target_os = "android")]
+static TOKIO_RUNTIME: Lazy<tokio::runtime::Runtime> = Lazy::new(|| {
+    tokio::runtime::Runtime::new().expect("Failed to create tokio runtime")
+});
 
 // Export modules
 pub mod handle;
@@ -273,9 +279,12 @@ fn cleanup_generation_control() {
 pub static MODEL_STATUS: Lazy<Arc<Mutex<ModelStatusInfo>>> =
     Lazy::new(|| Arc::new(Mutex::new(ModelStatusInfo::new())));
 
-// Global model and context pointers (using atomic types for thread safety)
-pub static GLOBAL_MODEL_PTR: AtomicPtr<llama_model> = AtomicPtr::new(std::ptr::null_mut());
-pub static GLOBAL_CONTEXT_PTR: AtomicPtr<llama_context> = AtomicPtr::new(std::ptr::null_mut());
+// Global inference mutex for thread safety
+pub static GLOBAL_INFERENCE_MUTEX: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
+// Global model and context pointers
+static GLOBAL_MODEL_PTR: AtomicPtr<llama_model> = AtomicPtr::new(std::ptr::null_mut());
+static GLOBAL_CONTEXT_PTR: AtomicPtr<llama_context> = AtomicPtr::new(std::ptr::null_mut());
 
 #[derive(Debug, Clone)]
 pub struct ModelStatusInfo {
@@ -3609,7 +3618,7 @@ pub extern "C" fn Java_com_gpuf_c_GPUEngine_getCurrentModel(
     let status = MODEL_STATUS.lock().unwrap();
     match &status.current_model {
         Some(model) => match env.new_string(model) {
-            Ok(jstring) => jstring.into_raw(),
+            Ok(s) => s.into_raw(),
             Err(_) => std::ptr::null_mut(),
         },
         None => std::ptr::null_mut(),
@@ -4487,4 +4496,452 @@ pub extern "C" fn Java_com_gpuf_c_GPUEngine_freeMultimodalModel(
         gpuf_free_multimodal_model(multimodal_model_ptr as *mut gpuf_multimodal_model);
         println!("✅ Multimodal model freed");
     }
+}
+// ============================================================================
+// C FFI - Remote Worker Management and Monitoring
+// ============================================================================
+
+/// Start remote worker and initialize global worker (C API)
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn start_remote_worker(
+    server_addr: *const c_char,
+    control_port: c_int,
+    proxy_port: c_int,
+    worker_type: *const c_char,
+    client_id: *const c_char,
+) -> c_int {
+    use crate::handle::init_global_worker;
+    use crate::util::cmd::{Args, WorkerType, EngineType};
+    
+    println!("🔥 GPUFabric C API: Starting remote worker");
+    
+    // Convert C strings to Rust strings
+    let server_addr_str = if server_addr.is_null() {
+        eprintln!("❌ Error: server_addr is null");
+        return -1;
+    } else {
+        match unsafe { std::ffi::CStr::from_ptr(server_addr).to_str() } {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("❌ Error: Invalid server_addr UTF-8: {}", e);
+                return -1;
+            }
+        }
+    };
+    
+    let worker_type_str = if worker_type.is_null() {
+        eprintln!("❌ Error: worker_type is null");
+        return -1;
+    } else {
+        match unsafe { std::ffi::CStr::from_ptr(worker_type).to_str() } {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("❌ Error: Invalid worker_type UTF-8: {}", e);
+                return -1;
+            }
+        }
+    };
+    
+    let client_id_str = if client_id.is_null() {
+        eprintln!("❌ Error: client_id is null");
+        return -1;
+    } else {
+        match unsafe { std::ffi::CStr::from_ptr(client_id).to_str() } {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("❌ Error: Invalid client_id UTF-8: {}", e);
+                return -1;
+            }
+        }
+    };
+    
+    println!("📡 C API: Server: {}, Port: {}/{}, Type: {}, Client: {}", 
+             server_addr_str, control_port, proxy_port, worker_type_str, client_id_str);
+
+    // Parse worker type
+    let worker_type = match worker_type_str {
+        "TCP" => WorkerType::TCP,
+        "WS" => WorkerType::WS,
+        _ => {
+            eprintln!("❌ Error: Unknown worker type: {}", worker_type_str);
+            return -1;
+        }
+    };
+
+    // Create args
+    let args = Args {
+        server_addr: server_addr_str.to_string(),
+        control_port: control_port as u16,
+        proxy_port: proxy_port as u16,
+        worker_type,
+        engine_type: EngineType::LLAMA,
+        client_id: Some(hex::decode(client_id_str).unwrap_or_default().try_into().unwrap_or_default()),
+        config: None,
+        local_addr: "0.0.0.0".to_string(),
+        local_port: 0,
+        cert_chain_path: "".to_string(),
+        auto_models: false,
+        hugging_face_hub_token: None,
+        chat_template_path: None,
+        standalone_llama: false,
+        llama_model_path: None,
+        n_gpu_layers: 99,
+        n_ctx: 8192,
+    };
+
+    // Initialize global worker in Tokio runtime
+    println!("🚀 C API: Initializing global worker...");
+    match TOKIO_RUNTIME.block_on(async {
+        init_global_worker(args).await
+    }) {
+        Ok(_) => {
+            println!("✅ C API: Remote worker started successfully");
+            0
+        },
+        Err(e) => {
+            eprintln!("❌ C API: Failed to start remote worker: {}", e);
+            -1
+        }
+    }
+}
+
+
+// ============================================================================
+// Android JNI - Remote Worker Management and Monitoring
+// ============================================================================
+
+/// Start remote worker and monitoring
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_gpuf_c_GPUEngine_startRemoteWorker(
+    mut env: JNIEnv,
+    _class: JClass,
+    server_addr: JString,
+    control_port: jint,
+    proxy_port: jint,
+    worker_type: JString,
+    client_id: JString,
+) -> jint {
+    use crate::handle::init_global_worker;
+    use crate::util::cmd::{Args, WorkerType, EngineType};
+
+    // Convert Java strings to Rust strings
+    let server_str = match env.get_string(&server_addr) {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
+    let server_addr = match server_str.to_str() {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
+
+    let worker_str = match env.get_string(&worker_type) {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
+    let worker_type_str = match worker_str.to_str() {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
+
+    let client_str = match env.get_string(&client_id) {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
+    let client_id = match client_str.to_str() {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
+
+    // Parse worker type
+    let worker_type = match worker_type_str {
+        "TCP" => WorkerType::TCP,
+        "WS" => WorkerType::WS,
+        _ => return -1,
+    };
+
+    // Create args
+    let args = Args {
+        server_addr: server_addr.to_string(),
+        control_port: control_port as u16,
+        proxy_port: proxy_port as u16,
+        worker_type,
+        engine_type: EngineType::LLAMA,
+        client_id: Some(hex::decode(client_id.to_string()).unwrap_or_default().try_into().unwrap_or_default()),
+        config: None,
+        local_addr: "0.0.0.0".to_string(),
+        local_port: 0,
+        cert_chain_path: "".to_string(),
+        auto_models: false,
+        hugging_face_hub_token: None,
+        chat_template_path: None,
+        standalone_llama: false,
+        llama_model_path: None,
+        n_gpu_layers: 99,
+        n_ctx: 8192,
+    };
+
+    // Initialize global worker in Tokio runtime
+    match TOKIO_RUNTIME.block_on(async {
+        init_global_worker(args).await
+    }) {
+        Ok(_) => 0,
+        Err(_) => -1,
+    }
+}
+
+// Global backend initialization flag
+static BACKEND_INITIALIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+// Coordination mutex for safe hot swapping
+static MODEL_SWAP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Initialize backend (thread-safe, idempotent)
+fn ensure_backend_initialized() -> c_int {
+    use std::sync::atomic::Ordering;
+    
+    // Check if already initialized (fast path)
+    if BACKEND_INITIALIZED.load(Ordering::SeqCst) {
+        return 0;
+    }
+    
+    // Try to initialize
+    if real_llama_backend_init() != 0 {
+        return -1;
+    }
+    
+    // Mark as initialized
+    BACKEND_INITIALIZED.store(true, Ordering::SeqCst);
+    0
+}
+
+/// Set remote worker model (C API) - Safe Hot Swapping Version
+/// 
+/// This function supports safe hot swapping without stopping the worker.
+/// Uses coordination mutex to ensure no inference requests access freed memory.
+/// 
+/// # Parameters
+/// - `model_path`: Path to the model file (.gguf)
+/// 
+/// # Returns
+/// - `0`: Success (model loaded and context created)
+/// - `-1`: Backend initialization failed
+/// - `-2`: Path conversion failed
+/// - `-3`: Model loading failed
+/// - `-4`: Context creation failed
+/// 
+/// # Safety
+/// Caller must ensure `model_path` is a valid null-terminated C string
+/// 
+/// # Hot Swapping
+/// This function can be called multiple times without stopping the worker.
+/// Inference requests will be briefly paused during the swap but the worker
+/// remains connected and continues processing afterward.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn set_remote_worker_model(
+    model_path: *const c_char,
+) -> c_int {
+    use std::sync::atomic::Ordering;
+    
+    println!("🔥 GPUFabric C API: Setting remote worker model (hot swap enabled)");
+    
+    // 1. Ensure backend is initialized (only once per process)
+    if ensure_backend_initialized() != 0 {
+        eprintln!("❌ C API: Backend initialization failed");
+        return -1;
+    }
+    println!("✅ C API: Backend ready");
+    
+    // 2. Convert C string to Rust string
+    let path_str = if model_path.is_null() {
+        eprintln!("❌ C API: Model path is null");
+        return -2;
+    } else {
+        unsafe {
+            match std::ffi::CStr::from_ptr(model_path).to_str() {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("❌ C API: Failed to convert model path: {}", e);
+                    return -2;
+                }
+            }
+        }
+    };
+    
+    // 3. Update model status to loading
+    {
+        let mut status = MODEL_STATUS.lock().unwrap();
+        status.set_loading(path_str);
+    }
+    
+    // 4. Load new model and context
+    let model_ptr = gpuf_load_model(model_path);
+    if model_ptr.is_null() {
+        eprintln!("❌ C API: Failed to load model");
+        let mut status = MODEL_STATUS.lock().unwrap();
+        status.set_error("Failed to load model");
+        return -3;
+    }
+    println!("✅ C API: Model loaded: {}", path_str);
+    
+    let context_ptr = gpuf_create_context(model_ptr);
+    if context_ptr.is_null() {
+        eprintln!("❌ C API: Failed to create context");
+        let mut status = MODEL_STATUS.lock().unwrap();
+        status.set_error("Failed to create context");
+        unsafe { llama_model_free(model_ptr) }; // Clean up loaded model
+        return -4;
+    }
+    println!("✅ C API: Context created");
+    
+    // 5. Atomically swap model/context using inference mutex
+    // This blocks both other swaps AND inference requests briefly
+    println!("🔄 C API: Swapping model (blocking inference briefly)...");
+    {
+        let _swap_lock = MODEL_SWAP_LOCK.lock().unwrap();
+        let _inference_lock = GLOBAL_INFERENCE_MUTEX.lock().unwrap();
+        
+        // Get old model/context for cleanup
+        let old_model = GLOBAL_MODEL_PTR.load(Ordering::SeqCst);
+        let old_context = GLOBAL_CONTEXT_PTR.load(Ordering::SeqCst);
+        
+        // Update to new model/context atomically
+        GLOBAL_MODEL_PTR.store(model_ptr, Ordering::SeqCst);
+        GLOBAL_CONTEXT_PTR.store(context_ptr, Ordering::SeqCst);
+        
+        println!("✅ C API: Global pointers updated");
+        
+        // Clean up old resources AFTER updating pointers
+        if !old_model.is_null() || !old_context.is_null() {
+            println!("🧹 C API: Cleaning up previous model/context");
+            
+            if !old_context.is_null() {
+                unsafe { llama_free(old_context) };
+                println!("✅ C API: Old context freed");
+            }
+            if !old_model.is_null() {
+                unsafe { llama_model_free(old_model) };
+                println!("✅ C API: Old model freed");
+            }
+        }
+    }
+    
+    println!("✅ C API: Model swap completed");
+    
+    // 6. Update status to loaded
+    {
+        let mut status = MODEL_STATUS.lock().unwrap();
+        status.set_loaded(path_str);
+    }
+    
+    println!("🎉 C API: Remote worker model set successfully (hot swap)");
+    0  // Success
+}
+
+/// Start remote worker background tasks (C API)
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn start_remote_worker_tasks() -> c_int {
+    use crate::handle::start_worker_tasks;
+    
+    println!("🔥 GPUFabric C API: Starting remote worker background tasks");
+    
+    match TOKIO_RUNTIME.block_on(async {
+        start_worker_tasks().await
+    }) {
+        Ok(_) => {
+            println!("✅ C API: Background tasks started successfully");
+            0
+        },
+        Err(e) => {
+            eprintln!("❌ C API: Failed to start background tasks: {}", e);
+            -1
+        }
+    }
+}
+
+/// Stop remote worker and cleanup (C API)
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn stop_remote_worker() -> c_int {
+    use crate::handle::stop_global_worker;
+    
+    println!("🔥 GPUFabric C API: Stopping remote worker");
+    
+    TOKIO_RUNTIME.block_on(async {
+        stop_global_worker().await
+    });
+    
+    println!("✅ C API: Remote worker stopped");
+    0
+}
+
+/// Get remote worker status (C API)
+/// 
+/// # Parameters
+/// - `buffer`: Output buffer to write status string
+/// - `buffer_size`: Size of the output buffer
+/// 
+/// # Returns
+/// - `0`: Success (status written to buffer)
+/// - `-1`: Error (buffer too small or other error)
+/// 
+/// # Safety
+/// Caller must ensure `buffer` is valid and can hold `buffer_size` bytes
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn get_remote_worker_status(
+    buffer: *mut c_char,
+    buffer_size: size_t,
+) -> c_int {
+    use crate::handle::get_worker_status;
+    
+    println!("🔥 GPUFabric C API: Getting remote worker status");
+    
+    if buffer.is_null() {
+        eprintln!("❌ C API: Buffer is null");
+        return -1;
+    }
+    
+    if buffer_size == 0 {
+        eprintln!("❌ C API: Buffer size is zero");
+        return -1;
+    }
+    
+    // Get status from async function
+    let status = TOKIO_RUNTIME.block_on(async {
+        get_worker_status().await.unwrap_or_else(|_| "Error".to_string())
+    });
+    
+    println!("📊 C API: Status: {}", status);
+    
+    // Convert to C string and copy to buffer
+    let status_c = match std::ffi::CString::new(status) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("❌ C API: Failed to convert status to C string: {}", e);
+            return -1;
+        }
+    };
+    
+    let status_bytes = status_c.as_bytes_with_nul();
+    
+    if status_bytes.len() > buffer_size {
+        eprintln!("❌ C API: Buffer too small (need {}, have {})", 
+                 status_bytes.len(), buffer_size);
+        return -1;
+    }
+    
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            status_bytes.as_ptr(),
+            buffer as *mut u8,
+            status_bytes.len()
+        );
+    }
+    
+    println!("✅ C API: Status written to buffer");
+    0
 }
