@@ -93,7 +93,7 @@ public class ModelManager {
         }
     }
     
-    // 2. 动态切换模型
+    // 2. Dynamic model switching
     public boolean switchModel(String newModelPath) {
         Log.i(TAG, "Switching to model: " + newModelPath);
         
@@ -108,18 +108,18 @@ public class ModelManager {
         }
     }
     
-    // 3. 查询模型状态
+    // 3. Query model status
     public void checkModelStatus() {
-        // 检查是否有模型加载
+        // Check if any model is loaded
         int isLoaded = GpufNative.isModelLoaded();
         if (isLoaded == 1) {
             Log.i(TAG, "Model is loaded");
             
-            // 获取当前模型路径
+            // Get current model path
             String currentModel = GpufNative.getCurrentModel();
             Log.i(TAG, "Current model: " + currentModel);
             
-            // 获取详细状态
+            // Get detailed status
             String status = GpufNative.getModelLoadingStatus();
             Log.i(TAG, "Model status: " + status);
         } else if (isLoaded == 0) {
@@ -132,19 +132,19 @@ public class ModelManager {
 }
 ```
 
-### 高级使用场景
+### Advanced Usage Scenarios
 
-#### 1. 智能模型切换
+#### 1. Smart Model Switching
 
 ```java
 public class SmartModelSwitcher {
     private Map<String, ModelInfo> availableModels = new HashMap<>();
     
     public void initializeModels() {
-        // 预定义可用模型
-        availableModels.put("chat", new ModelInfo("/models/chat.gguf", "对话模型"));
-        availableModels.put("code", new ModelInfo("/models/code.gguf", "代码模型"));
-        availableModels.put("translate", new ModelInfo("/models/translate.gguf", "翻译模型"));
+        // Predefined available models
+        availableModels.put("chat", new ModelInfo("/models/chat.gguf", "Chat model"));
+        availableModels.put("code", new ModelInfo("/models/code.gguf", "Code model"));
+        availableModels.put("translate", new ModelInfo("/models/translate.gguf", "Translation model"));
     }
     
     public boolean switchToOptimalModel(String taskType) {
@@ -154,14 +154,14 @@ public class SmartModelSwitcher {
             return false;
         }
         
-        // 检查当前模型
+        // Check current model
         String currentModel = GpufNative.getCurrentModel();
         if (modelInfo.path.equals(currentModel)) {
             Log.i(TAG, "Model already loaded: " + taskType);
             return true;
         }
         
-        // 切换模型
+        // Switch model
         return switchModel(modelInfo.path);
     }
     
@@ -177,7 +177,7 @@ public class SmartModelSwitcher {
 }
 ```
 
-#### 2. 模型加载监控
+#### 2. Model Loading Monitoring
 
 ```java
 public class ModelLoadingMonitor {
@@ -193,7 +193,7 @@ public class ModelLoadingMonitor {
                 });
                 
                 try {
-                    Thread.sleep(1000); // 每秒检查一次
+                    Thread.sleep(1000); // Check every second
                 } catch (InterruptedException e) {
                     break;
                 }
@@ -202,7 +202,7 @@ public class ModelLoadingMonitor {
     }
     
     private void updateUI(String status) {
-        // 更新用户界面显示加载状态
+        // Update user interface to show loading status
         if (status.contains("loading")) {
             showProgressBar();
         } else if (status.contains("ready")) {
@@ -214,19 +214,19 @@ public class ModelLoadingMonitor {
 }
 ```
 
-#### 3. 离线模式模型管理
+#### 3. Offline Mode Model Management
 
 ```java
 public class OfflineModelManager {
     private boolean isOfflineMode = true;
     
     public void initializeOfflineMode() {
-        // 启动离线模式
+        // Start offline mode
         GpufNative.startComputeMonitoring(
-            "", "", 0, 0, 0, 2, true  // 离线模式
+            "", "", 0, 0, 0, 2, true  // Offline mode
         );
         
-        // 加载本地模型
+        // Load local model
         String localModel = getLocalModelPath();
         if (GpufNative.loadModel(localModel) == 0) {
             Log.i(TAG, "Local model loaded successfully");
@@ -234,7 +234,7 @@ public class OfflineModelManager {
     }
     
     public String getLocalModelPath() {
-        // 返回本地存储的模型路径
+        // Return locally stored model path
         return "/storage/emulated/0/models/default.gguf";
     }
     
@@ -249,11 +249,11 @@ public class OfflineModelManager {
 }
 ```
 
-## 🔄 服务器通知机制
+## 🔄 Server Notification Mechanism
 
-### 自动通知
+### Automatic Notification
 
-当模型加载成功时，SDK 会自动通知服务器当前模型信息：
+When a model is successfully loaded, the SDK automatically notifies the server of the current model information:
 
 ```json
 {
@@ -264,14 +264,14 @@ public class OfflineModelManager {
 }
 ```
 
-### 通知条件
+### Notification Conditions
 
-- ✅ **在线模式**：自动发送通知到服务器
-- ❌ **离线模式**：跳过通知，保护隐私
-- ✅ **网络可用**：只有在网络连接时才发送
-- ✅ **加载成功**：只有模型成功加载后才通知
+- ✅ **Online Mode**: Automatically send notification to server
+- ❌ **Offline Mode**: Skip notification to protect privacy
+- ✅ **Network Available**: Only send when network is connected
+- ✅ **Load Successful**: Only notify after model is successfully loaded
 
-### 通知端点
+### Notification Endpoint
 
 ```
 POST /api/models/current
@@ -279,19 +279,19 @@ Content-Type: application/json
 Authorization: Bearer <device_token>
 ```
 
-## 📊 状态信息说明
+## 📊 Status Information Description
 
-### 模型加载状态
+### Model Loading Status
 
-| 状态值 | 说明 | 适用场景 |
+| Status Value | Description | Applicable Scenarios |
 |--------|------|----------|
-| `"not_loaded"` | 未加载任何模型 | 初始状态 |
-| `"loading"` | 正在加载模型 | 加载过程中 |
-| `"ready"` | 模型加载完成，可用推理 | 正常使用状态 |
-| `"error"` | 加载失败 | 错误处理 |
-| `"switching"` | 正在切换模型 | 模型切换中 |
+| `"not_loaded"` | No model loaded | Initial state |
+| `"loading"` | Model is loading | During loading process |
+| `"ready"` | Model loaded, ready for inference | Normal usage state |
+| `"error"` | Loading failed | Error handling |
+| `"switching"` | Model switching in progress | Model switching |
 
-### 错误处理
+### Error Handling
 
 ```java
 public void handleModelError() {
@@ -302,22 +302,22 @@ public void handleModelError() {
         
         switch (error) {
             case "Model file not found":
-                // 处理文件不存在
+                // Handle file not found
                 downloadModel();
                 break;
                 
             case "Insufficient memory":
-                // 处理内存不足
+                // Handle insufficient memory
                 freeMemory();
                 break;
                 
             case "Invalid model format":
-                // 处理格式错误
+                // Handle format error
                 showFormatError();
                 break;
                 
             default:
-                // 通用错误处理
+                // Generic error handling
                 Log.e(TAG, "Unknown error: " + error);
                 break;
         }
@@ -325,14 +325,14 @@ public void handleModelError() {
 }
 ```
 
-## 🎯 最佳实践
+## 🎯 Best Practices
 
-### 1. 模型预加载
+### 1. Model Preloading
 
 ```java
 public class ModelPreloader {
     public void preloadCommonModels() {
-        // 在应用启动时预加载常用模型
+        // Preload commonly used models when app starts
         String[] commonModels = {
             "/models/chat.gguf",
             "/models/qa.gguf"
@@ -340,7 +340,7 @@ public class ModelPreloader {
         
         for (String model : commonModels) {
             if (new File(model).exists()) {
-                // 异步预加载
+                // Asynchronous preloading
                 CompletableFuture.runAsync(() -> {
                     GpufNative.loadModel(model);
                 });
@@ -350,24 +350,24 @@ public class ModelPreloader {
 }
 ```
 
-### 2. 内存管理
+### 2. Memory Management
 
 ```java
 public class MemoryAwareModelManager {
     public void switchModelWithMemoryCheck(String newModel) {
-        // 检查可用内存
+        // Check available memory
         Runtime runtime = Runtime.getRuntime();
         long maxMemory = runtime.maxMemory();
         long usedMemory = runtime.totalMemory() - runtime.freeMemory();
         long availableMemory = maxMemory - usedMemory;
         
-        // 估算模型大小
+        // Estimate model size
         long modelSize = estimateModelSize(newModel);
         
-        if (availableMemory > modelSize * 2) { // 保留2倍缓冲
+        if (availableMemory > modelSize * 2) { // Keep 2x buffer
             GpufNative.loadModel(newModel);
         } else {
-            // 清理内存后重试
+            // Clean memory and retry
             System.gc();
             try {
                 Thread.sleep(1000);
@@ -390,7 +390,7 @@ public class MemoryAwareModelManager {
 }
 ```
 
-### 3. 错误恢复
+### 3. Error Recovery
 
 ```java
 public class RobustModelManager {

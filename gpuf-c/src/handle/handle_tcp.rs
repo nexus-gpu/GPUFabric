@@ -4,6 +4,7 @@ use crate::util::{
         collect_device_info, collect_system_info, get_engine_models, pull_ollama_model, run_model,
     },
 };
+use tokio::io::AsyncWriteExt;
 #[cfg(not(target_os = "macos"))]
 // LLM engine is not available in lightweight Android version
 #[cfg(not(target_os = "android"))]
@@ -36,6 +37,73 @@ use tracing::{debug, error, info, warn};
 const CURRENT_VERSION: u32 = 1;
 
 impl TCPWorker {
+    /// Execute inference task using local LLM engine (Android specific)
+    #[cfg(target_os = "android")]
+    async fn execute_inference_task(
+        &self,
+        prompt: &str,
+        max_tokens: u32,
+        temperature: f32,
+        top_k: u32,
+        top_p: f32,
+        repeat_penalty: f32,
+    ) -> Result<String> {
+        use crate::{GLOBAL_MODEL_PTR, GLOBAL_CONTEXT_PTR, gpuf_generate_final_solution_text, GLOBAL_INFERENCE_MUTEX};
+        use std::ffi::CString;
+        use std::sync::atomic::Ordering;
+        
+        // Acquire global inference lock to prevent concurrent execution
+        let _lock = GLOBAL_INFERENCE_MUTEX.lock().unwrap();
+        
+        // Get global model and context pointers
+        let model_ptr = GLOBAL_MODEL_PTR.load(Ordering::SeqCst);
+        let context_ptr = GLOBAL_CONTEXT_PTR.load(Ordering::SeqCst);
+        
+        if model_ptr.is_null() || context_ptr.is_null() {
+            return Err(anyhow!("Model not loaded - please load a model first"));
+        }
+        
+        // Convert prompt to CString
+        let prompt_cstr = CString::new(prompt)
+            .map_err(|e| anyhow!("Invalid prompt: {}", e))?;
+        
+        // Create output buffer
+        let mut output = vec![0u8; 4096];
+        
+        // Execute inference using existing JNI function
+        let result = unsafe {
+            gpuf_generate_final_solution_text(
+                model_ptr,
+                context_ptr,
+                prompt_cstr.as_ptr(),
+                max_tokens as i32,
+                output.as_mut_ptr() as *mut std::os::raw::c_char,
+                output.len() as i32,
+            )
+        };
+        
+        if result > 0 {
+            let output_str = unsafe {
+                std::ffi::CStr::from_ptr(output.as_ptr() as *const std::os::raw::c_char)
+                    .to_str()
+                    .map_err(|e| anyhow!("Invalid UTF-8 in output: {}", e))?
+            };
+            Ok(output_str.to_string())
+        } else {
+            Err(anyhow!("Inference failed with code: {}", result))
+        }
+    }
+
+    /// Send command to server
+    async fn send_command(&self, command: CommandV1) -> Result<()> {
+        use common::{write_command, Command};
+        
+        let command = Command::V1(command);
+        let mut writer = self.writer.lock().await;
+        write_command(&mut *writer, &command).await?;
+        writer.flush().await?;
+        Ok(())
+    }
     pub async fn new(args: Args) -> Result<Self> {
         let addr_str = format!("{}:{}", args.server_addr, args.control_port);
         let addr = addr_str.to_socket_addrs()?.next().ok_or_else(|| {
@@ -553,6 +621,55 @@ impl WorkerHandle for TCPWorker {
                                 error!("Failed to create proxy connection: {}", e);
                             }
                         });
+                    }
+                    #[cfg(target_os = "android")]
+                    Command::V1(CommandV1::InferenceTask {
+                        task_id,
+                        prompt,
+                        max_tokens,
+                        temperature,
+                        top_k,
+                        top_p,
+                        repeat_penalty,
+                    }) => {
+                        info!("Received inference task: {}", task_id);
+                        let start_time = std::time::Instant::now();
+                        
+                        // Execute inference task on Android
+                        let result = self.execute_inference_task(
+                            &prompt,
+                            max_tokens,
+                            temperature,
+                            top_k,
+                            top_p,
+                            repeat_penalty,
+                        ).await;
+                        
+                        let execution_time = start_time.elapsed().as_millis() as u64;
+                        
+                        // Send result back to server
+                        match result {
+                            Ok(output) => {
+                                let result_command = CommandV1::InferenceResult {
+                                    task_id,
+                                    success: true,
+                                    result: Some(output),
+                                    error: None,
+                                    execution_time_ms: execution_time,
+                                };
+                                self.send_command(result_command).await?;
+                            }
+                            Err(e) => {
+                                let result_command = CommandV1::InferenceResult {
+                                    task_id,
+                                    success: false,
+                                    result: None,
+                                    error: Some(e.to_string()),
+                                    execution_time_ms: execution_time,
+                                };
+                                self.send_command(result_command).await?;
+                            }
+                        }
                     }
                     _ => {
                         warn!("Received unexpected command");

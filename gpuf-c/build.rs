@@ -2,18 +2,6 @@ use std::env;
 use std::path::PathBuf;
 
 fn main() {
-    let crate_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
-    
-    // Configure cbindgen directly, without relying on external config files
-    cbindgen::Builder::new()
-        .with_crate(crate_dir)
-        .with_language(cbindgen::Language::C)
-        .with_pragma_once(true)
-        .with_include_guard("GPUF_C_H")
-        .with_documentation(true)
-        .generate()
-        .expect("Unable to generate bindings")
-        .write_to_file("gpuf_c.h");
     
     // Get the target OS from Cargo environment variable
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap();
@@ -86,6 +74,19 @@ fn main() {
     
     // For Android, link the static llama.cpp library
     if target_os == "android" {
+        let crate_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
+        
+        // Configure cbindgen directly, without relying on external config files
+        cbindgen::Builder::new()
+            .with_crate(crate_dir)
+            .with_language(cbindgen::Language::C)
+            .with_pragma_once(true)
+            .with_include_guard("GPUF_C_H")
+            .with_documentation(true)
+            .generate()
+            .expect("Unable to generate bindings")
+            .write_to_file("gpuf_c.h");
+
         println!("cargo:warning=Linking static llama.cpp library for Android...");
         
         // Get the absolute path to the llama library - now in target directory

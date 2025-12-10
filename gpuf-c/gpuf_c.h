@@ -636,4 +636,76 @@ void Java_com_gpuf_c_GPUEngine_freeMultimodalModel(JNIEnv _env,
                                                    JClass _class,
                                                    jlong multimodal_model_ptr);
 
+/**
+ * Start remote worker and initialize global worker (C API)
+ */
+int start_remote_worker(const char *server_addr,
+                        int control_port,
+                        int proxy_port,
+                        const char *worker_type,
+                        const char *client_id);
+
+/**
+ * Start remote worker and monitoring
+ */
+jint Java_com_gpuf_c_GPUEngine_startRemoteWorker(JNIEnv env,
+                                                 JClass _class,
+                                                 JString server_addr,
+                                                 jint control_port,
+                                                 jint proxy_port,
+                                                 JString worker_type,
+                                                 JString client_id);
+
+/**
+ * Set remote worker model (C API) - Safe Hot Swapping Version
+ *
+ * This function supports safe hot swapping without stopping the worker.
+ * Uses coordination mutex to ensure no inference requests access freed memory.
+ *
+ * # Parameters
+ * - `model_path`: Path to the model file (.gguf)
+ *
+ * # Returns
+ * - `0`: Success (model loaded and context created)
+ * - `-1`: Backend initialization failed
+ * - `-2`: Path conversion failed
+ * - `-3`: Model loading failed
+ * - `-4`: Context creation failed
+ *
+ * # Safety
+ * Caller must ensure `model_path` is a valid null-terminated C string
+ *
+ * # Hot Swapping
+ * This function can be called multiple times without stopping the worker.
+ * Inference requests will be briefly paused during the swap but the worker
+ * remains connected and continues processing afterward.
+ */
+int set_remote_worker_model(const char *model_path);
+
+/**
+ * Start remote worker background tasks (C API)
+ */
+int start_remote_worker_tasks(void);
+
+/**
+ * Stop remote worker and cleanup (C API)
+ */
+int stop_remote_worker(void);
+
+/**
+ * Get remote worker status (C API)
+ *
+ * # Parameters
+ * - `buffer`: Output buffer to write status string
+ * - `buffer_size`: Size of the output buffer
+ *
+ * # Returns
+ * - `0`: Success (status written to buffer)
+ * - `-1`: Error (buffer too small or other error)
+ *
+ * # Safety
+ * Caller must ensure `buffer` is valid and can hold `buffer_size` bytes
+ */
+int get_remote_worker_status(char *buffer, size_t buffer_size);
+
 #endif /* GPUF_C_H */
