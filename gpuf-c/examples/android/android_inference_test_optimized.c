@@ -39,7 +39,7 @@ int main(int argc, char* argv[]) {
     const char* prompt = argv[1];
     printf("📝 Testprompt: \"%s\"\n\n", prompt);
     
-    // Initialize[系][统]
+    // Initialize system
     printf("🔧 Initializing GPUFabric SDK...\n");
     if (!gpuf_init()) {
         printf("❌ System initialization failed\n");
@@ -78,10 +78,10 @@ int main(int argc, char* argv[]) {
     int result = gpuf_generate_with_sampling(
         model, ctx, prompt,
         40,      // increaseaddto 40 tokens
-        0.8f,    // provide[高][温]degreeto 0.8
+        0.8f,    // Set temperature to 0.8
         40,      // increaseadd Top-K to 40
-        0.9f,    // provide[高] Top-P to 0.9
-        1.1f,    // [添]add[重]complexpenalty[罚] 1.1
+        0.9f,    // Set Top-P to 0.9
+        1.1f,    // Add repeat penalty of 1.1
         output, sizeof(output) - 1,
         token_buffer, 32
     );
@@ -94,34 +94,34 @@ int main(int argc, char* argv[]) {
         printf("📝 Output: \"%s\"\n", output);
         printf("📊 Length: %d tokens\n\n", result);
         
-        // partanalyzeOutput[质][量]
-        printf("🔍 Output[质][量]partanalyze:\n");
+        // Analyze output quality
+        printf("🔍 Output quality analysis:\n");
         if (strlen(output) > 10) {
-            printf("✅ Generatecompletedhavemeaningmeaning[的]internalcontain\n");
+            printf("✅ Generation completed with meaningful content\n");
         } else {
-            printf("⚠️  internalcontain[过][短]\n");
+            printf("⚠️  Content too short\n");
         }
         
         if (strstr(output, " ") && strstr(output, ".")) {
-            printf("✅ packagecontaincompletewhole[的]sentencechild[结]structure\n");
+            printf("✅ Output contains complete sentence structure\n");
         } else {
-            printf("⚠️  sentencechild[结]structurenotcompletewhole\n");
+            printf("⚠️  Sentence structure incomplete\n");
         }
         
         if (strstr(output, prompt)) {
-            printf("⚠️  packagecontain[重]complex[的]prompt\n");
+            printf("⚠️  Output contains complex prompt\n");
         } else {
-            printf("✅ [没]have[重]complexprompt\n");
+            printf("✅ No complex prompt detected\n");
         }
     } else {
-        printf("❌ GenerateFailed: Errorgeneration[码] %d\n", result);
+        printf("❌ Generation Failed: Error code %d\n", result);
     }
     
-    // Cleanup[资][源]
+    // Cleanup resources
     printf("\n🧹 Cleaning up resources...\n");
     gpuf_cleanup();
     
-    printf("\n🎉 Android AI pushmanageTestCompleted！\n");
+    printf("\n🎉 Android AI inference test completed!\n");
     printf("=====================================\n");
     return 0;
 }

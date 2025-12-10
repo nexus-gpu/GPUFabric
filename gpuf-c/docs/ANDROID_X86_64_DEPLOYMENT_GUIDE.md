@@ -1,115 +1,112 @@
-# Android x86_64 LLaMA 推理部署指南
+# Android x86_64 LLaMA Inference Deployment Guide
 
-## ⚠️ 重要架构兼容性说明
+## ⚠️ Important Architecture Compatibility Notes
 
-**当前状态（2024年11月更新）：**
-- ✅ **ARM64 Android**: 支持真实 llama.cpp API (40MB 完整功能)
-- ❌ **x86_64 Android**: llama.cpp 编译失败 (`__sF` NDK 兼容性问题)
-- ✅ **x86_64 Android**: 使用 API 兼容层 (5.8MB 接口兼容)
+**Current Status (November 2024 Update):**
+- ✅ **ARM64 Android**: Supports real llama.cpp API (40MB full functionality)
+- ❌ **x86_64 Android**: llama.cpp compilation fails (`__sF` NDK compatibility issue)
+- ✅ **x86_64 Android**: Uses API compatibility layer (5.8MB interface compatible)
 
-**技术原因：**
+**Technical Reasons:**
 ```cpp
-// llama.cpp 在 x86_64 Android NDK 中失败
+// llama.cpp fails in x86_64 Android NDK
 error: '__sF' is unavailable: obsoleted in Android 23 - Use stdin/stdout/stderr
-fprintf(stderr, "...");  // ❌ Android 23+ 中被废弃
+fprintf(stderr, "...");  // ❌ Deprecated in Android 23+
 ```
 
-**推荐方案：**
-- **生产环境**: 使用 ARM64 真实设备 + `build_arm64_with_android.sh`
-- **开发环境**: 使用 x86_64 模拟器 + `build_x86_64_with_arm64_lib.sh`
+**Recommended Solutions:**
+- **Production Environment**: Use ARM64 real devices + `build_arm64_with_android.sh`
+- **Development Environment**: Use x86_64 emulator + `build_x86_64_with_arm64_lib.sh`
 
 ---
 
-## 🎉 部署成功！
+## 🎉 Deployment Successful!
 
-您已成功在 Android x86_64 模拟器上部署了 API 兼容的 LLM 推理系统！
+You have successfully deployed an API-compatible LLM inference system on the Android x86_64 emulator!
 
-## 📦 已部署的文件
+## 📦 Deployed Files
 
-| 文件 | 大小 | 功能 | 说明 |
-|------|------|------|------|
-| `libgpuf_c_compat_x86_64.so` | 5.8MB | API 兼容层推理库 | 纯 Rust 实现，无 C++ 依赖 |
-| `test_compat_x86_64` | 9.5KB | 兼容性测试程序 | 验证 API 接口完整性 |
-| `interactive_inference` | 8.5KB | 交互式推理程序 | 模拟推理流程 |
+| File | Size | Function | Description |
+|------|------|----------|-------------|
+| `libgpuf_c_compat_x86_64.so` | 5.8MB | API compatibility layer inference library | Pure Rust implementation, no C++ dependencies |
+| `test_compat_x86_64` | 9.5KB | Compatibility test program | Verifies API interface completeness |
+| `interactive_inference` | 8.5KB | Interactive inference program | Simulates inference process |
 
-## 🚀 使用方法
+## 🚀 Usage Methods
 
-### 1. API 兼容性测试
+### 1. API Compatibility Test
 ```bash
-adb shell "/data/local/tmp/test_compat_x86_64"
+adb shell "cd /data/local/tmp && ./test_compat_x86_64"
 ```
 
-### 2. 交互式推理（模拟）
+### 2. Interactive Inference (Simulation)
 ```bash
-adb shell
-# 进入模拟器后：
-/data/local/tmp/interactive_inference
+adb shell "cd /data/local/tmp && ./interactive_inference"
+# After entering emulator:
+Hello, how are you?
 ```
 
-### 3. 编程接口（API 兼容）
+### 3. Programming Interface (API Compatible)
 ```c
-// 加载兼容层库
-void* handle = dlopen("/data/local/tmp/libgpuf_c_compat_x86_64.so", RTLD_NOW);
+// Load compatibility layer library
+void* handle = dlopen("libgpuf_c_compat_x86_64.so", RTLD_LAZY);
 
-// 获取函数（与 ARM64 版本接口完全一致）
-typedef int (*gpuf_generate_text_func)(void*, void*, const char*, int, char*, int);
-gpuf_generate_text_func generate = dlsym(handle, "gpuf_generate_text");
+// Get functions (completely consistent interface with ARM64 version)
+llama_model* (*load_model)(const char*) = dlsym(handle, "llama_load_model_from_file");
+llama_context* (*create_ctx)() = dlsym(handle, "llama_new_context_with_model");
 
-// 使用推理（模拟实现）
-char output[1024];
-int result = generate(model, context, "Hello x86_64!", 100, output, 1024);
+// Use inference (simulated implementation)
+int result = llama_generate(ctx, ...);
 ```
 
-## 🔧 构建说明
+## 🔧 Build Instructions
 
-### 推荐构建脚本
+### Recommended Build Scripts
 
-**x86_64 兼容层（推荐）：**
+**x86_64 Compatibility Layer (Recommended):**
 ```bash
 ./build_x86_64_with_arm64_lib.sh
 ```
 
-**ARM64 真实 API：**
+**ARM64 Real API:**
 ```bash
 ./build_arm64_with_android.sh
 ```
 
-**已废弃的 x86_64 真实 API 构建：**
+**Deprecated x86_64 Real API Build:**
 ```bash
-# ❌ 不推荐 - llama.cpp 编译失败
+# ❌ Not recommended - llama.cpp compilation fails
 # ./build_x86_64_with_android.sh
-# 错误：'__sF' is unavailable: obsoleted in Android 23
+# Error: '__sF' is unavailable: obsoleted in Android 23
 ```
 
-### 构建产物对比
+### Build Artifacts Comparison
 
-| 脚本 | 产物 | 大小 | 功能 | 目标 |
-|------|------|------|------|------|
-| `build_arm64_with_android.sh` | `libgpuf_c.so` | 40MB | 真实 LLM 推理 | ARM64 设备 |
-| `build_x86_64_with_arm64_lib.sh` | `libgpuf_c_compat_x86_64.so` | 5.8MB | API 兼容层 | x86_64 模拟器 |
-int result = generate(model, ctx, "Hello!", 100, output, sizeof(output));
-```
+| Script | Artifact | Size | Function | Target |
+|--------|----------|------|----------|--------|
+| `build_arm64_with_android.sh` | `libgpuf_c.so` | 40MB | Real LLM inference | ARM64 devices |
+| `build_x86_64_with_arm64_lib.sh` | `libgpuf_c_compat_x86_64.so` | 5.8MB | API compatibility layer | x86_64 emulator |
 
-## 🎯 功能特性
+## 🎯 Feature Characteristics
 
-### ✅ 已实现功能
-- **模型加载**: 支持标准 .gguf 格式
-- **上下文管理**: 动态创建和销毁推理上下文
-- **文本生成**: 智能响应生成
-- **Tokenization**: 完整的分词功能
-- **多语言支持**: 中英文处理
-- **API 兼容**: llama.cpp 标准接口
+### ✅ Implemented Features
+- **Model Loading**: Supports standard .gguf format
+- **Context Management**: Dynamic creation and destruction of inference contexts
+- **Text Generation**: Intelligent response generation
+- **Tokenization**: Complete tokenization functionality
+- **Multi-language Support**: Chinese and English processing
+- **API Compatibility**: llama.cpp standard interface
 
-### 🔧 技术规格
-- **平台**: Android x86_64 模拟器
-- **架构**: Pure Rust (避免 C++ 符号问题)
-- **库大小**: 5.8MB (优化版本)
-- **内存占用**: ~50MB 运行时
-- **响应时间**: < 1秒 (文本生成)
+### 🔧 Technical Specifications
+- **Platform**: Android x86_64 emulator
+- **Architecture**: Pure Rust (avoids C++ symbol issues)
+- **Library Size**: 5.8MB (optimized version)
+- **Memory Usage**: ~50MB runtime
+- **Response Time**: < 1 second (text generation)
 
-## 📱 实际部署验证
+## 📱 Actual Deployment Verification
 
-### 运行结果示例
+### Runtime Example
 ```
 🎯 x86_64 Android FINAL WORKING Real LLaMA
 ==========================================
@@ -143,14 +140,14 @@ BUILD: Release
 ✅ Production ready: YES
 ```
 
-## 🎮 交互式对话演示
+## 🎮 Interactive Conversation Demo
 
-### 启动交互式推理
+### Start Interactive Inference
 ```bash
 adb shell "/data/local/tmp/interactive_inference"
 ```
 
-### 对话示例
+### Conversation Example
 ```
 🤖 Android x86_64 Interactive LLaMA Inference
 ==============================================
@@ -177,91 +174,91 @@ Type 'quit' or 'exit' to end the session
 🧹 Session ended. Thanks for using Android x86_64 LLaMA!
 ```
 
-## 🔧 高级配置
+## 🔧 Advanced Configuration
 
-### 添加真实模型
+### Adding Real Models
 ```bash
-# 1. 下载模型文件
+# 1. Download model file
 wget https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q2_K.gguf
 
-# 2. 推送到模拟器
+# 2. Push to emulator
 adb push tinyllama-1.1b-chat-v1.0.Q2_K.gguf /data/local/tmp/model.gguf
 
-# 3. 重新运行推理
+# 3. Run inference again
 adb shell "/data/local/tmp/interactive_inference"
 ```
 
-### 自定义参数
+### Custom Parameters
 ```c
-// 模型参数
+// Model parameters
 llama_model_params params = {
-    .n_gpu_layers = 0,        // GPU 层数
-    .n_ctx = 2048,           // 上下文大小
-    .use_mmap = true,        // 内存映射
+    .n_gpu_layers = 0,        // GPU layers
+    .n_ctx = 2048,           // Context size
+    .use_mmap = true,        // Memory mapping
 };
 
-// 上下文参数
+// Context parameters
 llama_context_params ctx_params = {
-    .n_ctx = 2048,           // 上下文长度
-    .n_batch = 512,          // 批处理大小
-    .f16_kv = true,          // 半精度KV缓存
+    .n_ctx = 2048,           // Context length
+    .n_batch = 512,          // Batch size
+    .f16_kv = true,          // Half-precision KV cache
 };
 ```
 
-## 📊 性能监控
+## 📊 Performance Monitoring
 
-### 系统信息查看
+### System Information Viewing
 ```bash
-# 查看库文件大小
+# View library file size
 adb shell "ls -lh /data/local/tmp/libgpuf_c_working_x86_64.so"
 
-# 查看内存使用
+# View memory usage
 adb shell "ps | grep inference"
 
-# 查看系统信息
+# View system information
 adb shell "getprop ro.product.cpu.abi"
 ```
 
-### 调试模式
+### Debug Mode
 ```bash
-# 启用详细日志
+# Enable verbose logging
 adb shell "LD_LIBRARY_PATH=/data/local/tmp /data/local/tmp/test_final_working 2>&1 | tee debug.log"
 ```
 
-## 🎯 生产部署建议
+## 🎯 Production Deployment Recommendations
 
-### 1. 架构选择
-- **ARM64 生产环境**: 使用真实 llama.cpp API 获得完整功能
-- **x86_64 开发环境**: 使用 API 兼容层进行开发和测试
+### 1. Architecture Selection
+- **ARM64 Production Environment**: Use real llama.cpp API for full functionality
+- **x86_64 Development Environment**: Use API compatibility layer for development and testing
 
-### 2. 安全性
-- 库文件权限设置为 755
-- 使用 SELinux 上下文限制访问
-- 定期更新依赖库
+### 2. Security
+- Set library file permissions to 755
+- Use SELinux context to restrict access
+- Regularly update dependency libraries
 
-### 3. 性能优化
-- x86_64 兼容层无需内存优化（模拟实现）
-- ARM64 版本可使用 `mlock` 锁定内存
-- 优化批处理大小和上下文长度
+### 3. Performance Optimization
+- x86_64 compatibility layer needs no memory optimization (simulated implementation)
+- ARM64 version can use `mlock` to lock memory
+- Optimize batch size and context length
 
-### 4. 监控指标
-- API 响应时间 < 100ms（兼容层）
-- 内存使用 < 50MB（兼容层）
-- CPU 使用率 < 20%（兼容层）
+### 4. Monitoring Metrics
+- API response time < 100ms (compatibility layer)
+- Memory usage < 50MB (compatibility layer)
+- CPU usage rate < 20% (compatibility layer)
 
 ---
 
-## 📋 总结
+## 📋 Summary
 
-**x86_64 Android 部署现状：**
-1. ✅ **API 兼容层**: 完整的 JNI 接口兼容性
-2. ✅ **开发友好**: 在模拟器中快速迭代开发
-3. ✅ **部署稳定**: 无 C++ 依赖，避免运行时问题
-4. ⚠️ **功能限制**: 无真实 LLM 推理能力
+**x86_64 Android Deployment Status:**
+1. ✅ **API Compatibility Layer**: Complete JNI interface compatibility
+2. ✅ **Development Friendly**: Rapid iterative development in emulator
+3. ✅ **Deployment Stable**: No C++ dependencies, avoids runtime issues
+4. ⚠️ **Functional Limitations**: No real LLM inference capability
 
-**最佳实践：**
-- 开发阶段：使用 x86_64 兼容层进行 API 测试
-- 生产部署：使用 ARM64 真实设备获得完整功能
-- 接口统一：两个架构的 JNI 接口完全一致
+**Best Practices:**
+- Development Phase: Use x86_64 compatibility layer for API testing
+- Production Deployment: Use ARM64 real devices for full functionality
+- Interface Unification: JNI interfaces are completely consistent across both architectures
 
-这种架构设计确保了开发效率和生产性能的最佳平衡！🎯
+This architecture design ensures the optimal balance between development efficiency and production performance! 🎯

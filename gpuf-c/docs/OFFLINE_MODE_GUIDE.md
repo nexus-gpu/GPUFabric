@@ -77,145 +77,133 @@ public static native int startComputeMonitoring(
 );
 ```
 
-### 离线模式参数
+### Offline Mode Parameters
+| Parameter | Type | Offline Mode Value | Description |
+|-----------|------|-------------------|-------------|
+| `offlineMode` | `boolean` | `true` | Enable offline mode |
+| `serverUrl` | `String` | Can be empty | Not used in offline mode |
+| `serverAddr` | `String` | Can be empty | No connection in offline mode |
+| `controlPort` | `int` | Any value | Ignored in offline mode |
+| `proxyPort` | `int` | Any value | Ignored in offline mode |
 
-| 参数 | 类型 | 离线模式值 | 说明 |
-|------|------|------------|------|
-| `offlineMode` | `boolean` | `true` | 启用离线模式 |
-| `serverUrl` | `String` | 可为空 | 离线模式下不会使用 |
-| `serverAddr` | `String` | 可为空 | 离线模式下不会连接 |
-| `controlPort` | `int` | 任意值 | 离线模式下忽略 |
-| `proxyPort` | `int` | 任意值 | 离线模式下忽略 |
-
-## 🏗️ 架构设计
-
-### 离线模式架构
-
+## 🏗️ Architecture Design
+### Offline Mode Architecture
 ```
-Android 设备 (离线模式)
+Android Device (Offline Mode)
+┌─────────────────────────────────┐
+│  Client Application             │
+│  ┌─────────────────────────────┐ │
+│  │ Local LLM Engine       │ ← Direct call, zero latency │
+│  └─────────────────────────────┘ │
+│  ┌─────────────────────────────┐ │
+│  │ ComputeProxy           │ ← Offline mode, skip reporting │
+│  └─────────────────────────────┘ │
+└─────────────────────────────────┘
+```
+
+### Online Mode Architecture
+```
+Android Device (Online Mode)
 ┌─────────────────────────┐
 │  Android Application    │
 │           ↓             │
 │  JNI Layer              │
 │           ↓             │
-│  Local LLM Engine       │ ← 直接调用，零延迟
+│  Local LLM Engine       │ ← Direct call, zero latency │
 │           ↓             │
-│  ComputeProxy           │ ← 离线模式，跳过上报
+│  ComputeProxy           │ ← Online mode, full reporting │
+│           ↓             │
+│  WorkerHandle           │ ← Connect to remote server │
+│           ↓             │
+│  Remote Servers         │ ← Compute sharing and monitoring │
 └─────────────────────────┘
 ```
 
-### 在线模式架构
+## 📊 Performance Comparison
 
-```
-Android 设备 (在线模式)
-┌─────────────────────────┐
-│  Android Application    │
-│           ↓             │
-│  JNI Layer              │
-│           ↓             │
-│  Local LLM Engine       │ ← 直接调用，零延迟
-│           ↓             │
-│  ComputeProxy           │ ← 在线模式，完整上报
-│           ↓             │
-│  WorkerHandle           │ ← 连接远程服务器
-│           ↓             │
-│  Remote Servers         │ ← 算力分享和监控
-└─────────────────────────┘
-```
+### Response Time
+| Operation | Online Mode | Offline Mode | Difference |
+|-----------|-------------|--------------|------------|
+| Local inference | ~50ms | ~50ms | No difference |
+| Result reporting | +20ms | 0ms | Save 20ms |
+| Status reporting | +10ms | 0ms | Save 10ms |
+| Total response time | ~80ms | ~50ms | **37% improvement** |
 
-## 📊 性能对比
+### Resource Consumption
+| Resource | Online Mode | Offline Mode | Savings |
+|----------|-------------|--------------|---------|
+| Network bandwidth | 1KB/request | 0KB | 100% |
+| Power consumption | Baseline + 15% | Baseline | 15% |
+| CPU usage | Baseline + 5% | Baseline | 5% |
 
-### 响应时间
+## 🔄 Usage Scenarios
 
-| 操作 | 在线模式 | 离线模式 | 差异 |
-|------|----------|----------|------|
-| 本地推理 | ~50ms | ~50ms | 无差异 |
-| 结果上报 | +20ms | 0ms | 节省 20ms |
-| 状态上报 | +10ms | 0ms | 节省 10ms |
-| 总响应时间 | ~80ms | ~50ms | **提升 37%** |
+### Recommended Offline Mode Scenarios
 
-### 资源消耗
+1. **No Network Environment**
+   - Airplane mode
+   - Underground or remote areas
+   - Network failure
 
-| 资源 | 在线模式 | 离线模式 | 节省 |
-|------|----------|----------|------|
-| 网络带宽 | 1KB/请求 | 0KB | 100% |
-| 电量消耗 | 基准 + 15% | 基准 | 15% |
-| CPU 使用 | 基准 + 5% | 基准 | 5% |
+2. **Privacy-Sensitive Scenarios**
+   - Medical diagnosis
+   - Financial analysis
+   - Personal assistant
 
-## 🔄 使用场景
+3. **Performance-Priority Scenarios**
+   - Real-time conversation
+   - Gaming applications
+   - Batch processing
 
-### 推荐使用离线模式的场景
+4. **Resource-Constrained Scenarios**
+   - Mobile device low battery
+   - Limited data plan
+   - Low-end devices
 
-1. **无网络环境**
-   - 飞机模式
-   - 地下室、偏远地区
-   - 网络故障期间
+### Recommended Online Mode Scenarios
 
-2. **隐私敏感场景**
-   - 医疗诊断
-   - 金融分析
-   - 个人助手
+1. **Compute Sharing Scenarios**
+   - Distributed computing networks
+   - Compute monetization
+   - Load balancing
 
-3. **性能优先场景**
-   - 实时对话
-   - 游戏应用
-   - 批量处理
+2. **Monitoring Management Scenarios**
+   - Enterprise device management
+   - Performance analysis
+   - Fault diagnosis
 
-4. **资源受限场景**
-   - 移动设备电量不足
-   - 流量套餐限制
-   - 低端设备
+3. **Collaboration Scenarios**
+   - Multi-device coordination
+   - Cloud synchronization
+   - Remote control
 
-### 推荐使用在线模式的场景
+## 🛠️ Development Suggestions
 
-1. **算力分享场景**
-   - 分布式计算网络
-   - 算力变现
-   - 负载均衡
-
-2. **监控管理场景**
-   - 企业设备管理
-   - 性能分析
-   - 故障诊断
-
-3. **协作场景**
-   - 多设备协同
-   - 云端同步
-   - 远程控制
-
-## 🛠️ 开发建议
-
-### 1. 智能模式切换
+### 1. Intelligent Mode Switching
 
 ```java
-// 检测网络状态
+// Detect network status
 boolean isOnline = isNetworkAvailable();
 boolean isPrivacySensitive = isPrivacyMode();
 
-// 根据场景选择模式
+// Select mode based on scenario
 boolean offlineMode = !isOnline || isPrivacySensitive;
 
-GpufNative.startComputeMonitoring(
-    serverUrl, serverAddr, controlPort, proxyPort,
-    workerType, engineType, offlineMode
-);
+initializeInferenceService(offlineMode);
 ```
 
-### 2. 用户配置选项
+### 2. User Configuration Options
 
 ```java
-// 在设置中提供模式选择
-SharedPreferences prefs = getSharedPreferences("gpu_settings", MODE_PRIVATE);
-boolean offlineMode = prefs.getBoolean("offline_mode", false);
+// Provide mode selection in settings
+SharedPreferences prefs = getSharedPreferences("settings", MODE_PRIVATE);
+boolean userOfflineMode = prefs.getBoolean("offline_mode", false);
 
-// 根据用户偏好启动
-GpufNative.startComputeMonitoring(
-    serverUrl, serverAddr, controlPort, proxyPort,
-    workerType, engineType, offlineMode
-);
+// Start based on user preference
+initializeInferenceService(userOfflineMode);
 ```
 
-### 3. 错误处理
+### 3. Error Handling
 
 ```java
 int result = GpufNative.startComputeMonitoring(

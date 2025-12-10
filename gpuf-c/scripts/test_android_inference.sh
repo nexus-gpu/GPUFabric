@@ -252,7 +252,7 @@ EOF
     $COMPILER -o /tmp/test_inference /tmp/test_inference.c \
         -I"$SDK_DIR/include" 2>/dev/null || {
         echo "   ⚠️ Using simplified compilation..."
-        # such asresultheadtextfilesnotstoreat，useusesimple-ize[编][译]
+        # Use simplified compilation if header files not available
         $COMPILER -o /tmp/test_inference /tmp/test_inference.c 2>/dev/null || {
             handle_error "Test program compilation failed"
         }
@@ -274,7 +274,7 @@ run_inference_test() {
     echo "🧪 Starting Android device inference test..."
     echo "=================================="
     
-    # [运][行]Test[程]sequence
+    # Run test sequence
     adb shell "cd $DEVICE_TEST_DIR && ./test_inference"
     
     local test_result=$?
@@ -282,7 +282,7 @@ run_inference_test() {
     if [ $test_result -eq 0 ]; then
         handle_success "Inference test passed!"
     else
-        handle_error "pushmanageTestFailed ([退]output[码]: $test_result)"
+        handle_error "Test failed (exit code: $test_result)"
     fi
 }
 
@@ -335,7 +335,7 @@ echo ""
 echo "✅ JNI API environment check completed"
 EOF
 
-    # push[送]and[运][行]Test
+    # Push and run test
     adb push /tmp/test_jni_api.sh "$DEVICE_TEST_DIR/"
     adb shell "chmod 755 $DEVICE_TEST_DIR/test_jni_api.sh"
     adb shell "cd $DEVICE_TEST_DIR && ./test_jni_api.sh"
@@ -347,7 +347,7 @@ EOF
 run_performance_test() {
     handle_step "Running performance test..."
     
-    # createbuildproperty[能]Test[脚]script
+    # Create performance test script
     cat > /tmp/test_performance.sh << 'EOF'
 #!/system/bin/sh
 
@@ -357,30 +357,30 @@ echo "=========="
 # Set environment variables
 export LD_PRELOAD="/data/local/tmp/gpuf_test/libc++_shared.so"
 
-# TestInitializetime[间]
+# Test initialization time
 echo "🕐 Testing initialization time..."
 start_time=$(date +%s%N)
-# [这][里]should[该][调]useInitializefunctionnumber，simple-ize[起][见]Itheymodelsimulate
+# This should call initialization function, simplified for simulation
 sleep 1
 end_time=$(date +%s%N)
 init_time=$(((end_time - start_time) / 1000000))
 echo "   Initialization time: ${init_time}ms"
 
-# TestModelLoadtime[间]
+# Test model loading time
 echo ""
 echo "🕐 Testing model loading time..."
 start_time=$(date +%s%N)
-# modelsimulateModelLoad
+# Model loading simulation
 sleep 2
 end_time=$(date +%s%N)
 load_time=$(((end_time - start_time) / 1000000))
 echo "   Model loading time: ${load_time}ms"
 
-# Testpushmanagetime[间]
+# Test inference time
 echo ""
 echo "🕐 Testing inference time..."
 start_time=$(date +%s%N)
-# modelsimulatepushmanage[过][程]
+# Inference process simulation
 sleep 1
 end_time=$(date +%s%N)
 infer_time=$(((end_time - start_time) / 1000000))
@@ -400,15 +400,15 @@ EOF
 # Show test results
 show_results() {
     echo ""
-    echo -e "${GREEN}🎉 Android [真]machinepushmanageTestCompleted！${NC}"
+    echo -e "${GREEN}🎉 Android device inference test completed!${NC}"
     echo ""
     echo "📊 Test Summary:"
-    echo "- ✅ SDK [部][署]Success"
-    echo "- ✅ ModelLoad[验][证]"
-    echo "- ✅ base[础]textscriptGenerateTest"
-    echo "- ✅ generateTextWithSampling API Test"
-    echo "- ✅ JNI API success[能][验][证]"
-    echo "- ✅ property[能]baseprepareTest"
+    echo "- ✅ SDK deployment successful"
+    echo "- ✅ Model loading verified"
+    echo "- ✅ Basic text generation test"
+    echo "- ✅ generateTextWithSampling API test"
+    echo "- ✅ JNI API functionality verified"
+    echo "- ✅ Performance baseline test"
     echo ""
     echo "📱 Device Information:"
     echo "- Device Model: $DEVICE_MODEL"
@@ -422,7 +422,7 @@ show_results() {
     echo ""
     echo "🔍 Debug Commands:"
     echo "- View logs: adb logcat | grep 'GPUFabric'"
-    echo "- [进]inputDevice: adb shell"
+    echo "- Enter device: adb shell"
     echo "- Test directory: cd $DEVICE_TEST_DIR"
     echo ""
     echo "✅ Test verified the following key functions:"

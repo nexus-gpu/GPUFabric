@@ -51,16 +51,41 @@ check_environment() {
     
     # Check llama.cpp source directory
     LLAMA_CPP_ROOT="$WORKSPACE_ROOT/llama.cpp"
+    LLAMA_CPP_COMMIT="16cc3c606efe1640a165f666df0e0dc7cc2ad869"  # Fixed version: 2025-12-03
+    
     if [ ! -d "$LLAMA_CPP_ROOT" ]; then
         echo "📥 llama.cpp source directory not found, starting auto-clone..."
-        git clone --depth 1 --branch master https://github.com/ggerganov/llama.cpp.git "$LLAMA_CPP_ROOT"
+        echo "🔒 Using pinned version: $LLAMA_CPP_COMMIT"
+        git clone https://github.com/ggerganov/llama.cpp.git "$LLAMA_CPP_ROOT"
         if [ $? -eq 0 ]; then
-            echo "✅ llama.cpp cloned successfully!"
+            cd "$LLAMA_CPP_ROOT"
+            git checkout "$LLAMA_CPP_COMMIT"
+            if [ $? -eq 0 ]; then
+                echo "✅ llama.cpp cloned and checked out to pinned version successfully!"
+            else
+                handle_error "llama.cpp checkout to pinned version failed"
+            fi
         else
             handle_error "llama.cpp clone failed"
         fi
     else
         echo "✅ llama.cpp source directory already exists"
+        echo "🔍 Verifying pinned version..."
+        cd "$LLAMA_CPP_ROOT"
+        CURRENT_COMMIT=$(git rev-parse HEAD)
+        if [ "$CURRENT_COMMIT" != "$LLAMA_CPP_COMMIT" ]; then
+            echo "⚠️  Current commit ($CURRENT_COMMIT) differs from pinned version"
+            echo "🔄 Checking out to pinned version: $LLAMA_CPP_COMMIT"
+            git fetch origin
+            git checkout "$LLAMA_CPP_COMMIT"
+            if [ $? -eq 0 ]; then
+                echo "✅ Checked out to pinned version successfully!"
+            else
+                handle_error "Failed to checkout to pinned version"
+            fi
+        else
+            echo "✅ Already on pinned version: $LLAMA_CPP_COMMIT"
+        fi
     fi
     
     handle_success "Environment check passed"
@@ -112,7 +137,7 @@ build_rust_library() {
     echo "🔧 Adding Android NDK toolchain to PATH..."
     export PATH="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
     
-    echo "🔧 Using static C++ runtime for better Android compatibility..."
+    echo "🔧 Building static library with multimodal support..."
     cargo rustc --target $TARGET_ARCH --release --lib --crate-type=staticlib \
         --features android \
         -- -C link-arg=-static-libstdc++ -C link-arg=-static-libgcc
@@ -121,9 +146,9 @@ build_rust_library() {
         handle_error "Rust library build failed"
     fi
     
-    # Check static library file
-    echo "Checking static library file..."
-    ls -la "$WORKSPACE_ROOT/target/$TARGET_ARCH/release/libgpuf_c.a"
+    # Check library files
+    echo "Checking generated library files..."
+    ls -la "$WORKSPACE_ROOT/target/$TARGET_ARCH/release/libgpuf_c."*
     
     if [ ! -f "$WORKSPACE_ROOT/target/$TARGET_ARCH/release/libgpuf_c.a" ]; then
         echo "❌ Static library file not found at expected location, checking other locations..."
@@ -254,9 +279,19 @@ build_llama_cpp_from_source() {
         echo "🎨 Copying multimodal libraries from build directory..."
         cp ../build-android/tools/mtmd/libmtmd.a "$LLAMA_ANDROID_NDK_DIR/"
         echo "✅ libmtmd.a copied successfully"
+    elif [ -f "$LLAMA_CPP_ROOT/build-android/tools/mtmd/libmtmd.a" ]; then
+        echo "🎨 Copying multimodal libraries from llama.cpp build directory..."
+        cp "$LLAMA_CPP_ROOT/build-android/tools/mtmd/libmtmd.a" "$LLAMA_ANDROID_NDK_DIR/"
+        echo "✅ libmtmd.a copied successfully"
     else
         echo "⚠️ libmtmd.a not found - multimodal support disabled"
-        echo "   Expected at: tools/mtmd/libmtmd.a or ../build-android/tools/mtmd/libmtmd.a"
+        echo "   Expected at: tools/mtmd/libmtmd.a"
+        echo "              or ../build-android/tools/mtmd/libmtmd.a"
+        echo "              or $LLAMA_CPP_ROOT/build-android/tools/mtmd/libmtmd.a"
+        echo "   Actual search results:"
+        echo "     tools/mtmd/libmtmd.a: $([ -f "tools/mtmd/libmtmd.a" ] && echo "EXISTS" || echo "NOT FOUND")"
+        echo "     ../build-android/tools/mtmd/libmtmd.a: $([ -f "../build-android/tools/mtmd/libmtmd.a" ] && echo "EXISTS" || echo "NOT FOUND")"
+        echo "     $LLAMA_CPP_ROOT/build-android/tools/mtmd/libmtmd.a: $([ -f "$LLAMA_CPP_ROOT/build-android/tools/mtmd/libmtmd.a" ] && echo "EXISTS" || echo "NOT FOUND")"
     fi
     
     # Extract key object files
@@ -331,11 +366,11 @@ link_sdk() {
         $GGML_LIB \
         $GGML_CPU_LIB \
         $GGML_BASE_LIB \
-        $MTMD_LIB \
         -llog -ldl -lm \
         -static-libstdc++ -static-libgcc \
         $OMP_LIB \
-        -Wl,--exclude-libs,libomp.a
+        -Wl,--exclude-libs,libomp.a \
+        -Wl,--whole-archive $MTMD_LIB -Wl,--no-whole-archive
     
     if [ $? -ne 0 ]; then
         handle_error "SDK linking failed"

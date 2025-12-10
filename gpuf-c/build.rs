@@ -2,7 +2,6 @@ use std::env;
 use std::path::PathBuf;
 
 fn main() {
-    // Temporarily disable cbindgen to avoid syntax errors
     let crate_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
     
     // Configure cbindgen directly, without relying on external config files
@@ -18,14 +17,14 @@ fn main() {
     
     // Get the target OS from Cargo environment variable
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap();
-    println!("cargo:warning=Target OS detected: {}", target_os);
+    // println!("cargo:warning=Target OS detected: {}", target_os); // Commented out to reduce warning noise
     
     // Configure CUDA compilation flags for Position Independent Code
     // This is required for linking CUDA code into shared libraries
     if cfg!(feature = "cuda") {
         println!("cargo:rustc-env=CUDA_NVCC_FLAGS=-Xcompiler -fPIC");
         println!("cargo:rustc-env=CUDAFLAGS=-Xcompiler -fPIC");
-        println!("cargo:warning=CUDA feature enabled - adding -fPIC flag");
+        // println!("cargo:warning=CUDA feature enabled - adding -fPIC flag"); // Commented out to reduce warning noise
     }
 
     // Configure NVML library path for Windows target
@@ -210,16 +209,8 @@ fn main() {
         // Additional: Force symbol visibility
         println!("cargo:rustc-link-arg=-Wl,--retain-symbols-file=/dev/null");
         
-        // Additional: Force export all symbols from static libraries
-        println!("cargo:rustc-link-arg=-Wl,--whole-archive");
-        println!("cargo:rustc-link-arg=-Wl,--no-whole-archive");
-        
-        // Ensure symbols are not stripped
-        println!("cargo:rustc-link-arg=-Wl,--retain-symbols-file=/dev/null");
-        
         println!("cargo:warning=Linked static llama.cpp Android library at: {}", llama_lib_dir.display());
     }
-    
     println!("cargo:rerun-if-changed=src/lib.rs");
     println!("cargo:rerun-if-changed=build.rs");
 }

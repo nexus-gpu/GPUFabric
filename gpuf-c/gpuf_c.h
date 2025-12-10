@@ -8,6 +8,15 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+typedef enum ProjectorType {
+  Unknown = 0,
+  LLaVA = 1,
+  Qwen2VL = 2,
+  Qwen25VL = 3,
+  Qwen3VL = 4,
+  Pixtral = 5,
+} ProjectorType;
+
 typedef struct llama_model {
   uint8_t _private[0];
 } llama_model;
@@ -69,14 +78,16 @@ typedef int32_t LlamaToken;
 
 typedef int LlamaPos;
 
+typedef int LlamaSeqId;
+
 typedef struct llama_batch {
   int n_tokens;
   const LlamaToken *token;
   const float *embd;
   const LlamaPos *pos;
   const int *n_seq_id;
-  const int *const *seq_id;
-  const uint8_t *logits;
+  const LlamaSeqId *seq_id;
+  const int8_t *logits;
   LlamaPos all_pos_0;
   LlamaPos all_pos_1;
   int all_seq_id;
@@ -112,6 +123,10 @@ typedef struct MtmdInputText {
   bool parse_special;
 } MtmdInputText;
 
+typedef int MtmdLlamaPos;
+
+typedef int MtmdLlamaSeqId;
+
 typedef struct llama_sampler {
   uint8_t _private[0];
 } llama_sampler;
@@ -135,8 +150,23 @@ typedef struct llama_token_data_array {
 typedef struct gpuf_multimodal_model {
   struct llama_model *text_model;
   struct MtmdContext *mtmd_context;
+  enum ProjectorType projector_type;
+  const struct llama_vocab *vocab;
   bool is_multimodal;
+  CString _media_marker;
 } gpuf_multimodal_model;
+
+/**
+ * Token callback: called for each generated token
+ * Parameters: user_data, token_text, token_id
+ */
+typedef void (*TokenCallback)(void*, const char*, int);
+
+/**
+ * Completion callback: called when generation completes
+ * Parameters: user_data, full_text, token_count
+ */
+typedef void (*CompletionCallback)(void*, const char*, int);
 
 extern int llama_backend_init(void);
 
@@ -186,6 +216,15 @@ extern int mtmd_tokenize(struct MtmdContext *ctx,
 
 extern int mtmd_encode_chunk(struct MtmdContext *ctx, const void *chunk);
 
+extern int mtmd_helper_eval_chunks(struct MtmdContext *ctx,
+                                   struct llama_context *lctx,
+                                   void *chunks,
+                                   MtmdLlamaPos n_past,
+                                   MtmdLlamaSeqId seq_id,
+                                   int n_batch,
+                                   bool logits_last,
+                                   MtmdLlamaPos *new_n_past);
+
 extern float *mtmd_get_output_embd(struct MtmdContext *ctx);
 
 extern struct llama_sampler *llama_sampler_init_top_k(int k);
@@ -203,6 +242,25 @@ extern struct llama_sampler *llama_sampler_init_penalties(int penalty_last_n,
                                                           float penalty_freq,
                                                           float penalty_present);
 
+extern int llama_vocab_n_tokens(const struct llama_vocab *vocab);
+
+extern int llama_n_batch(struct llama_context *ctx);
+
+extern struct llama_batch llama_batch_init(int n_tokens, int embd, int n_seq_max);
+
+extern void llama_batch_free(struct llama_batch batch);
+
+extern struct llama_batch llama_batch_get_one(const LlamaToken *token,
+                                              int n_tokens,
+                                              LlamaPos pos_0,
+                                              int seq_id);
+
+extern void *llama_get_memory(struct llama_context *ctx);
+
+extern bool llama_memory_seq_rm(void *mem, int seq_id, LlamaPos p0, LlamaPos p1);
+
+extern void llama_memory_clear(void *mem, bool data);
+
 extern struct llama_sampler *llama_sampler_chain_init(struct llama_sampler_chain_params params);
 
 extern void llama_sampler_chain_add(struct llama_sampler *chain, struct llama_sampler *sampler);
@@ -218,7 +276,7 @@ extern void llama_sampler_apply(struct llama_sampler *sampler,
 
 extern int llama_n_ctx(const struct llama_context *ctx);
 
-extern int llama_model_n_vocab(const struct llama_model *model);
+extern int llama_n_vocab(struct llama_context *ctx);
 
 extern LlamaToken llama_token_bos(const struct llama_model *model);
 
@@ -349,11 +407,31 @@ int gpuf_generate_multimodal(struct gpuf_multimodal_model *multimodal_model,
                              char *output,
                              int output_len);
 
+int gpuf_generate_multimodal_stream(struct gpuf_multimodal_model *multimodal_model,
+                                    struct llama_context *ctx,
+                                    const char *text_prompt,
+                                    const uint8_t *image_data,
+                                    unsigned long long image_size,
+                                    int max_tokens,
+                                    float temperature,
+                                    int top_k,
+                                    float top_p,
+                                    float repeat_penalty,
+                                    TokenCallback on_token,
+                                    CompletionCallback on_complete,
+                                    void *user_data);
+
 void gpuf_free_multimodal_model(struct gpuf_multimodal_model *multimodal_model);
 
 bool gpuf_multimodal_supports_vision(struct gpuf_multimodal_model *multimodal_model);
 
 int gpuf_get_multimodal_info(struct gpuf_multimodal_model *multimodal_model, bool *has_vision);
+
+int gpuf_get_vision_tokens(struct gpuf_multimodal_model *multimodal_model,
+                           char *start_token,
+                           char *end_token,
+                           char *media_token,
+                           int max_length);
 
 int gpuf_generate_final_solution_text(const struct llama_model *model,
                                       struct llama_context *ctx,
@@ -514,5 +592,48 @@ int gpuf_generate_single_token(const struct llama_model *model,
                                const char *prompt,
                                char *output,
                                int output_len);
+
+/**
+ * JNI: Load multimodal model (text model + mmproj)
+ */
+jlong Java_com_gpuf_c_GPUEngine_loadMultimodalModel(JNIEnv env,
+                                                    JClass _class,
+                                                    JString text_model_path,
+                                                    JString mmproj_path);
+
+/**
+ * JNI: Create context for multimodal model
+ */
+jlong Java_com_gpuf_c_GPUEngine_createMultimodalContext(JNIEnv _env,
+                                                        JClass _class,
+                                                        jlong multimodal_model_ptr);
+
+/**
+ * JNI: Generate with multimodal input (text + image)
+ */
+jstring Java_com_gpuf_c_GPUEngine_generateMultimodal(JNIEnv env,
+                                                     JClass _class,
+                                                     jlong multimodal_model_ptr,
+                                                     jlong ctx_ptr,
+                                                     JString text_prompt,
+                                                     jbyteArray image_data,
+                                                     jint max_tokens,
+                                                     jfloat temperature,
+                                                     jint top_k,
+                                                     jfloat top_p);
+
+/**
+ * JNI: Check if multimodal model supports vision
+ */
+jboolean Java_com_gpuf_c_GPUEngine_supportsVision(JNIEnv _env,
+                                                  JClass _class,
+                                                  jlong multimodal_model_ptr);
+
+/**
+ * JNI: Free multimodal model
+ */
+void Java_com_gpuf_c_GPUEngine_freeMultimodalModel(JNIEnv _env,
+                                                   JClass _class,
+                                                   jlong multimodal_model_ptr);
 
 #endif /* GPUF_C_H */

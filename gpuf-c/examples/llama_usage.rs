@@ -67,7 +67,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     match engine.generate(prompt, 100).await {
         Ok(response) => {
             println!("✅ Generation successful:");
-            println!("📝 {}", response);
+            println!("📝 {}", response.0);
         }
         Err(e) => {
             println!("❌ Generation failed: {}", e);

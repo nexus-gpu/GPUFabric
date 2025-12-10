@@ -25,15 +25,8 @@ use crate::util::device_info::read_power_metrics;
 #[cfg(all(not(target_os = "macos"), not(target_os = "android"), feature = "nvml"))]
 use nvml_wrapper::NVML;
 
-#[cfg(not(target_os = "macos"))]
-// Unused import kept for potential future use
-// use std::sync::Once;
-
 #[cfg(target_os = "macos")]
 use std::process::Command;
-
-#[cfg(all(not(target_os = "macos"), not(target_os = "android"), feature = "cuda"))]
-use std::sync::Once;
 
 //TODO: pci not support sxm
 #[cfg(target_os = "windows")]

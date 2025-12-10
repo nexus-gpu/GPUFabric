@@ -175,7 +175,7 @@ public class SmartModelSwitcher {
     private boolean loadModelWithMonitoring(String modelPath, String taskType) {
         CompletableFuture<Boolean> loadingFuture = new CompletableFuture<>();
         
-        // 启动加载监控
+        // Start loading monitoring
         ModelLoadingMonitor monitor = new ModelLoadingMonitor() {
             @Override
             protected void onModelLoaded(String path) {
@@ -192,7 +192,7 @@ public class SmartModelSwitcher {
         monitor.startLoadingMonitoring(modelPath);
         
         try {
-            // 等待加载完成（最多30秒）
+            // Wait for loading to complete (maximum 30 seconds)
             return loadingFuture.get(30, TimeUnit.SECONDS);
         } catch (Exception e) {
             Log.e(TAG, "Model loading timeout or error: " + e.getMessage());
@@ -202,7 +202,7 @@ public class SmartModelSwitcher {
 }
 ```
 
-### 4. 模型状态实时显示
+### 4. Real-time Model Status Display
 
 ```java
 public class ModelStatusDisplay {
@@ -217,36 +217,36 @@ public class ModelStatusDisplay {
             public void run() {
                 updateStatusDisplay();
             }
-        }, 0, 1000); // 每秒更新一次
+        }, 0, 1000); // Update once per second
     }
     
     private void updateStatusDisplay() {
         String status = GpufNative.getModelLoadingStatus();
         boolean isLoaded = GpufNative.isModelLoaded() == 1;
         
-        // 更新UI需要在主线程
+        // UI updates need to be on main thread
         mainHandler.post(() -> {
             if (status.contains("Loading")) {
-                statusText.setText("正在加载模型...");
+                statusText.setText("Loading model...");
                 progressBar.setVisibility(View.VISIBLE);
                 progressBar.setIndeterminate(true);
             } else if (status.contains("loaded")) {
                 String modelPath = GpufNative.getCurrentModel();
                 String modelName = extractModelName(modelPath);
-                statusText.setText("模型已加载: " + modelName);
+                statusText.setText("Model loaded: " + modelName);
                 progressBar.setVisibility(View.GONE);
             } else if (status.contains("error")) {
-                statusText.setText("加载失败: " + extractErrorMessage(status));
+                statusText.setText("Loading failed: " + extractErrorMessage(status));
                 progressBar.setVisibility(View.GONE);
             } else {
-                statusText.setText("未加载模型");
+                statusText.setText("No model loaded");
                 progressBar.setVisibility(View.GONE);
             }
         });
     }
     
     private String extractModelName(String fullPath) {
-        if (fullPath.isEmpty()) return "未知";
+        if (fullPath.isEmpty()) return "Unknown";
         return new File(fullPath).getName();
     }
     
@@ -266,7 +266,7 @@ public class ModelStatusDisplay {
 }
 ```
 
-### 5. 模型加载性能监控
+### 5. Model Loading Performance Monitoring
 
 ```java
 public class ModelPerformanceMonitor {
@@ -289,7 +289,7 @@ public class ModelPerformanceMonitor {
         metrics.modelPath = modelPath;
         metrics.startTime = System.currentTimeMillis();
         
-        // 启动加载
+        // Start loading
         new Thread(() -> {
             int result = GpufNative.loadModel(modelPath);
             metrics.endTime = System.currentTimeMillis();
@@ -299,7 +299,7 @@ public class ModelPerformanceMonitor {
                 metrics.errorMessage = GpufNative.getLastError();
             }
             
-            // 记录指标
+            // Record metrics
             recordLoadingMetrics(metrics);
         }).start();
     }
@@ -307,12 +307,12 @@ public class ModelPerformanceMonitor {
     private void recordLoadingMetrics(LoadingMetrics metrics) {
         loadingHistory.add(metrics);
         
-        // 只保留最近10次的记录
+        // Keep only the last 10 records
         if (loadingHistory.size() > 10) {
             loadingHistory.remove(0);
         }
         
-        // 输出性能报告
+        // Output performance report
         Log.i(TAG, String.format(
             "Model loading: %s - %dms - %s",
             extractModelName(metrics.modelPath),
@@ -320,7 +320,7 @@ public class ModelPerformanceMonitor {
             metrics.success ? "SUCCESS" : "FAILED: " + metrics.errorMessage
         ));
         
-        // 计算平均加载时间
+        // Calculate average loading time
         long totalTime = loadingHistory.stream()
             .filter(m -> m.success)
             .mapToLong(LoadingMetrics::getDuration)
@@ -351,10 +351,10 @@ public class ModelPerformanceMonitor {
 }
 ```
 
-## 🔄 状态转换图
+## 🔄 Status Transition Diagram
 
 ```
-    [开始]
+    [Start]
         |
         v
     not_loaded
@@ -362,8 +362,8 @@ public class ModelPerformanceMonitor {
         | load_model()
         v
     loading ────────────────┐
-        |                   | load_model() 失败
-        | 成功               |
+        |                   | load_model() failed
+        | Success             |
         v                   |
     loaded                  |
         |                   |
@@ -372,23 +372,23 @@ public class ModelPerformanceMonitor {
     not_loaded <────────────┘
 ```
 
-## 📊 状态查询对比
+## 📊 Status Query Comparison
 
-| 方法 | 返回类型 | 说明 | 适用场景 |
-|------|----------|------|----------|
-| `isModelLoaded()` | `int` | 0/1/-1 | 快速布尔判断 |
-| `getCurrentModel()` | `String` | 模型路径 | 获取当前模型 |
-| `getModelLoadingStatus()` | `String` | 详细状态 | UI显示、调试 |
-| `get_model_status()` | `Result<String>` | 状态枚举 | 内部状态查询 |
+| Method | Return Type | Description | Applicable Scenario |
+|--------|-------------|-------------|---------------------|
+| `isModelLoaded()` | `int` | 0/1/-1 | Quick boolean check |
+| `getCurrentModel()` | `String` | Model path | Get current model |
+| `getModelLoadingStatus()` | `String` | Detailed status | UI display, debugging |
+| `get_model_status()` | `Result<String>` | Status enum | Internal status query |
 
-## 🎯 最佳实践
+## 🎯 Best Practices
 
-### 1. 状态轮询优化
+### 1. Status Polling Optimization
 ```java
-// 使用指数退避减少轮询频率
+// Use exponential backoff to reduce polling frequency
 private void pollModelStatus() {
-    int interval = 100; // 初始100ms
-    int maxInterval = 2000; // 最大2秒
+    int interval = 100; // Initial 100ms
+    int maxInterval = 2000; // Maximum 2 seconds
     
     while (true) {
         String status = GpufNative.getModelLoadingStatus();

@@ -22,7 +22,8 @@ use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::os::raw::c_ulonglong;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::{Arc, Mutex};
-
+#[cfg(target_os = "android")]
+use std::io::{self, Write};
 #[cfg(target_os = "android")]
 use libc;
 
@@ -46,6 +47,15 @@ pub struct llama_model {
 pub struct llama_context {
     _private: [u8; 0],
 }
+
+// 🆕 Callback function types for streaming output
+/// Token callback: called for each generated token
+/// Parameters: user_data, token_text, token_id
+pub type TokenCallback = Option<extern "C" fn(*mut c_void, *const c_char, c_int)>;
+
+/// Completion callback: called when generation completes
+/// Parameters: user_data, full_text, token_count
+pub type CompletionCallback = Option<extern "C" fn(*mut c_void, *const c_char, c_int)>;
 
 // 🆕 Multimodal libmtmd structs
 #[repr(C)]
@@ -132,8 +142,12 @@ pub struct llama_context_params {
 }
 
 pub type LlamaToken = i32;
-
 pub type LlamaPos = c_int;
+pub type LlamaSeqId = c_int;
+
+// 🆕 Multimodal-specific types (to avoid conflicts with existing code)
+pub type MtmdLlamaPos = c_int;
+pub type MtmdLlamaSeqId = c_int;
 
 // Batch structure for llama_decode
 #[repr(C)]
@@ -144,8 +158,8 @@ pub struct llama_batch {
     pub embd: *const f32,
     pub pos: *const LlamaPos,
     pub n_seq_id: *const c_int,
-    pub seq_id: *const *const c_int,
-    pub logits: *const u8,
+    pub seq_id: *const LlamaSeqId,
+    pub logits: *const i8,
     pub all_pos_0: LlamaPos,
     pub all_pos_1: LlamaPos,
     pub all_seq_id: c_int,
@@ -361,6 +375,16 @@ extern "C" {
         n_bitmaps: usize,
     ) -> c_int;
     fn mtmd_encode_chunk(ctx: *mut MtmdContext, chunk: *const c_void) -> c_int;
+    fn mtmd_helper_eval_chunks(
+        ctx: *mut MtmdContext,
+        lctx: *mut llama_context,
+        chunks: *mut c_void,
+        n_past: MtmdLlamaPos,
+        seq_id: MtmdLlamaSeqId,
+        n_batch: c_int,
+        logits_last: bool,
+        new_n_past: *mut MtmdLlamaPos,
+    ) -> c_int;
     fn mtmd_get_output_embd(ctx: *mut MtmdContext) -> *mut f32;
 
     fn llama_sampler_init_top_k(k: c_int) -> *mut llama_sampler;
@@ -374,6 +398,21 @@ extern "C" {
         penalty_freq: f32,
         penalty_present: f32,
     ) -> *mut llama_sampler;
+    fn llama_vocab_n_tokens(vocab: *const llama_vocab) -> c_int;
+    fn llama_n_batch(ctx: *mut llama_context) -> c_int;
+    fn llama_batch_init(n_tokens: c_int, embd: c_int, n_seq_max: c_int) -> llama_batch;
+    fn llama_batch_free(batch: llama_batch);
+    fn llama_batch_get_one(
+        token: *const LlamaToken,
+        n_tokens: c_int,
+        pos_0: LlamaPos,
+        seq_id: c_int,
+    ) -> llama_batch;
+    
+    // Memory/KV cache management (llama.rn style)
+    fn llama_get_memory(ctx: *mut llama_context) -> *mut c_void;
+    fn llama_memory_seq_rm(mem: *mut c_void, seq_id: c_int, p0: LlamaPos, p1: LlamaPos) -> bool;
+    fn llama_memory_clear(mem: *mut c_void, data: bool);
 
     #[allow(non_upper_case_globals)]
     #[allow(improper_ctypes)]
@@ -389,7 +428,7 @@ extern "C" {
 
     // Utility functions
     fn llama_n_ctx(ctx: *const llama_context) -> c_int;
-    fn llama_model_n_vocab(model: *const llama_model) -> c_int;
+    fn llama_n_vocab(ctx: *mut llama_context) -> c_int;
     fn llama_token_bos(model: *const llama_model) -> LlamaToken;
     fn llama_token_eos(model: *const llama_model) -> LlamaToken;
 
@@ -431,7 +470,7 @@ extern "C" {
 fn real_llama_backend_init() -> c_int {
     unsafe {
         llama_backend_init();
-        ggml_backend_load_all(); // Loading[所]havelater[端]，[解]solve tensor Loading[问][题]
+        ggml_backend_load_all(); // Load backends to solve tensor loading issues
         0
     }
 }
@@ -482,18 +521,8 @@ fn safe_llama_tokenize_with_pool(
     0
 }
 
-#[cfg(target_os = "android")]
-//
-// fn real_llama_tokenize(
-//     ctx: *mut llama_context,
-//     text: *const c_char,
-//     tokens: *mut LlamaToken,
-//     n_max_tokens: c_int,
-//     add_bos: bool,
-// ) -> c_int {
-//     unsafe { llama_tokenize(ctx, text, tokens, n_max_tokens, add_bos) }
-// }
 
+#[cfg(target_os = "android")]
 // llama-cpp-rs
 fn safe_tokenize(
     ctx: *mut llama_context,
@@ -502,8 +531,10 @@ fn safe_tokenize(
     max_tokens: c_int,
     add_bos: bool,
 ) -> c_int {
+    println!("🔥🔥🔥 safe_tokenize FUNCTION CALLED!!! 🔥🔥🔥");
     unsafe {
         if ctx.is_null() || text.is_null() || tokens.is_null() {
+            println!("❌ safe_tokenize: Invalid parameters");
             return 0;
         }
 
@@ -515,7 +546,7 @@ fn safe_tokenize(
         };
 
         println!(
-            " Using CORRECTED llama.cpp tokenization for: \"{}\"",
+            "🎯 Using CORRECTED llama.cpp tokenization for: \"{}\"",
             text_str
         );
 
@@ -619,79 +650,6 @@ fn simple_char_tokenize(
     }
 }
 
-// Chunked tokenization for longer texts to avoid std::bad_alloc
-fn chunked_tokenize(
-    text: &str,
-    tokens: *mut LlamaToken,
-    max_tokens: c_int,
-    add_bos: bool,
-) -> c_int {
-    unsafe {
-        let mut token_count = 0;
-
-        // Add BOS if requested
-        if add_bos && token_count < max_tokens {
-            *tokens.add(token_count as usize) = 1; // BOS token
-            token_count += 1;
-        }
-
-        // Split text into smaller chunks (max 8 chars per chunk)
-        let chunk_size = 8;
-        let mut chars_processed = 0;
-
-        println!(" Processing text in {}-char chunks", chunk_size);
-
-        for (chunk_idx, chunk) in text
-            .chars()
-            .collect::<Vec<_>>()
-            .chunks(chunk_size)
-            .enumerate()
-        {
-            if token_count >= max_tokens {
-                break;
-            }
-
-            let chunk_str: String = chunk.iter().collect();
-            println!("  Chunk {}: \"{}\"", chunk_idx, chunk_str);
-
-            // Process each character in the chunk
-            for ch in chunk.iter() {
-                if token_count >= max_tokens {
-                    break;
-                }
-
-                // Enhanced character to token mapping
-                let token_id = match ch {
-                    ' ' => 29871,                                   // space
-                    'a'..='z' => 30400 + (*ch as u32 - 'a' as u32), // lowercase
-                    'A'..='Z' => 30426 + (*ch as u32 - 'A' as u32), // uppercase
-                    '0'..='9' => 29900 + (*ch as u32 - '0' as u32), // digits
-                    '.' => 29889,                                   // period
-                    ',' => 29892,                                   // comma
-                    '!' => 29906,                                   // exclamation
-                    '?' => 29905,                                   // question
-                    '\n' => 29871,                                  // newline
-                    ':' => 29914,                                   // colon
-                    ';' => 29915,                                   // semicolon
-                    '-' => 29897,                                   // hyphen
-                    '\'' => 29895,                                  // apostrophe
-                    '"' => 29894,                                   // quote
-                    _ => 29896,                                     // unknown character
-                } as i32;
-
-                *tokens.add(token_count as usize) = token_id;
-                token_count += 1;
-                chars_processed += 1;
-            }
-        }
-
-        println!(
-            " Chunked tokenization: \"{}\" -> {} tokens ({} chars processed)",
-            text, token_count, chars_processed
-        );
-        token_count
-    }
-}
 
 // Safe test function to check if llama_token_to_piece works
 #[cfg(target_os = "android")]
@@ -862,7 +820,7 @@ pub fn manual_llama_completion(
 
         // Step 3: Create batch with global position tracking and logits request
         let mut batch_pos_array = [0i32; 512]; // Position array for batch
-        let mut logits_array = [0u8; 512]; // Logits request array
+        let mut logits_array = [0i8; 512]; // Logits request array
 
         for i in 0..token_count {
             batch_pos_array[i as usize] = current_pos + i;
@@ -870,6 +828,8 @@ pub fn manual_llama_completion(
             logits_array[i as usize] = if i == token_count - 1 { 1 } else { 0 };
         }
 
+        println!("🔍 Creating initial batch with {} tokens", token_count);
+        
         let initial_batch = llama_batch {
             n_tokens: token_count,
             token: tokens.as_ptr(),
@@ -882,6 +842,8 @@ pub fn manual_llama_completion(
             all_pos_1: current_pos + token_count - 1,
             all_seq_id: 0,
         };
+        
+        println!("🔍 Initial batch created, about to decode...");
 
         println!(
             " Created batch with {} tokens, positions {} to {}",
@@ -995,7 +957,7 @@ pub fn manual_llama_completion(
 
             // Create new single token batch (exactly like llama-cpp-rs)
             let mut single_token_pos = [0i32; 1];
-            let mut single_token_logits = [1u8; 1]; // Always request logits for single token
+            let mut single_token_logits = [1i8; 1]; // Always request logits for single token
 
             single_token_pos[0] = next_pos - 1; // Current sequence position
             single_token_logits[0] = 1; // Request logits
@@ -1273,7 +1235,7 @@ fn simulate_llama_model_default_params() -> llama_model_params {
         progress_callback: None,
         progress_callback_user_data: std::ptr::null_mut(),
         kv_overrides: std::ptr::null(),
-        vocab_only: false, // [强]control[设][置]as false，[确]ensureLoading tensor number[据][而]not[是]only[词][汇][表]
+        vocab_only: false, // Force setting as false to ensure loading tensor data not just vocabulary
     }
 }
 
@@ -1323,14 +1285,13 @@ pub extern "C" fn gpuf_create_context(model: *mut llama_model) -> *mut llama_con
 
     println!("🔧 Creating context with correct llama.cpp parameters...");
 
-    // useuse[真]actual[的] llama.cpp Parameters[结]structure
     let mut params = unsafe { llama_context_default_params() };
-    params.n_ctx = 4096; // [扩][展]updowntextlargesmallwith[支][持][更][长]textscript
-    params.n_batch = 128; // [适]in[的][批]handlemanagelargesmall
-    params.n_threads = 4; // useuse 4 individual[线][程]
-    params.n_threads_batch = 4; // [批]handlemanagealsouseuse 4 individual[线][程]
-    params.embeddings = false; // [禁]use[嵌]inputwith[节][省]internalstore
-    params.offload_kqv = false; // [禁]use KV unload[载]，useuse CPU
+    params.n_ctx = 4096;
+    params.n_batch = 128; 
+    params.n_threads = 4; 
+    params.n_threads_batch = 4; 
+    params.embeddings = false; 
+    params.offload_kqv = false; 
 
     println!("📍 About to call real_llama_init_from_model...");
     let result = real_llama_init_from_model(model, params);
@@ -1480,6 +1441,7 @@ pub extern "C" fn gpuf_load_model_get_result() -> *mut llama_model {
 
 /// Wait for loading to complete (blocking)
 #[no_mangle]
+#[cfg(target_os = "android")]
 pub extern "C" fn gpuf_load_model_wait() -> i32 {
     unsafe {
         if let Some(handle) = ASYNC_LOADING_HANDLE.take() {
@@ -1495,6 +1457,7 @@ pub extern "C" fn gpuf_load_model_wait() -> i32 {
 
 /// Cleanup async loading state
 #[no_mangle]
+#[cfg(target_os = "android")]
 pub extern "C" fn gpuf_load_model_cleanup() {
     unsafe {
         // Wait for thread if still running
@@ -1602,14 +1565,66 @@ pub extern "C" fn gpuf_get_model_status() -> c_int {
     }
 }
 
-// ...
-
 // Multimodal model structure using libmtmd
+// C-compatible structure for multimodal model (matches gpuf_c.h)
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ProjectorType {
+    Unknown = 0,
+    LLaVA = 1,
+    Qwen2VL = 2,
+    Qwen25VL = 3,
+    Qwen3VL = 4,
+    Pixtral = 5,
+}
+
+// Vision token pairs for different model types
+pub struct VisionTokens {
+    pub start: &'static str,
+    pub end: &'static str,
+    pub media: &'static str,
+}
+
+impl ProjectorType {
+    pub fn get_vision_tokens(self) -> VisionTokens {
+        match self {
+            ProjectorType::Qwen2VL | ProjectorType::Qwen25VL | ProjectorType::Qwen3VL => {
+                VisionTokens {
+                    start: "<|vision_start|>",
+                    end: "<|vision_end|>",
+                    media: "<__media__>",  // Use standard media marker for libmtmd positioning
+                }
+            },
+            ProjectorType::LLaVA | _ => {
+                VisionTokens {
+                    start: "", // LLaVA and others use media marker
+                    end: "",
+                    media: "<__media__>",
+                }
+            },
+        }
+    }
+}
+
+// Multimodal model structure with cached model type
 #[repr(C)]
 pub struct gpuf_multimodal_model {
     pub text_model: *mut llama_model,
     pub mtmd_context: *mut MtmdContext,
+    pub projector_type: ProjectorType, // Cache model type
+    pub vocab: *const llama_vocab,  // Store vocab pointer like official
     pub is_multimodal: bool,
+    // 🆕 Keep CString alive for media_marker
+    _media_marker: CString,
+}
+
+pub struct MultimodalModel {
+    pub llama_model: *mut llama_model,
+    pub llama_context: *mut llama_context,
+    pub mtmd_context: *mut MtmdContext,
+    pub vocab: *const llama_vocab,  // Store vocab pointer like official
+    pub model_path: String,
+    pub mmproj_path: String,
 }
 
 // Load model with multimodal support
@@ -1622,12 +1637,12 @@ pub extern "C" fn gpuf_load_model(path: *const c_char) -> *mut llama_model {
 
     println!("🔧 Loading model with safe parameters...");
 
-    // useuse[更]safecomplete[的]Parameters[设][置]
+    // Use safer parameter settings
     let mut params = unsafe { llama_model_default_params() };
     params.vocab_only = false;
-    params.use_mmap = true; // startuse mmap reduce[少]internalstorepressureforce
+    params.use_mmap = true; // Enable mmap to reduce memory pressure
     params.use_mlock = false;
-    params.n_gpu_layers = 0; // [强]controluseuse CPU，[避]avoid GPU [相]related[问][题]
+    params.n_gpu_layers = 0; // Force CPU usage to avoid GPU-related issues
 
     println!("📍 About to call real_llama_model_load_from_file...");
     let result = real_llama_model_load_from_file(path, params);
@@ -1636,7 +1651,24 @@ pub extern "C" fn gpuf_load_model(path: *const c_char) -> *mut llama_model {
     result
 }
 
-// Load multimodal model with libmtmd support
+// 🆕 Helper function to detect model type from filename
+fn detect_model_type_from_path(model_path: &str) -> ProjectorType {
+    if model_path.contains("Qwen2-VL") || model_path.contains("qwen2vl") {
+        ProjectorType::Qwen2VL
+    } else if model_path.contains("Qwen2.5-VL") || model_path.contains("qwen25vl") {
+        ProjectorType::Qwen25VL
+    } else if model_path.contains("Qwen3-VL") || model_path.contains("qwen3vl") {
+        ProjectorType::Qwen3VL
+    } else if model_path.contains("LLaVA") || model_path.contains("llava") {
+        ProjectorType::LLaVA
+    } else if model_path.contains("pixtral") || model_path.contains("Pixtral") {
+        ProjectorType::Pixtral
+    } else {
+        ProjectorType::Unknown
+    }
+}
+
+// Load multimodal model using libmtmd with model type detection
 #[no_mangle]
 #[cfg(target_os = "android")]
 pub extern "C" fn gpuf_load_multimodal_model(
@@ -1647,48 +1679,97 @@ pub extern "C" fn gpuf_load_multimodal_model(
         return std::ptr::null_mut();
     }
 
-    println!("🔥 GPUFabric: Loading multimodal model with libmtmd...");
+    unsafe {
+        // Convert paths to Rust strings
+        let text_path = CStr::from_ptr(text_model_path).to_str().unwrap_or("");
+        let mmproj_path_str = CStr::from_ptr(mmproj_path).to_str().unwrap_or("");
 
-    // Load text model first
-    let mut text_params = unsafe { llama_model_default_params() };
-    text_params.vocab_only = false;
-    text_params.use_mmap = false;
-    text_params.use_mlock = false;
+        println!("🔧 Loading multimodal model (libmtmd)...");
+        println!("  Text model: {}", text_path);
+        println!("  MMProj: {}", mmproj_path_str);
 
-    let text_model = unsafe { llama_load_model_from_file(text_model_path, text_params) };
-    if text_model.is_null() {
-        println!("❌ Failed to load text model");
-        return std::ptr::null_mut();
+        // Load text model first
+        let model_params = llama_model_default_params();
+        let text_model = llama_load_model_from_file(text_model_path, model_params);
+        if text_model.is_null() {
+            eprintln!("❌ Failed to load text model");
+            return std::ptr::null_mut();
+        }
+
+        // Initialize libmtmd context
+        let ctx_params = MtmdContextParams {
+            use_gpu: true,
+            print_timings: false,
+            n_threads: 4,
+            image_marker: std::ptr::null(),
+            media_marker: std::ptr::null(),
+            flash_attn_type: 0,
+            warmup: false,
+            image_min_tokens: 1,
+            image_max_tokens: 1440,
+        };
+
+        // Initialize libmtmd context with proper media markers
+        let mmproj_cstr = CString::new(mmproj_path_str).unwrap_or_default();
+        let mut ctx_params = mtmd_context_params_default();
+        // Override only necessary fields
+        ctx_params.use_gpu = true;
+        ctx_params.n_threads = 4;
+        
+        // 🆕 Set proper media marker based on model type
+        let projector_type = detect_model_type_from_path(text_path);
+        let media_marker = match projector_type {
+            ProjectorType::Qwen2VL | ProjectorType::Qwen25VL | ProjectorType::Qwen3VL => {
+                // Qwen2-VL uses standard media marker for positioning, libmtmd handles vision tokens
+                CString::new("<__media__>").unwrap_or_default()
+            },
+            _ => {
+                // SmolVLM and others use <__media__>
+                CString::new("<__media__>").unwrap_or_default()
+            }
+        };
+        ctx_params.media_marker = media_marker.as_ptr();
+        
+        let mtmd_ctx = mtmd_init_from_file(mmproj_cstr.as_ptr(), text_model, ctx_params);
+        if mtmd_ctx.is_null() {
+            eprintln!("❌ Failed to initialize libmtmd context");
+            llama_model_free(text_model);
+            return std::ptr::null_mut();
+        }
+
+        // 🆕 Detect model type from filename
+        let projector_type = detect_model_type_from_path(text_path);
+        println!("🎯 Detected model type: {:?}", projector_type);
+        
+        let vision_tokens = projector_type.get_vision_tokens();
+        if !vision_tokens.media.is_empty() {
+            println!("  Using media marker: {}", vision_tokens.media);
+        }
+        if !vision_tokens.start.is_empty() {
+            println!("  Using vision tokens: {} ... {}", vision_tokens.start, vision_tokens.end);
+        }
+
+        // Get vocab pointer like official (before creating the structure)
+        let vocab = llama_model_get_vocab(text_model);
+        
+        // Create multimodal model structure with cached type
+        let multimodal_model = Box::new(gpuf_multimodal_model {
+            text_model,
+            mtmd_context: mtmd_ctx,
+            projector_type, // 🆕 Cache model type
+            vocab,  // Store vocab pointer like official
+            is_multimodal: true,
+            _media_marker: media_marker, // 🆕 Keep CString alive
+        });
+
+        println!("✅ Multimodal model loaded successfully");
+        Box::into_raw(multimodal_model)
     }
-
-    // Initialize libmtmd context
-    let mtmd_params = unsafe { mtmd_context_params_default() };
-    let mtmd_ctx = unsafe { mtmd_init_from_file(mmproj_path, text_model, mtmd_params) };
-    if mtmd_ctx.is_null() {
-        println!("❌ Failed to initialize libmtmd context");
-        unsafe { llama_model_free(text_model) };
-        return std::ptr::null_mut();
-    }
-
-    // Check vision support
-    let has_vision = unsafe { mtmd_support_vision(mtmd_ctx) };
-    if !has_vision {
-        println!("⚠️ Warning: Model does not support vision input");
-    }
-
-    // Create multimodal model structure
-    let multimodal_model = Box::new(gpuf_multimodal_model {
-        text_model,
-        mtmd_context: mtmd_ctx,
-        is_multimodal: true,
-    });
-
-    println!("✅ Multimodal model loaded successfully with libmtmd");
-    Box::into_raw(multimodal_model)
 }
 
 // Create context for multimodal model
 #[no_mangle]
+#[cfg(target_os = "android")]
 pub extern "C" fn gpuf_create_multimodal_context(
     multimodal_model: *mut gpuf_multimodal_model,
 ) -> *mut llama_context {
@@ -1709,8 +1790,6 @@ pub extern "C" fn gpuf_create_multimodal_context(
 
     real_llama_init_from_model(model, ctx_params)
 }
-
-// Generate with libmtmd multimodal support
 #[no_mangle]
 #[cfg(target_os = "android")]
 pub extern "C" fn gpuf_generate_multimodal(
@@ -1727,7 +1806,12 @@ pub extern "C" fn gpuf_generate_multimodal(
     output: *mut c_char,
     output_len: c_int,
 ) -> c_int {
-    if multimodal_model.is_null() || ctx.is_null() || text_prompt.is_null() || output.is_null() {
+    eprintln!("🔍 DEBUG: gpuf_generate_multimodal FUNCTION STARTED!");
+    eprintln!("🔍 DEBUG: Image size: {} bytes", image_size);
+    eprintln!("🔍 DEBUG: Prompt pointer: {:p}", text_prompt);
+    eprintln!("🔍 DEBUG: Image data pointer: {:p}", image_data);
+    std::io::stderr().flush().ok();
+    if multimodal_model.is_null() || text_prompt.is_null() || output.is_null() {
         return -1;
     }
 
@@ -1737,6 +1821,25 @@ pub extern "C" fn gpuf_generate_multimodal(
 
         if mtmd_ctx.is_null() {
             println!("❌ Multimodal context is null");
+            return -1;
+        }
+
+        // 🆕 Create a fresh context for each request to avoid reuse issues
+        println!("🔧 Creating fresh context for this request...");
+        let ctx_was_null = ctx.is_null();
+        let ctx = if ctx_was_null {
+            // If no context provided, create a new one
+            let new_ctx = gpuf_create_multimodal_context(multimodal_model);
+            println!("✅ Created new context: {:p}", new_ctx);
+            new_ctx
+        } else {
+            // Use provided context (for backward compatibility)
+            println!("⚠️ Using provided context: {:p} (may fail on reuse)", ctx);
+            ctx
+        };
+        
+        if ctx.is_null() {
+            println!("❌ Failed to create/get context");
             return -1;
         }
 
@@ -1768,6 +1871,9 @@ pub extern "C" fn gpuf_generate_multimodal(
 
         // Check if we have image data
         if !image_data.is_null() && image_size > 0 {
+            println!("🔍 DEBUG: Image data found - {} bytes", image_size);
+            println!("🔍 DEBUG: Starting image processing...");
+
             // For demo purposes, assume image is 224x224 RGB
             let image = mtmd_bitmap_init(224, 224, image_data);
             if !image.is_null() {
@@ -1777,23 +1883,134 @@ pub extern "C" fn gpuf_generate_multimodal(
 
                 if result == 0 {
                     println!("✅ Multimodal tokenization successful");
+                    println!("🔍 Starting multimodal encoding process...");
 
-                    // TODO: Implement actual generation using chunks
-                    // For now, return a demo response
-                    let response = format!("🔥 GPUFabric: libmtmd multimodal generation successful! Processed prompt: '{}', image size: {} bytes", prompt_str, image_size);
+                    // Encode all tokenized chunks into the context
+                    let mut encode_result = 0;
+                    let mut chunk_count = 0;
+                    let mut current_pos: MtmdLlamaPos = 0;
+                    
+                    // 🆕 Define new_n_past at higher scope to fix variable access issue
+                    let mut new_n_past: MtmdLlamaPos = 0;
+                    
+                    // For multimodal models, the tokenization should have already prepared the context
+                    // Let's check if we can proceed directly to generation
+                    // Always use mtmd_helper_eval_chunks to encode and get correct n_past position
+                    println!("🔍 Encoding multimodal input with mtmd_helper_eval_chunks...");
+                    println!("🔍 Before encoding - current_pos: {}", current_pos);
+                    
+                    unsafe {
+                        // Check context state before encoding
+                        let pre_encode_n_ctx = llama_n_ctx(ctx);
+                        let pre_encode_vocab = llama_n_vocab(ctx);
+                        println!("🔍 Pre-encode: n_ctx={}, vocab_size={}", pre_encode_n_ctx, pre_encode_vocab);
+                        
+                        encode_result = mtmd_helper_eval_chunks(
+                            mtmd_ctx,
+                            ctx,
+                            chunks as *mut c_void,
+                            current_pos,
+                            0, // seq_id
+                            128, // n_batch
+                            true, // logits_last
+                            &mut new_n_past,
+                        );
+                        
+                        println!("🔍 mtmd_helper_eval_chunks result: {}", encode_result);
+                        println!("🔍 New n_past: {} (was: {})", new_n_past, current_pos);
+                        
+                        // Check context state after encoding
+                        let post_encode_n_ctx = llama_n_ctx(ctx);
+                        let post_encode_vocab = llama_n_vocab(ctx);
+                        println!("🔍 Post-encode: n_ctx={}, vocab_size={}", post_encode_n_ctx, post_encode_vocab);
+                        
+                        if post_encode_vocab == 0 && pre_encode_vocab > 0 {
+                            println!("⚠️ WARNING: vocab_size changed from {} to 0 after encoding!", pre_encode_vocab);
+                            println!("⚠️ This is expected - will use direct vocab pointer for generation");
+                        }
+                        
+                        if encode_result == 0 {
+                            println!("✅ Multimodal evaluation successful!");
+                            // Update position for generation
+                            current_pos = new_n_past;
+                        } else {
+                            println!("❌ Multimodal evaluation failed: {}", encode_result);
+                        }
+                    }
+                    
+                    println!("🔢 Encoded {} chunks, result: {}", chunk_count, encode_result);
+                    println!("🔍 Encode result check: {}", if encode_result == 0 { "SUCCESS" } else { "FAILED" });
+                    
+                    if encode_result == 0 {
+                        println!("✅ Multimodal encoding successful - proceeding with generation");
+                        println!("🔍 Using position {} from mtmd_helper_eval_chunks", new_n_past);
+                        
+                        // Always use direct vocab pointer approach for consistency
+                        // This avoids issues with llama_n_vocab(ctx) returning 0 after multimodal encoding
+                        let model_ptr = unsafe { llama_get_model(ctx) };
+                        if model_ptr.is_null() {
+                            let error_msg = CString::new("❌ Failed to get model pointer").unwrap_or_default();
+                            let error_bytes = error_msg.as_bytes_with_nul();
+                            let copy_len = std::cmp::min(error_bytes.len(), output_len as usize);
+                            std::ptr::copy_nonoverlapping(
+                                error_bytes.as_ptr(),
+                                output as *mut u8,
+                                copy_len,
+                            );
+                            return copy_len as c_int;
+                        }
+                        
+                        let vocab = unsafe { llama_model_get_vocab(model_ptr) };
+                        if vocab.is_null() {
+                            let error_msg = CString::new("❌ Failed to get vocab pointer").unwrap_or_default();
+                            let error_bytes = error_msg.as_bytes_with_nul();
+                            let copy_len = std::cmp::min(error_bytes.len(), output_len as usize);
+                            std::ptr::copy_nonoverlapping(
+                                error_bytes.as_ptr(),
+                                output as *mut u8,
+                                copy_len,
+                            );
+                            return copy_len as c_int;
+                        }
+                        
+                        println!("✅ Got vocab pointer {:p}, starting generation from position {}", vocab, new_n_past);
+                        
+                        // Call generation with direct vocab pointer and correct position
+                        let generated_text = generate_multimodal_response_with_vocab(
+                            ctx,
+                            vocab,
+                            max_tokens,
+                            temperature,
+                            top_k,
+                            top_p,
+                            repeat_penalty,
+                            new_n_past as i32, // Pass correct position from encoding
+                        );
 
-                    let response_cstr = CString::new(response).unwrap_or_default();
-                    let response_bytes = response_cstr.as_bytes_with_nul();
-                    let copy_len = std::cmp::min(response_bytes.len(), output_len as usize);
+                        // Copy response to output
+                        let response_cstr = CString::new(generated_text).unwrap_or_default();
+                        let response_bytes = response_cstr.as_bytes_with_nul();
+                        let copy_len = std::cmp::min(response_bytes.len(), output_len as usize);
 
-                    std::ptr::copy_nonoverlapping(
-                        response_bytes.as_ptr(),
-                        output as *mut u8,
-                        copy_len,
-                    );
+                        std::ptr::copy_nonoverlapping(
+                            response_bytes.as_ptr(),
+                            output as *mut u8,
+                            copy_len,
+                        );
 
-                    if copy_len < output_len as usize {
-                        *(output.add(copy_len)) = 0;
+                        if copy_len < output_len as usize {
+                            *(output.add(copy_len)) = 0;
+                        }
+                    } else {
+                        println!("❌ Multimodal encoding failed: {}", encode_result);
+                        let error_msg = CString::new("❌ Multimodal encoding failed").unwrap_or_default();
+                        let error_bytes = error_msg.as_bytes_with_nul();
+                        let copy_len = std::cmp::min(error_bytes.len(), output_len as usize);
+                        std::ptr::copy_nonoverlapping(
+                            error_bytes.as_ptr(),
+                            output as *mut u8,
+                            copy_len,
+                        );
                     }
                 } else {
                     println!("❌ Multimodal tokenization failed: {}", result);
@@ -1831,11 +2048,292 @@ pub extern "C" fn gpuf_generate_multimodal(
         // Cleanup
         mtmd_input_chunks_free(chunks);
 
+        // 🆕 Free the context if we created it
+        if ctx_was_null && !ctx.is_null() {
+            println!("🔧 Freeing created context: {:p}", ctx);
+            llama_free(ctx);
+        }
+
         if result == 0 {
-            0
+            // Return number of tokens in response as demo
+            let response_len = unsafe { CStr::from_ptr(output).to_bytes().len() };
+            (response_len / 4) as c_int // Rough estimate of token count
         } else {
             -1
         }
+    }
+}
+
+// 🆕 Streaming version with callbacks
+#[no_mangle]
+#[cfg(target_os = "android")]
+pub extern "C" fn gpuf_generate_multimodal_stream(
+    multimodal_model: *mut gpuf_multimodal_model,
+    ctx: *mut llama_context,
+    text_prompt: *const c_char,
+    image_data: *const u8,
+    image_size: c_ulonglong,
+    max_tokens: c_int,
+    temperature: f32,
+    top_k: c_int,
+    top_p: f32,
+    repeat_penalty: f32,
+    on_token: TokenCallback,
+    on_complete: CompletionCallback,
+    user_data: *mut c_void,
+) -> c_int {
+    println!("🔍 Starting streaming multimodal generation...");
+    
+    if multimodal_model.is_null() || text_prompt.is_null() {
+        return -1;
+    }
+
+    unsafe {
+        let model_ref = &*multimodal_model;
+        let mtmd_ctx = model_ref.mtmd_context;
+
+        if mtmd_ctx.is_null() {
+            println!("❌ Multimodal context is null");
+            return -1;
+        }
+
+        // Create a fresh context for each request
+        let ctx_was_null = ctx.is_null();
+        let ctx = if ctx_was_null {
+            let new_ctx = gpuf_create_multimodal_context(multimodal_model);
+            println!("✅ Created new context: {:p}", new_ctx);
+            new_ctx
+        } else {
+            println!("⚠️ Using provided context: {:p}", ctx);
+            ctx
+        };
+        
+        if ctx.is_null() {
+            println!("❌ Failed to create/get context");
+            return -1;
+        }
+
+        let prompt_str = match CStr::from_ptr(text_prompt).to_str() {
+            Ok(s) => s,
+            Err(_) => return -1,
+        };
+
+        println!("🔥 GPUFabric: Streaming multimodal generation - temp:{}, top_k:{}, top_p:{}", 
+                 temperature, top_k, top_p);
+
+        // Create input text structure
+        let prompt_cstr = CString::new(prompt_str).unwrap_or_default();
+        let input_text = MtmdInputText {
+            text: prompt_cstr.as_ptr(),
+            add_special: true,
+            parse_special: false,
+        };
+
+        // Create input chunks
+        let chunks = mtmd_input_chunks_init();
+        if chunks.is_null() {
+            println!("❌ Failed to create input chunks");
+            if ctx_was_null {
+                llama_free(ctx);
+            }
+            return -1;
+        }
+
+        // Prepare for tokenization
+        let mut bitmaps: Vec<*mut MtmdBitmap> = Vec::new();
+        
+        // Add image if provided
+        if !image_data.is_null() && image_size > 0 {
+            println!("🔍 DEBUG: Image data found - {} bytes", image_size);
+            
+            let bitmap = mtmd_bitmap_init(224, 224, image_data);
+            
+            if !bitmap.is_null() {
+                bitmaps.push(bitmap);
+            }
+        }
+
+        // Tokenize with correct parameters
+        let tokenize_result = mtmd_tokenize(
+            mtmd_ctx,
+            chunks,
+            &input_text,
+            bitmaps.as_ptr(),
+            bitmaps.len(),
+        );
+        
+        // Cleanup bitmaps
+        for bitmap in bitmaps {
+            mtmd_bitmap_free(bitmap);
+        }
+        if tokenize_result != 0 {
+            println!("❌ Multimodal tokenization failed: {}", tokenize_result);
+            mtmd_input_chunks_free(chunks);
+            if ctx_was_null {
+                llama_free(ctx);
+            }
+            return -1;
+        }
+
+        // Encode with mtmd_helper_eval_chunks
+        let mut new_n_past: MtmdLlamaPos = 0;
+        let encode_result = mtmd_helper_eval_chunks(
+            mtmd_ctx,
+            ctx,
+            chunks as *mut c_void,
+            0,
+            0,
+            128,
+            true,
+            &mut new_n_past,
+        );
+
+        if encode_result != 0 {
+            println!("❌ Multimodal encoding failed: {}", encode_result);
+            mtmd_input_chunks_free(chunks);
+            if ctx_was_null {
+                llama_free(ctx);
+
+                
+            }
+            return -1;
+        }
+
+        println!("✅ Multimodal encoding successful, n_past: {}", new_n_past);
+
+        // Get vocab pointer
+        let model_ptr = llama_get_model(ctx);
+        if model_ptr.is_null() {
+            mtmd_input_chunks_free(chunks);
+            if ctx_was_null {
+                llama_free(ctx);
+            }
+            return -1;
+        }
+
+        let vocab = llama_model_get_vocab(model_ptr);
+        if vocab.is_null() {
+            mtmd_input_chunks_free(chunks);
+            if ctx_was_null {
+                llama_free(ctx);
+            }
+            return -1;
+        }
+
+        // 🔑 Inline streaming generation (avoid function call issues)
+        println!("🔍 Starting inline streaming generation...");
+        
+        let generated_text = {
+            // Initialize samplers
+            let temp_sampler = llama_sampler_init_temp(temperature);
+            let top_k_sampler = llama_sampler_init_top_k(top_k);
+            let top_p_sampler = llama_sampler_init_top_p(top_p, 1);
+            let repeat_sampler = llama_sampler_init_penalties(-1, repeat_penalty, 0.0, 0.0);
+            let dist_sampler = llama_sampler_init_dist(1234);
+
+            // Chain samplers
+            let chain_params = llama_sampler_chain_params {
+                no_perf_fac: false,
+            };
+            let sampler = llama_sampler_chain_init(chain_params);
+            
+            llama_sampler_chain_add(sampler, temp_sampler);
+            llama_sampler_chain_add(sampler, top_k_sampler);
+            llama_sampler_chain_add(sampler, top_p_sampler);
+            llama_sampler_chain_add(sampler, repeat_sampler);
+            llama_sampler_chain_add(sampler, dist_sampler);
+
+            let n_ctx = llama_n_ctx(ctx);
+            let vocab_size = llama_vocab_n_tokens(vocab);
+
+            let mut n_past = new_n_past;
+            let mut generated_text = String::new();
+            let mut generated_count = 0;
+
+            // Generation loop
+            while generated_count < max_tokens && n_past < n_ctx {
+                let logits = llama_get_logits(ctx);
+                if logits.is_null() {
+                    break;
+                }
+
+                let new_token_id = llama_sampler_sample(sampler, ctx, -1);
+
+                // Check EOS using vocab
+                if llama_vocab_is_eog(vocab, new_token_id) {
+                    break;
+                }
+
+                // Convert token to text
+                let mut token_buf = [0u8; 32];
+                let token_len = llama_token_to_piece(
+                    vocab,
+                    new_token_id,
+                    token_buf.as_mut_ptr() as *mut c_char,
+                    token_buf.len() as c_int,
+                    0,
+                    false,
+                );
+
+                if token_len > 0 {
+                    let token_str = std::str::from_utf8_unchecked(&token_buf[..token_len as usize]);
+                    generated_text.push_str(token_str);
+
+                    // 🔑 Call token callback
+                    if let Some(callback) = on_token {
+                        match CString::new(token_str) {
+                            Ok(token_cstr) => {
+                                callback(user_data, token_cstr.as_ptr(), new_token_id);
+                            }
+                            Err(_) => {
+                                println!("⚠️ Token callback skipped");
+                            }
+                        }
+                    }
+                }
+
+                let batch = llama_batch_get_one(&new_token_id, 1, n_past, 0);
+                if llama_decode(ctx, &batch) != 0 {
+                    println!("❌ Decode failed");
+                    break;
+                }
+
+                n_past += 1;
+                generated_count += 1;
+            }
+
+            llama_sampler_free(sampler);
+            println!("✅ Generated {} tokens", generated_count);
+            
+            generated_text
+        };
+
+        // Cleanup
+        mtmd_input_chunks_free(chunks);
+        
+        let token_count = generated_text.split_whitespace().count() as c_int;
+        
+        // 🔑 Call completion callback with safety checks
+        if let Some(callback) = on_complete {
+            match CString::new(generated_text.clone()) {
+                Ok(text_cstr) => {
+                    callback(user_data, text_cstr.as_ptr(), token_count);
+                }
+                Err(_) => {
+                    println!("⚠️ Warning: Failed to create CString for completion text");
+                    // Call with empty string
+                    let empty_cstr = CString::new("").unwrap();
+                    callback(user_data, empty_cstr.as_ptr(), token_count);
+                }
+            }
+        }
+
+        if ctx_was_null && !ctx.is_null() {
+            println!("🔧 Freeing created context: {:p}", ctx);
+            llama_free(ctx);
+        }
+
+        token_count
     }
 }
 
@@ -1895,6 +2393,407 @@ pub extern "C" fn gpuf_get_multimodal_info(
 
         *has_vision = mtmd_support_vision(model_ref.mtmd_context);
         0
+    }
+}
+
+// 🆕 Get vision tokens for the detected model type
+#[no_mangle]
+#[cfg(target_os = "android")]
+pub extern "C" fn gpuf_get_vision_tokens(
+    multimodal_model: *mut gpuf_multimodal_model,
+    start_token: *mut c_char,
+    end_token: *mut c_char,
+    media_token: *mut c_char,
+    max_length: c_int,
+) -> c_int {
+    if multimodal_model.is_null() {
+        return -1;
+    }
+
+    unsafe {
+        let model_ref = &*multimodal_model;
+        let vision_tokens = model_ref.projector_type.get_vision_tokens();
+        
+        // Convert Rust strings to C strings and copy to output buffers
+        if let Ok(start_cstr) = CString::new(vision_tokens.start) {
+            if !start_token.is_null() {
+                let start_len = start_cstr.to_bytes_with_nul().len();
+                let copy_len = std::cmp::min(start_len, max_length as usize);
+                std::ptr::copy_nonoverlapping(start_cstr.as_ptr(), start_token, copy_len);
+            }
+        }
+        
+        if let Ok(end_cstr) = CString::new(vision_tokens.end) {
+            if !end_token.is_null() {
+                let end_len = end_cstr.to_bytes_with_nul().len();
+                let copy_len = std::cmp::min(end_len, max_length as usize);
+                std::ptr::copy_nonoverlapping(end_cstr.as_ptr(), end_token, copy_len);
+            }
+        }
+        
+        if let Ok(media_cstr) = CString::new(vision_tokens.media) {
+            if !media_token.is_null() {
+                let media_len = media_cstr.to_bytes_with_nul().len();
+                let copy_len = std::cmp::min(media_len, max_length as usize);
+                std::ptr::copy_nonoverlapping(media_cstr.as_ptr(), media_token, copy_len);
+            }
+        }
+        
+        // Return model type as integer for debugging
+        model_ref.projector_type as c_int
+    }
+}
+
+#[cfg(target_os = "android")]
+// Generate text from multimodal context using actual llama.cpp inference
+fn generate_multimodal_response(
+    ctx: *mut llama_context,
+    max_tokens: c_int,
+    temperature: f32,
+    top_k: c_int,
+    top_p: f32,
+    repeat_penalty: f32,
+) -> String {
+    // Try to get vocab from context first
+    unsafe {
+        let vocab_size = llama_n_vocab(ctx);
+        if vocab_size == 0 {
+            return "❌ Context initialization failed - vocab size is 0".to_string();
+        }
+    }
+    
+    generate_multimodal_response_with_vocab(ctx, std::ptr::null(), max_tokens, temperature, top_k, top_p, repeat_penalty, 0) // 🆕 Start from position 0 for text-only generation
+}
+
+#[cfg(target_os = "android")]
+fn generate_multimodal_response_with_vocab(
+    ctx: *mut llama_context,
+    direct_vocab: *const llama_vocab,
+    max_tokens: c_int,
+    temperature: f32,
+    top_k: c_int,
+    top_p: f32,
+    repeat_penalty: f32,
+    initial_n_past: c_int, // 🆕 Accept correct initial position from encoding
+) -> String {
+    if ctx.is_null() {
+        return "❌ Invalid context".to_string();
+    }
+    
+    // Create samplers for generation
+    let temp_sampler = unsafe { llama_sampler_init_temp(temperature) };
+    let top_k_sampler = unsafe { llama_sampler_init_top_k(top_k) };
+    let top_p_sampler = unsafe { llama_sampler_init_top_p(top_p, 1) };
+    let repeat_sampler = unsafe { llama_sampler_init_penalties(-1, repeat_penalty, 0.0, 0.0) };
+    let dist_sampler = unsafe { llama_sampler_init_dist(1234) }; // Fixed seed for reproducibility
+
+    // Chain samplers together
+    let chain_params = llama_sampler_chain_params {
+        no_perf_fac: false,
+    };
+    let sampler = unsafe { llama_sampler_chain_init(chain_params) };
+    
+    unsafe {
+        llama_sampler_chain_add(sampler, temp_sampler);
+        llama_sampler_chain_add(sampler, top_k_sampler);
+        llama_sampler_chain_add(sampler, top_p_sampler);
+        llama_sampler_chain_add(sampler, repeat_sampler);
+        llama_sampler_chain_add(sampler, dist_sampler);
+    }
+
+    // Get model and vocab at function start (only once, like llama.rn)
+    let model = unsafe { llama_get_model(ctx) };
+    if model.is_null() {
+        unsafe { llama_sampler_free(sampler) };
+        return "❌ Model is null".to_string();
+    }
+    
+    let vocab = if direct_vocab.is_null() {
+        unsafe { llama_model_get_vocab(model) }
+    } else {
+        direct_vocab
+    };
+    
+    if vocab.is_null() {
+        unsafe { llama_sampler_free(sampler) };
+        return "❌ Vocab is null".to_string();
+    }
+    
+    let vocab_size = unsafe { llama_vocab_n_tokens(vocab) };
+    let n_ctx = unsafe { llama_n_ctx(ctx as *const llama_context) };
+    
+    println!("🔢 Context size: {}, Vocab size: {}, Using direct vocab: {}", n_ctx, vocab_size, !direct_vocab.is_null());
+
+    // Validate vocab
+    if vocab_size == 0 {
+        println!("❌ CRITICAL: Vocab size is 0 - vocab is not properly initialized!");
+        unsafe { llama_sampler_free(sampler) };
+        return "❌ Vocab initialization failed - vocab size is 0".to_string();
+    }
+    
+    println!("🔍 Starting multimodal inference with vocab size: {}", vocab_size);
+    
+    // 🆕 Follow llama.rn pattern: sample immediately after mtmd_helper_eval_chunks
+    println!("🔧 Following llama.rn pattern - sampling immediately after encoding");
+    
+    // 🆕 Declare n_past in outer scope to fix variable access issue
+    let mut n_past = initial_n_past;
+    
+    // Generate tokens one by one
+    let mut generated_text = String::new();
+    let mut generated_count = 0;
+    
+    // 🔍 Debug: Check context state before generation loop
+    println!("🔍 === Generation Loop Starting ===");
+    println!("🔍 Initial n_past: {}", n_past);
+    println!("🔍 Context size: {}", n_ctx);
+    println!("🔍 Vocab size: {}", vocab_size);
+    println!("🔍 Max tokens: {}", max_tokens);
+    println!("🔍 Temperature: {}, Top-K: {}, Top-P: {}", temperature, top_k, top_p);
+    
+    // 🔍 Try to get logits to verify context is ready
+    unsafe {
+        let logits_ptr = llama_get_logits(ctx);
+        if logits_ptr.is_null() {
+            println!("⚠️ WARNING: logits pointer is null! Context may not be ready.");
+        } else {
+            println!("✅ Logits pointer valid: {:p}", logits_ptr);
+            // Sample first few logits for debugging
+            let first_logit = *logits_ptr;
+            let second_logit = *logits_ptr.add(1);
+            println!("🔍 First logits: [{:.4}, {:.4}, ...]", first_logit, second_logit);
+        }
+    }
+    
+    for i in 0..max_tokens {
+        println!("🔍 === Token {} === (n_past: {})", i, n_past);
+        
+        // Check sampler validity before sampling
+        if sampler.is_null() {
+            println!("❌ Sampler is null!");
+            break;
+        }
+        
+        // 🆕 Follow llama.cpp official pattern: use llama_sampler_sample with index -1 (last position)
+        let token = unsafe { llama_sampler_sample(sampler, ctx, -1) }; // 🆕 Use -1 for last position logits like llama.cpp
+        println!("🔍 Sampled token: {} (0x{:x})", token, token);
+        
+        // Check token validity
+        println!("🔍 Token in range: {}", token < vocab_size);
+        
+        // Use official llama.cpp EOS check method
+        if unsafe { llama_vocab_is_eog(vocab, token) } {
+            println!("✅ EOS token detected: {} (0x{:x})", token, token);
+            break;
+        }
+        
+        // Check if this is a control token (like llama.rn does)
+        if unsafe { llama_vocab_is_control(vocab, token) } {
+            println!("⚠️ Control token detected: {} (0x{:x}), skipping...", token, token);
+            // Still need to accept the token into context but don't add to output
+            let accept_batch = unsafe { 
+                llama_batch_get_one(&token, 1, n_past as LlamaPos, 0)
+            };
+            n_past += 1;
+            let accept_result = unsafe { llama_decode(ctx, &accept_batch) };
+            if accept_result != 0 {
+                println!("❌ Failed to accept control token {}: {}", i, accept_result);
+                break;
+            }
+            continue; // Skip to next token
+        }
+        
+        // Convert token to string (use vocab from function start)
+        let mut token_str = [0u8; 64];
+        let token_len = unsafe { 
+            llama_token_to_piece(
+                vocab,  // Use vocab obtained at function start
+                token,
+                token_str.as_mut_ptr(),
+                token_str.len() as c_int,
+                0,
+                false,
+            )
+        };
+        
+        if token_len > 0 {
+            let token_text = unsafe { 
+                std::str::from_utf8_unchecked(&token_str[..token_len as usize])
+            };
+            generated_text.push_str(token_text);
+            generated_count += 1;
+            print!("{}", token_text);
+            std::io::stdout().flush().ok();
+        }
+        
+        // Accept the token into context
+        let accept_batch = unsafe { 
+            llama_batch_get_one(
+                &token,
+                1,
+                n_past as LlamaPos,
+                0,
+            )
+        };
+        n_past += 1;
+        
+        let accept_result = unsafe { llama_decode(ctx, &accept_batch) };
+        if accept_result != 0 {
+            println!("❌ Failed to accept token {}: {}", i, accept_result);
+            break;
+        }
+        
+        // Safety limit
+        if generated_count >= max_tokens || generated_text.len() > 1000 {
+            println!("🛑 Generation limit reached");
+            break;
+        }
+    }
+    
+    // Clean up
+    unsafe { 
+        llama_sampler_free(sampler);
+    };
+    
+    println!("\n✅ Real generation completed: {} tokens", generated_count);
+    
+    if generated_text.is_empty() {
+        "❌ No text generated - model may need proper prompt formatting".to_string()
+    } else {
+        generated_text
+    }
+}
+
+// 🆕 Version with streaming callbacks
+#[cfg(target_os = "android")]
+fn generate_multimodal_response_with_callbacks(
+    ctx: *mut llama_context,
+    direct_vocab: *const llama_vocab,
+    max_tokens: c_int,
+    temperature: f32,
+    top_k: c_int,
+    top_p: f32,
+    repeat_penalty: f32,
+    initial_n_past: c_int,  // 🆕 Use c_int for ABI consistency
+    on_token: TokenCallback,
+    user_data: *mut c_void,
+) -> String {
+    println!("🔍 generate_multimodal_response_with_callbacks: ENTRY");
+    
+    unsafe {
+        println!("🔍 Initializing samplers...");
+        
+        // Initialize samplers (same as original function)
+        let temp_sampler = llama_sampler_init_temp(temperature);
+        println!("🔍 temp_sampler: {:p}", temp_sampler);
+        
+        let top_k_sampler = llama_sampler_init_top_k(top_k);
+        println!("🔍 top_k_sampler: {:p}", top_k_sampler);
+        
+        let top_p_sampler = llama_sampler_init_top_p(top_p, 1);
+        println!("🔍 top_p_sampler: {:p}", top_p_sampler);
+        
+        let repeat_sampler = llama_sampler_init_penalties(-1, repeat_penalty, 0.0, 0.0);
+        println!("🔍 repeat_sampler: {:p}", repeat_sampler);
+        
+        let dist_sampler = llama_sampler_init_dist(1234);
+        println!("🔍 dist_sampler: {:p}", dist_sampler);
+
+        // Chain samplers together
+        let chain_params = llama_sampler_chain_params {
+            no_perf_fac: false,
+        };
+        let sampler = llama_sampler_chain_init(chain_params);
+        println!("🔍 sampler chain: {:p}", sampler);
+        
+        if sampler.is_null() {
+            return "❌ Failed to create sampler chain".to_string();
+        }
+        
+        llama_sampler_chain_add(sampler, temp_sampler);
+        llama_sampler_chain_add(sampler, top_k_sampler);
+        llama_sampler_chain_add(sampler, top_p_sampler);
+        llama_sampler_chain_add(sampler, repeat_sampler);
+        llama_sampler_chain_add(sampler, dist_sampler);
+
+        let n_ctx = llama_n_ctx(ctx);
+        let vocab_size = llama_vocab_n_tokens(direct_vocab);
+        println!("🔍 n_ctx: {}, vocab_size: {}", n_ctx, vocab_size);
+
+        if vocab_size == 0 {
+            llama_sampler_free(sampler);
+            return "❌ Vocab initialization failed".to_string();
+        }
+
+        println!("🔍 Starting streaming generation with vocab size: {}", vocab_size);
+
+        let mut n_past = initial_n_past;
+        let mut generated_text = String::new();
+        let mut generated_count = 0;
+
+        // Generation loop with callbacks
+        while generated_count < max_tokens && n_past < n_ctx {
+            let logits = llama_get_logits(ctx);
+            if logits.is_null() {
+                break;
+            }
+
+            // Sample next token
+            let new_token_id = llama_sampler_sample(sampler, ctx, -1);
+
+            // Check for EOS (use model's vocab to get EOS token)
+            let model = llama_get_model(ctx);
+            let eos_token = llama_token_eos(model);
+            if new_token_id == eos_token {
+                println!("🛑 EOS token reached");
+                break;
+            }
+
+            // Convert token to text
+            let mut token_buf = [0u8; 32];
+            let token_len = llama_token_to_piece(
+                direct_vocab,
+                new_token_id,
+                token_buf.as_mut_ptr() as *mut c_char,
+                token_buf.len() as c_int,
+                0,
+                false,
+            );
+
+            if token_len > 0 {
+                let token_str = std::str::from_utf8_unchecked(&token_buf[..token_len as usize]);
+                generated_text.push_str(token_str);
+
+                // 🔑 Call token callback with safety checks
+                if let Some(callback) = on_token {
+                    match CString::new(token_str) {
+                        Ok(token_cstr) => {
+                            callback(user_data, token_cstr.as_ptr(), new_token_id);
+                        }
+                        Err(_) => {
+                            // If CString creation fails, skip this token
+                            println!("⚠️ Warning: Failed to create CString for token");
+                        }
+                    }
+                }
+            }
+
+            // Token is already sampled and accepted
+
+            let batch = llama_batch_get_one(&new_token_id, 1, n_past, 0);
+            if llama_decode(ctx, &batch) != 0 {
+                println!("❌ Failed to decode token");
+                break;
+            }
+
+            n_past += 1;
+            generated_count += 1;
+        }
+
+        llama_sampler_free(sampler);
+        println!("✅ Streaming generation completed: {} tokens", generated_count);
+
+        generated_text
     }
 }
 
@@ -2856,11 +3755,11 @@ pub extern "C" fn Java_com_gpuf_c_GPUEngine_generateTextWithSampling(
         model_ptr,
         context_ptr,
         prompt_cstr.as_ptr(),
-        max_tokens,     // ✅ useuseuse[户]passinput[的] max_tokens
-        temperature,    // ✅ useuseuse[户]passinput[的] temperature
-        top_k,          // ✅ useuseuse[户]passinput[的] top_k
-        top_p,          // ✅ useuseuse[户]passinput[的] top_p
-        repeat_penalty, // ✅ useuseuse[户]passinput[的] repeat_penalty
+        max_tokens,     // Use user-provided max_tokens
+        temperature,    // Use user-provided temperature
+        top_k,          // Use user-provided top_k
+        top_p,          // Use user-provided top_p
+        repeat_penalty, // Use user-provided repeat_penalty
         output.as_mut_ptr(),
         output.len() as c_int,
     );
@@ -2965,25 +3864,39 @@ pub extern "C" fn gpuf_start_generation_async(
 
         // Reset memory pool
         reset_pool();
+        
+        // Clear KV cache for sequence 0 (remove all positions)
+        let kv = llama_get_memory(ctx);
+        let clear_result = llama_memory_seq_rm(kv, 0, -1, -1);
+        if !clear_result {
+            println!("⚠️ llama_memory_seq_rm failed, trying full clear...");
+            llama_memory_clear(kv, false);
+        }
+        println!("✅ KV cache cleared for clean generation");
 
-        // Tokenize prompt
+        // Tokenize prompt using real llama.cpp tokenizer
         let mut tokens = [0i32; 512];
-        let token_count = if prompt_str.len() <= 10 {
-            simple_char_tokenize(prompt_str, tokens.as_mut_ptr(), 512, true)
-        } else {
-            chunked_tokenize(prompt_str, tokens.as_mut_ptr(), 512, true)
-        };
+        let token_count = safe_tokenize(ctx, prompt, tokens.as_mut_ptr(), 512, true);
+
+        println!("🔍 After tokenization: token_count={}", token_count);
 
         if token_count <= 0 {
+            println!("🔍 Early return due to token_count <= 0");
             return -1;
         }
 
-        // Create batch
-        let current_pos = GLOBAL_CONTEXT_POSITION;
+        // Always start from position 0 for clean generation
+        let current_pos = 0;
         let mut batch_pos_array = [0i32; 512];
+        let mut logits_array = [0i8; 512]; // Logits request array
+        
         for i in 0..token_count {
             batch_pos_array[i as usize] = current_pos + i;
+            // Request logits for the last token only (for sampling)
+            logits_array[i as usize] = if i == token_count - 1 { 1 } else { 0 };
         }
+
+        println!("🔍 Creating initial batch with {} tokens (logits for last token)", token_count);
 
         let initial_batch = llama_batch {
             n_tokens: token_count,
@@ -2992,16 +3905,53 @@ pub extern "C" fn gpuf_start_generation_async(
             pos: batch_pos_array.as_ptr(),
             n_seq_id: std::ptr::null(),
             seq_id: std::ptr::null(),
-            logits: std::ptr::null(),
+            logits: logits_array.as_ptr(), // Request logits for last token
             all_pos_0: current_pos,
             all_pos_1: current_pos + token_count - 1,
             all_seq_id: 0,
         };
 
+        println!("🔍 Initial batch created, about to decode...");
+
         // Initial decode
-        if llama_decode(ctx, &initial_batch) != 0 {
+        println!("🔍 About to call llama_decode...");
+        let decode_result = llama_decode(ctx, &initial_batch);
+        println!("🔍 llama_decode returned: {}", decode_result);
+        
+        if decode_result != 0 {
+            println!("🔍 Early return due to decode failure: {}", decode_result);
             return -1;
         }
+
+        println!("🔍 Getting model and vocab for token conversion...");
+        // Get model and vocab for token conversion
+        let model = llama_get_model(ctx);
+        let vocab = llama_model_get_vocab(model);
+        
+        if vocab.is_null() {
+            println!("🔍 Early return due to null vocab");
+            return -1;
+        }
+        
+        println!("🔍 Model and vocab ready, starting generation loop...");
+
+        // Initialize sampler
+        let temp_sampler = llama_sampler_init_temp(temperature);
+        let top_k_sampler = llama_sampler_init_top_k(top_k);
+        let top_p_sampler = llama_sampler_init_top_p(top_p, 1);
+        let repeat_sampler = llama_sampler_init_penalties(-1, repeat_penalty, 0.0, 0.0);
+        let dist_sampler = llama_sampler_init_dist(1234);
+
+        let chain_params = llama_sampler_chain_params {
+            no_perf_fac: false,
+        };
+        let sampler = llama_sampler_chain_init(chain_params);
+        
+        llama_sampler_chain_add(sampler, temp_sampler);
+        llama_sampler_chain_add(sampler, top_k_sampler);
+        llama_sampler_chain_add(sampler, top_p_sampler);
+        llama_sampler_chain_add(sampler, repeat_sampler);
+        llama_sampler_chain_add(sampler, dist_sampler);
 
         // Generate tokens with streaming callbacks
         let context_available = 4096 - current_pos - token_count;
@@ -3016,15 +3966,56 @@ pub extern "C" fn gpuf_start_generation_async(
                 break;
             }
 
-            // Official llama.cpp sampling
-            /*
-            let current_sampling_pos = next_pos - 1;
-            let sampled_token = sample_token(ctx, current_sampling_pos, temperature, top_k, top_p);
-            */
-            let sampled_token = 1; // Placeholder
-            if sampled_token == 2 {
+            // Sample next token using llama.cpp sampler
+            let sampled_token = llama_sampler_sample(sampler, ctx, -1);
+            
+            println!("🔍 Sampled token: {} (EOS: {})", sampled_token, llama_vocab_is_eog(vocab, sampled_token));
+            
+            // Check EOS
+            if llama_vocab_is_eog(vocab, sampled_token) {
+                println!("🔍 EOS token detected, stopping generation");
                 break;
-            } // EOS
+            }
+
+            // Convert token to text
+            let mut token_buf = [0u8; 32];
+            let token_len = llama_token_to_piece(
+                vocab,
+                sampled_token,
+                token_buf.as_mut_ptr() as *mut c_char,
+                token_buf.len() as c_int,
+                0,
+                false,
+            );
+
+            println!("🔍 Token debug: sampled_token={}, token_len={}", sampled_token, token_len);
+            
+            if token_len > 0 {
+                let token_str = std::str::from_utf8_unchecked(&token_buf[..token_len as usize]);
+                println!("🔍 Token content: \"{}\" (bytes: {:?})", token_str, &token_buf[..token_len as usize]);
+                
+                // Call callback only if it's not None
+                if let Some(callback) = on_token_callback {
+                    println!("🔍 Calling callback with token...");
+                    match std::ffi::CString::new(token_str) {
+                        Ok(token_cstr) => {
+                            callback(token_cstr.as_ptr(), user_data);
+                            println!("🔍 Callback completed");
+                        }
+                        Err(_) => {
+                            println!("⚠️ Token callback skipped - CString conversion failed");
+                        }
+                    }
+                } else {
+                    // Just print the token if no callback provided
+                    println!("🔍 No callback - printing directly");
+                    print!("{}", token_str);
+                    use std::io::Write;
+                    std::io::stdout().flush().ok();
+                }
+            } else {
+                println!("🔍 Empty token skipped");
+            }
 
             // Create single token batch
             let single_token_batch = llama_batch {
@@ -3045,30 +4036,15 @@ pub extern "C" fn gpuf_start_generation_async(
                 break;
             }
 
-            // Convert token to string and call callback (if provided)
-            let token_str = format!("[{}]", sampled_token);
-            let token_cstr = std::ffi::CString::new(token_str.clone()).unwrap();
-
-            // Call callback only if it's not None
-            if let Some(callback) = on_token_callback {
-                callback(token_cstr.as_ptr(), user_data);
-            } else {
-                // Just print the token if no callback provided
-                println!("🔥 Generated token: {}", token_str);
-            }
-
             next_pos += 1;
-
-            // Small delay to simulate streaming
-            std::thread::sleep(std::time::Duration::from_millis(50));
         }
 
-        // Update global position
-        GLOBAL_CONTEXT_POSITION = next_pos;
+        // Cleanup sampler
+        llama_sampler_free(sampler);
 
         // Cleanup
         cleanup_generation_control();
-        println!("✅ Streaming generation completed");
+        println!("✅ Streaming generation completed (generated {} tokens)", next_pos - current_pos - token_count);
     }
 
     0
@@ -3258,7 +4234,7 @@ pub extern "C" fn gpuf_generate_single_token(
 
         // Create batch with logits request for last token
         let mut batch_pos_array = [0i32; 128];
-        let mut logits_array = [0u8; 128];
+        let mut logits_array = [0i8; 128];
 
         for i in 0..token_count {
             batch_pos_array[i as usize] = i;
@@ -3308,5 +4284,207 @@ pub extern "C" fn gpuf_generate_single_token(
         *output.add(copy_len) = 0;
 
         copy_len as c_int
+    }
+}
+
+// ============================================================================
+// JNI Multimodal API Functions
+// ============================================================================
+
+/// JNI: Load multimodal model (text model + mmproj)
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_gpuf_c_GPUEngine_loadMultimodalModel(
+    mut env: JNIEnv,
+    _class: JClass,
+    text_model_path: JString,
+    mmproj_path: JString,
+) -> jlong {
+    println!("🔥 GPUFabric JNI: Loading multimodal model");
+
+    let text_path_str = match env.get_string(&text_model_path) {
+        Ok(s) => s,
+        Err(_) => return 0,
+    };
+
+    let mmproj_path_str = match env.get_string(&mmproj_path) {
+        Ok(s) => s,
+        Err(_) => return 0,
+    };
+
+    let text_path = match text_path_str.to_str() {
+        Ok(s) => s,
+        Err(_) => return 0,
+    };
+
+    let mmproj = match mmproj_path_str.to_str() {
+        Ok(s) => s,
+        Err(_) => return 0,
+    };
+
+    let text_path_cstr = match CString::new(text_path) {
+        Ok(s) => s,
+        Err(_) => return 0,
+    };
+
+    let mmproj_cstr = match CString::new(mmproj) {
+        Ok(s) => s,
+        Err(_) => return 0,
+    };
+
+    let multimodal_model = gpuf_load_multimodal_model(
+        text_path_cstr.as_ptr(),
+        mmproj_cstr.as_ptr(),
+    );
+
+    if multimodal_model.is_null() {
+        println!("❌ Failed to load multimodal model");
+        return 0;
+    }
+
+    println!("✅ Multimodal model loaded successfully");
+    multimodal_model as jlong
+}
+
+/// JNI: Create context for multimodal model
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_gpuf_c_GPUEngine_createMultimodalContext(
+    _env: JNIEnv,
+    _class: JClass,
+    multimodal_model_ptr: jlong,
+) -> jlong {
+    println!("🔥 GPUFabric JNI: Creating multimodal context");
+
+    if multimodal_model_ptr == 0 {
+        println!("❌ Invalid multimodal model pointer");
+        return 0;
+    }
+
+    let multimodal_model = multimodal_model_ptr as *mut gpuf_multimodal_model;
+    let ctx = gpuf_create_multimodal_context(multimodal_model);
+
+    if ctx.is_null() {
+        println!("❌ Failed to create multimodal context");
+        return 0;
+    }
+
+    println!("✅ Multimodal context created successfully");
+    ctx as jlong
+}
+
+/// JNI: Generate with multimodal input (text + image)
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_gpuf_c_GPUEngine_generateMultimodal(
+    mut env: JNIEnv,
+    _class: JClass,
+    multimodal_model_ptr: jlong,
+    ctx_ptr: jlong,
+    text_prompt: JString,
+    image_data: jbyteArray,
+    max_tokens: jint,
+    temperature: jfloat,
+    top_k: jint,
+    top_p: jfloat,
+) -> jstring {
+    println!("🔥 GPUFabric JNI: Generating with multimodal input");
+
+    if multimodal_model_ptr == 0 || ctx_ptr == 0 {
+        println!("❌ Invalid model or context pointer");
+        return match env.new_string("Error: Invalid model or context") {
+            Ok(jstring) => jstring.into_raw(),
+            Err(_) => std::ptr::null_mut(),
+        };
+    }
+
+    let prompt_str = match env.get_string(&text_prompt) {
+        Ok(s) => s,
+        Err(_) => return std::ptr::null_mut(),
+    };
+
+    let prompt_text = match prompt_str.to_str() {
+        Ok(s) => s,
+        Err(_) => return std::ptr::null_mut(),
+    };
+
+    let prompt_cstr = match CString::new(prompt_text) {
+        Ok(s) => s,
+        Err(_) => return std::ptr::null_mut(),
+    };
+
+    // Get image data if provided
+    let (image_ptr, image_size) = if !image_data.is_null() {
+        // For now, return null image data - will implement proper JNI array handling later
+        (std::ptr::null(), 0)
+    } else {
+        (std::ptr::null(), 0)
+    };
+
+    // Create output buffer
+    let mut output = vec![0u8; 4096];
+
+    let result = gpuf_generate_multimodal(
+        multimodal_model_ptr as *mut gpuf_multimodal_model,
+        ctx_ptr as *mut llama_context,
+        prompt_cstr.as_ptr(),
+        image_ptr,
+        image_size,
+        max_tokens,
+        temperature,
+        top_k,
+        top_p,
+        1.1, // repeat_penalty
+        output.as_mut_ptr() as *mut c_char,
+        output.len() as c_int,
+    );
+
+    if result > 0 {
+        let output_str = unsafe {
+            CStr::from_ptr(output.as_ptr() as *const c_char)
+                .to_str()
+                .unwrap_or("")
+        };
+
+        match env.new_string(output_str) {
+            Ok(jstring) => jstring.into_raw(),
+            Err(_) => std::ptr::null_mut(),
+        }
+    } else {
+        match env.new_string(format!("Error: Generation failed with code {}", result)) {
+            Ok(jstring) => jstring.into_raw(),
+            Err(_) => std::ptr::null_mut(),
+        }
+    }
+}
+
+/// JNI: Check if multimodal model supports vision
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_gpuf_c_GPUEngine_supportsVision(
+    _env: JNIEnv,
+    _class: JClass,
+    multimodal_model_ptr: jlong,
+) -> jboolean {
+    if multimodal_model_ptr == 0 {
+        return 0;
+    }
+
+    let has_vision = gpuf_multimodal_supports_vision(multimodal_model_ptr as *mut gpuf_multimodal_model);
+    if has_vision { 1 } else { 0 }
+}
+
+/// JNI: Free multimodal model
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_gpuf_c_GPUEngine_freeMultimodalModel(
+    _env: JNIEnv,
+    _class: JClass,
+    multimodal_model_ptr: jlong,
+) {
+    if multimodal_model_ptr != 0 {
+        println!("🔥 GPUFabric JNI: Freeing multimodal model");
+        gpuf_free_multimodal_model(multimodal_model_ptr as *mut gpuf_multimodal_model);
+        println!("✅ Multimodal model freed");
     }
 }

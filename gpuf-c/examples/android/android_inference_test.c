@@ -39,7 +39,7 @@ int main(int argc, char* argv[]) {
     const char* prompt = argv[1];
     printf("📝 Testprompt: \"%s\"\n\n", prompt);
     
-    // Initialize[系][统]
+    // Initialize system
     printf("🔧 Initializing GPUFabric SDK...\n");
     if (!gpuf_init()) {
         printf("❌ System initialization failed\n");
@@ -90,28 +90,28 @@ int main(int argc, char* argv[]) {
         printf("📝 Output: \"%s\"\n", output);
         printf("📊 Length: %d tokens\n\n", result);
         
-        // partanalyzeOutput[类]type
+        // Analyze output type
         printf("🔍 Output Analysis:\n");
         if (strstr(output, "Explanation") || strstr(output, "function")) {
-            printf("⚠️  checktesttotechnologytechniquepropertycallback[答] - SmolVLM [训][练]biasdifference\n");
+            printf("⚠️  Check technical bias - SmolVLM training difference\n");
         } else if (strstr(output, "Hello") || strstr(output, "Hi")) {
             printf("✅ Greeting response\n");
         } else if (strstr(output, "?") || strstr(output, "answer")) {
-            printf("✅ [问][题]propertycallback[答]\n");
+            printf("✅ Question and answer format\n");
         } else if (strstr(output, "=") || strstr(output, "4") || strstr(output, "calculate")) {
-            printf("✅ numberlearn[计][算]callback[答]\n");
+            printf("✅ Mathematical calculation answer\n");
         } else {
-            printf("🤔 itsother[类]typecallback[答]\n");
+            printf("🤔 Other type of answer\n");
         }
     } else {
-        printf("❌ GenerateFailed: Errorgeneration[码] %d\n", result);
+        printf("❌ Generation Failed: Error code %d\n", result);
     }
     
-    // Cleanup[资][源]
+    // Cleanup resources
     printf("\n🧹 Cleaning up resources...\n");
     gpuf_cleanup();
     
-    printf("\n🎉 Android AI pushmanageTestCompleted！\n");
+    printf("\n🎉 Android AI inference test completed!\n");
     printf("=====================================\n");
     return 0;
 }
