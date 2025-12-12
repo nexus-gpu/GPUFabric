@@ -64,7 +64,7 @@ GPUFabric/
 
 ## 📦 SDK Contents
 
-- `libgpuf_c_sdk_v9.so` - Main library (33MB)
+- `libgpuf_c_sdk_v9.so` - Main library (51MB)
 - `libc++_shared.so` - Android C++ runtime
 - `gpuf_c.h` - C header file
 - Java/C examples and documentation

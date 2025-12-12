@@ -400,6 +400,7 @@ async fn check_and_restart_ollama() -> Result<()> {
 impl WorkerHandle for TCPWorker {
     fn login(&self) -> impl Future<Output = Result<()>> + Send {
         async move {
+            info!("🔧 Starting login process...");
             let login_cmd = CommandV1::Login {
                 version: CURRENT_VERSION,
                 auto_models: self.args.auto_models,
@@ -410,8 +411,17 @@ impl WorkerHandle for TCPWorker {
                 device_total_tflops: self.device_total_tflops,
                 devices_info: self.devices_info.as_ref().clone(),
             };
-            write_command(&mut *self.writer.lock().await, &Command::V1(login_cmd)).await?;
-            Ok(())
+            info!("📤 About to write login command to server...");
+            match write_command(&mut *self.writer.lock().await, &Command::V1(login_cmd)).await {
+                Ok(_) => {
+                    info!("✅ Login command written successfully");
+                    Ok(())
+                }
+                Err(e) => {
+                    error!("❌ Failed to write login command: {}", e);
+                    Err(e)
+                }
+            }
         }
     }
 

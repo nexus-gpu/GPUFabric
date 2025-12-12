@@ -3,6 +3,7 @@ mod api_server;
 mod db;
 mod handle;
 mod util;
+mod inference;
 #[cfg(all(feature = "xdp", target_os = "linux"))]
 mod xdp;
 
@@ -12,7 +13,7 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 #[cfg(target_os = "linux")]
 use tokio::signal::unix::{signal, SignalKind};
-use tracing::{info, Level};
+use tracing::{info,error, Level};
 
 #[cfg(debug_assertions)]
 #[global_allocator]
@@ -35,7 +36,7 @@ async fn main() -> Result<()> {
     let proxy_listener = TcpListener::bind(format!("0.0.0.0:{}", args.proxy_port)).await?;
     let public_listener = TcpListener::bind(format!("0.0.0.0:{}", args.public_port)).await?;
     info!(
-        "GPFS listening on ports: Control={}, Proxy={}, Public={}, API={}",
+        "gpuf-server listening on ports: Control={}, Proxy={}, Public={}, API={}",
         args.control_port, args.proxy_port, args.public_port, args.api_port
     );
     // Create a channel to signal when to drop ServerState
@@ -46,6 +47,17 @@ async fn main() -> Result<()> {
     let server_state1 = Arc::clone(&server_state);
     let server_state2 = Arc::clone(&server_state);
     let server_state3 = Arc::clone(&server_state);
+    let _server_state4 = Arc::clone(&server_state);
+
+    // Start inference gateway on port 8081
+    let inference_gateway = Arc::new(inference::InferenceGateway::new(server_state.inference_scheduler.clone()));
+    let inference_gateway_task = tokio::spawn(async move {
+        info!("Starting Inference Gateway on port 8081...");
+        if let Err(e) = inference_gateway.run(8081).await {
+            error!("Inference gateway failed: {}", e);
+        }
+    });
+    info!("Inference Gateway spawned and will start on port 8081");
 
     tokio::spawn(async move {
         #[cfg(target_os = "linux")]
@@ -78,6 +90,10 @@ async fn main() -> Result<()> {
             res = server_state1.handle_client_connections(control_listener) => res,
             res = server_state2.handle_proxy_connections(proxy_listener) => res,
             res = server_state3.handle_public_connections(public_listener) => res,
+            _res = inference_gateway_task => {
+                info!("Inference gateway task completed");
+                Ok(())
+            }
             _ = &mut shutdown_rx => {
                 info!("Shutdown signal received, stopping server...");
                 Ok(())

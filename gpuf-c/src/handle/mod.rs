@@ -1,11 +1,13 @@
 pub mod handle_tcp;
 pub mod handle_ws;
+pub mod android_sdk;
 use crate::util::cmd::{Args, WorkerType,EngineType};
 use crate::util::network_info::SessionNetworkMonitor;
 // LLM engine is not available in lightweight Android version
 #[cfg(not(target_os = "android"))]
 use crate::llm_engine::Engine;
 use common::{OsType,DevicesInfo, SystemInfo, EngineType as ClientEngineType};
+use tracing::{info,error};
 
 use anyhow::{anyhow, Result};
 use std::sync::OnceLock;
@@ -94,20 +96,30 @@ impl WorkerHandle for AutoWorker {
 }
 
 pub async fn new_worker(args: Args) -> AutoWorker {
+    info!("🔧 new_worker: Starting worker creation...");
     // TODO: IPC shared memory should be selected
     loop {
+        info!("🔄 new_worker: Loop iteration for worker type: {:?}", args.worker_type);
         match args.worker_type {
             WorkerType::TCP => {
+                info!("📡 new_worker: Creating TCP worker...");
                 match TCPWorker::new(args.clone()).await {
-                    Ok(worker) => return AutoWorker::TCP(worker),
+                    Ok(worker) => {
+                        info!("✅ new_worker: TCP worker created successfully");
+                        return AutoWorker::TCP(worker);
+                    },
                     Err(e) => {
                         tracing::error!("Failed to create TCP worker: {}. Retrying in 5 seconds...", e);
                     }
                 }
             }
             WorkerType::WS => {
+                info!("🌐 new_worker: Creating WS worker...");
                 match WSWorker::new(args.clone()).await {
-                    Ok(worker) => return AutoWorker::WS(worker),
+                    Ok(worker) => {
+                        info!("✅ new_worker: WS worker created successfully");
+                        return AutoWorker::WS(worker);
+                    },
                     Err(e) => {
                         tracing::error!("Failed to create WS worker: {}. Retrying in 5 seconds...", e);
                     }
@@ -115,112 +127,8 @@ pub async fn new_worker(args: Args) -> AutoWorker {
             }
         }
         
+        info!("⏳ new_worker: Waiting 5 seconds before retry...");
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
     }
 }
 
-// ============================================================================
-// Android JNI Integration - Global Worker Management
-// ============================================================================
-
-/// Global worker instance for Android JNI
-static GLOBAL_WORKER: OnceLock<Mutex<Option<Arc<AutoWorker>>>> = OnceLock::new();
-
-/// Global worker task handle for background operations
-static GLOBAL_WORKER_HANDLES: OnceLock<Mutex<Option<(tokio::task::JoinHandle<()>, tokio::task::JoinHandle<()>)>>> = OnceLock::new();
-
-/// Initialize global worker for Android
-#[cfg(target_os = "android")]
-pub async fn init_global_worker(args: Args) -> Result<()> {
-    // Create new worker
-    let worker = new_worker(args).await;
-    
-    // Login to server
-    worker.login().await
-        .map_err(|e| anyhow!("Failed to login worker: {}", e))?;
-    
-    // Wrap in Arc for shared access
-    let worker_arc = Arc::new(worker);
-    
-    // Store in global instance
-    let global = GLOBAL_WORKER.get_or_init(|| Mutex::new(None));
-    let mut guard = global.lock().await;
-    *guard = Some(worker_arc);
-    
-    tracing::info!("Global worker initialized successfully");
-    Ok(())
-}
-
-/// Start background worker tasks (heartbeat, handler, etc.)
-#[cfg(target_os = "android")]
-pub async fn start_worker_tasks() -> Result<()> {
-    let global = GLOBAL_WORKER.get()
-        .ok_or_else(|| anyhow!("Worker not initialized"))?;
-    
-    // Get Arc<AutoWorker> for shared access
-    let worker_arc = {
-        let guard = global.lock().await;
-        guard.as_ref()
-            .ok_or_else(|| anyhow!("Worker not available"))?
-            .clone()
-    };
-    
-    // Spawn heartbeat task
-    let heartbeat_worker = worker_arc.clone();
-    let heartbeat_handle = tokio::spawn(async move {
-        if let Err(e) = heartbeat_worker.heartbeat_task().await {
-            tracing::error!("Heartbeat task failed: {}", e);
-        }
-    });
-    
-    // Spawn handler task
-    let handler_worker = worker_arc.clone();
-    let handler_handle = tokio::spawn(async move {
-        if let Err(e) = handler_worker.handler().await {
-            tracing::error!("Handler task failed: {}", e);
-        }
-    });
-    
-    // Store handles separately for proper cleanup
-    let global_handles = GLOBAL_WORKER_HANDLES.get_or_init(|| Mutex::new(None));
-    let mut guard = global_handles.lock().await;
-    *guard = Some((heartbeat_handle, handler_handle));
-    
-    tracing::info!("Worker tasks started successfully (concurrent)");
-    Ok(())
-}
-
-/// Stop global worker and cleanup
-#[cfg(target_os = "android")]
-pub async fn stop_global_worker() {
-    // Stop background tasks
-    if let Some(global_handles) = GLOBAL_WORKER_HANDLES.get() {
-        let mut guard = global_handles.lock().await;
-        if let Some((heartbeat_handle, handler_handle)) = guard.take() {
-            heartbeat_handle.abort();
-            handler_handle.abort();
-            tracing::info!("Worker tasks stopped");
-        }
-    }
-    
-    // Cleanup worker
-    if let Some(global) = GLOBAL_WORKER.get() {
-        let mut guard = global.lock().await;
-        *guard = None;
-        tracing::info!("Global worker cleaned up");
-    }
-}
-
-/// Get global worker status
-#[cfg(target_os = "android")]
-pub async fn get_worker_status() -> Result<String> {
-    let global = GLOBAL_WORKER.get()
-        .ok_or_else(|| anyhow!("Worker not initialized"))?;
-    
-    let guard = global.lock().await;
-    if guard.is_some() {
-        Ok("Worker is running".to_string())
-    } else {
-        Ok("Worker not available".to_string())
-    }
-}

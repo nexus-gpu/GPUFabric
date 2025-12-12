@@ -1,0 +1,11 @@
+[env]
+CUDA_NVCC_FLAGS = "-Xcompiler -fPIC"
+CUDAFLAGS = "-Xcompiler -fPIC"
+
+[target.x86_64-unknown-linux-gnu]
+linker = "gcc"
+
+[target.x86_64-unknown-linux-musl]
+linker = "/usr/bin/musl-gcc"
+ar = "/usr/bin/ar"
+cxx = "/usr/bin/x86_64-linux-musl-g++"

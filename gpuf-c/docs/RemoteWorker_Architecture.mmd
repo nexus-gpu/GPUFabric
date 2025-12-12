@@ -1,0 +1,109 @@
+%% GPUFabric Remote Worker 架构层次图
+
+graph TB
+    subgraph "Android 应用层"
+        JavaApp[Java/Kotlin 应用代码]
+        RemoteWorkerClass[RemoteWorker.java<br/>JNI 接口类]
+    end
+    
+    subgraph "JNI 绑定层 (Rust)"
+        JNI1[setRemoteWorkerModel<br/>模型加载]
+        JNI2[startRemoteWorker<br/>连接服务器]
+        JNI3[startRemoteWorkerTasks<br/>启动任务]
+        JNI4[getRemoteWorkerStatus<br/>获取状态]
+        JNI5[stopRemoteWorker<br/>停止工作器]
+    end
+    
+    subgraph "C API 层 (lib.rs)"
+        CAPI1[set_remote_worker_model]
+        CAPI2[start_remote_worker]
+        CAPI3[start_remote_worker_tasks]
+        CAPI4[get_remote_worker_status]
+        CAPI5[stop_remote_worker]
+    end
+    
+    subgraph "Android SDK 层 (android_sdk.rs)"
+        SDK1[init_global_worker<br/>初始化工作器]
+        SDK2[start_worker_tasks<br/>启动线程]
+        SDK3[get_worker_status<br/>状态查询]
+        
+        subgraph "后台线程"
+            Thread1[心跳线程<br/>30秒间隔]
+            Thread2[任务处理线程<br/>推理执行]
+        end
+    end
+    
+    subgraph "网络通信层"
+        TCP[TCP 连接<br/>TcpStream]
+        Protocol[命令协议<br/>CommandV1]
+    end
+    
+    subgraph "LLM 引擎层"
+        LLamaBackend[llama_backend_init<br/>后端初始化]
+        ModelLoad[gpuf_load_model<br/>模型加载]
+        ContextCreate[gpuf_create_context<br/>上下文创建]
+        Inference[gpuf_generate_final_solution_text<br/>推理执行]
+    end
+    
+    subgraph "系统资源"
+        ModelFile[GGUF 模型文件]
+        Memory[设备内存]
+        Network[网络连接]
+        CPU[CPU 资源]
+    end
+    
+    %% 连接关系
+    JavaApp --> RemoteWorkerClass
+    RemoteWorkerClass --> JNI1
+    RemoteWorkerClass --> JNI2
+    RemoteWorkerClass --> JNI3
+    RemoteWorkerClass --> JNI4
+    RemoteWorkerClass --> JNI5
+    
+    JNI1 --> CAPI1
+    JNI2 --> CAPI2
+    JNI3 --> CAPI3
+    JNI4 --> CAPI4
+    JNI5 --> CAPI5
+    
+    CAPI1 --> ModelLoad
+    CAPI1 --> ContextCreate
+    CAPI2 --> SDK1
+    CAPI3 --> SDK2
+    CAPI4 --> SDK3
+    
+    SDK1 --> TCP
+    SDK2 --> Thread1
+    SDK2 --> Thread2
+    
+    Thread1 --> Protocol
+    Thread2 --> Protocol
+    Thread2 --> Inference
+    
+    Protocol --> TCP
+    TCP --> Network
+    
+    ModelLoad --> LLamaBackend
+    ContextCreate --> LLamaBackend
+    Inference --> LLamaBackend
+    
+    ModelLoad --> ModelFile
+    LLamaBackend --> Memory
+    Inference --> CPU
+    
+    %% 样式
+    classDef javaLayer fill:#FFE4B5,stroke:#FF8C00,stroke-width:2px
+    classDef jniLayer fill:#98FB98,stroke:#228B22,stroke-width:2px
+    classDef capiLayer fill:#87CEEB,stroke:#4169E1,stroke-width:2px
+    classDef sdkLayer fill:#DDA0DD,stroke:#8B008B,stroke-width:2px
+    classDef netLayer fill:#F0E68C,stroke:#DAA520,stroke-width:2px
+    classDef llmLayer fill:#FFB6C1,stroke:#DC143C,stroke-width:2px
+    classDef resLayer fill:#D3D3D3,stroke:#696969,stroke-width:2px
+    
+    class JavaApp,RemoteWorkerClass javaLayer
+    class JNI1,JNI2,JNI3,JNI4,JNI5 jniLayer
+    class CAPI1,CAPI2,CAPI3,CAPI4,CAPI5 capiLayer
+    class SDK1,SDK2,SDK3,Thread1,Thread2 sdkLayer
+    class TCP,Protocol netLayer
+    class LLamaBackend,ModelLoad,ContextCreate,Inference llmLayer
+    class ModelFile,Memory,Network,CPU resLayer

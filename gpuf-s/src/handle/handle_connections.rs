@@ -40,6 +40,7 @@ impl ServerState {
             let client_models = self.client_model.clone();
             let hot_models = self.hot_models.clone();
             let producer: Arc<FutureProducer> = self.producer.clone();
+            let server_state_clone = self.clone();
             tokio::spawn(async move {
                 if let Err(e) = handle_single_client(
                     stream,
@@ -49,6 +50,7 @@ impl ServerState {
                     db_pool_clone,
                     producer,
                     redis_client_clone,
+                    server_state_clone,
                 )
                 .await
                 {
@@ -93,6 +95,7 @@ async fn handle_single_client(
     db_pool: Arc<Pool<Postgres>>,
     producer: Arc<FutureProducer>,
     redis_client: Arc<RedisClient>,
+    server_state: Arc<crate::handle::ServerState>,
 ) -> Result<()> {
     if let Err(_e) = set_keepalive(&stream) {
         error!("handle_single_client set_keepalive err");
@@ -223,8 +226,25 @@ async fn handle_single_client(
                 client::upsert_client_status(&db_pool, &session_client_id, "offline").await?;
                 return Ok(());
             }
+            Ok(Command::V1(CommandV1::InferenceResult {
+                task_id,
+                success,
+                result,
+                error,
+                execution_time_ms,
+            })) => {
+                info!("Received inference result for task {} from device {}", task_id, hex::encode(&session_client_id.0));
+                // Route result to inference scheduler to complete HTTP response
+                server_state.inference_scheduler.handle_inference_result(
+                    task_id,
+                    success,
+                    result,
+                    error,
+                    execution_time_ms,
+                ).await;
+            }
             _ => {
-                warn!("Received unexpected command Client addr{}", addr);
+                warn!("Received unexpected command from client addr {}", addr);
             }
         }
     }

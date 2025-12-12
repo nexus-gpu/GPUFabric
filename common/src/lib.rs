@@ -179,6 +179,26 @@ pub enum CommandV1 {
         models: Vec<Model>,
         auto_models_device: Vec<DevicesInfo>,        
     },
+
+    // Inference task from server to client
+    InferenceTask {
+        task_id: String,
+        prompt: String,
+        max_tokens: u32,
+        temperature: f32,
+        top_k: u32,
+        top_p: f32,
+        repeat_penalty: f32,
+    },
+
+    // Inference result from client to server
+    InferenceResult {
+        task_id: String,
+        success: bool,
+        result: Option<String>,
+        error: Option<String>,
+        execution_time_ms: u64,
+    },
 }
 
 #[derive(Encode, Decode, Debug, Clone)]
@@ -377,6 +397,7 @@ const OS_TPYE_MAP: &[(&str, OsType)] = &[
     ("mac", OsType::MACOS),
     ("linux", OsType::LINUX),
     ("win", OsType::WINDOWS),
+    ("android", OsType::ANDROID),
 ];
 
 #[inline]

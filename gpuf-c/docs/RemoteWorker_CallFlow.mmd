@@ -1,0 +1,50 @@
+%% GPUFabric Remote Worker API 调用流程图
+%% 使用 Mermaid 语法
+
+graph TB
+    Start([开始]) --> LoadLib[加载 Native 库<br/>System.loadLibrary]
+    
+    LoadLib --> SetModel[1. setRemoteWorkerModel<br/>设置 LLM 模型]
+    
+    SetModel --> CheckModel{模型加载<br/>成功?}
+    CheckModel -->|失败| ErrorModel[返回 -1<br/>输出错误日志]
+    CheckModel -->|成功| StartWorker[2. startRemoteWorker<br/>连接服务器]
+    
+    StartWorker --> CheckConnect{连接<br/>成功?}
+    CheckConnect -->|失败| ErrorConnect[返回 -1<br/>输出错误日志]
+    CheckConnect -->|成功| StartTasks[3. startRemoteWorkerTasks<br/>启动后台任务]
+    
+    StartTasks --> CheckTasks{任务启动<br/>成功?}
+    CheckTasks -->|失败| ErrorTasks[返回 -1<br/>输出错误日志]
+    CheckTasks -->|成功| Running[工作器运行中]
+    
+    Running --> Monitor[4. getRemoteWorkerStatus<br/>监控状态]
+    Monitor --> Running
+    
+    Running --> HotSwap{需要切换<br/>模型?}
+    HotSwap -->|是| SetModel2[setRemoteWorkerModel<br/>热切换模型]
+    SetModel2 --> Running
+    HotSwap -->|否| Continue[继续运行]
+    
+    Continue --> NeedStop{需要<br/>停止?}
+    NeedStop -->|否| Running
+    NeedStop -->|是| StopWorker[5. stopRemoteWorker<br/>停止工作器]
+    
+    StopWorker --> Cleanup[清理资源]
+    Cleanup --> End([结束])
+    
+    ErrorModel --> End
+    ErrorConnect --> End
+    ErrorTasks --> End
+    
+    style Start fill:#90EE90
+    style End fill:#FFB6C1
+    style Running fill:#87CEEB
+    style SetModel fill:#FFD700
+    style StartWorker fill:#FFD700
+    style StartTasks fill:#FFD700
+    style Monitor fill:#98FB98
+    style StopWorker fill:#FFA07A
+    style ErrorModel fill:#FF6B6B
+    style ErrorConnect fill:#FF6B6B
+    style ErrorTasks fill:#FF6B6B

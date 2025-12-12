@@ -20,8 +20,7 @@
 
 // Model paths for testing (adjust these paths for your device)
 #define MODEL_PATH_1 "/data/local/tmp/models/llama-3.2-1b-instruct-q8_0.gguf"
-#define MODEL_PATH_2 "/data/local/tmp/models/llama-13b.gguf"
-#define MODEL_PATH_3 "/data/local/tmp/models/qwen-7b.gguf"
+#define MODEL_PATH_2 "/data/local/tmp/models/llama-3.2-1b-instruct-q8_0.gguf"
 
 int main() {
     printf("🔥 GPUFabric Android C API Test (with Hot Swapping)\n");
@@ -36,13 +35,7 @@ int main() {
     } else {
         printf("❌ Failed to load model (error: %d)\n", result);
         printf("   Trying alternative approach...\n");
-        
-        // Try with a dummy path for testing
-        result = set_remote_worker_model("/dummy/path/model.gguf");
-        if (result != 0) {
-            printf("   ⚠️  Model loading test failed as expected (error: %d)\n", result);
-            printf("   Continuing with worker tests...\n");
-        }
+        return -1;
     }
     
     // Wait a bit for model initialization
@@ -52,11 +45,11 @@ int main() {
     // Test 2: Start remote worker
     printf("\n📡 Test 2: Starting remote worker...\n");
     result = start_remote_worker(
-        "127.0.0.1",  // server_addr
+        "8.140.251.142",  // server_addr (remote server in China)
         17000,        // control_port
         17001,        // proxy_port
         "TCP",        // worker_type
-        "1234567890abcdef1234567890abcdef"  // client_id (32 hex chars)
+        "50ef7b5e7b5b4c79991087bb9f62cef1"  // client_id (32 hex chars)
     );
     
     if (result == 0) {
@@ -64,6 +57,7 @@ int main() {
     } else {
         printf("❌ Failed to start remote worker (error: %d)\n", result);
         printf("   Continuing with other tests...\n");
+        return -1;
     }
     
     // Wait a bit for initialization
@@ -78,6 +72,7 @@ int main() {
         printf("✅ Background tasks started successfully\n");
     } else {
         printf("❌ Failed to start background tasks (error: %d)\n", result);
+        return -1;
     }
     
     // Wait a bit for tasks to start
@@ -93,6 +88,7 @@ int main() {
         printf("✅ Worker status: %s\n", status_buffer);
     } else {
         printf("❌ Failed to get worker status (error: %d)\n", result);
+        return -1;
     }
     
     // Test 5: Hot swapping models (new feature)
@@ -104,16 +100,7 @@ int main() {
         printf("   ✅ Hot swap to model 2 successful\n");
     } else {
         printf("   ⚠️  Hot swap test failed (error: %d) - expected for dummy paths\n", result);
-    }
-    
-    sleep(1);
-    
-    printf("   Loading third model...\n");
-    result = set_remote_worker_model(MODEL_PATH_3);
-    if (result == 0) {
-        printf("   ✅ Hot swap to model 3 successful\n");
-    } else {
-        printf("   ⚠️  Hot swap test failed (error: %d) - expected for dummy paths\n", result);
+        return -1;
     }
     
     // Test 6: Monitor status after hot swapping
@@ -128,28 +115,45 @@ int main() {
         }
     }
     
-    // Test 7: Stop remote worker
-    printf("\n🛑 Test 7: Stopping remote worker...\n");
+    // Test 7: Continuous monitoring for inference requests
+    printf("\n� Test 7: Continuous monitoring for remote inference requests...\n");
+    printf("📡 Android device is now ready to receive inference tasks!\n");
+    printf("🌐 Send requests to: http://8.140.251.142:8081/v1/completions\n");
+    printf("⏱️  Monitoring for 1 hour (3600 seconds)...\n");
+    printf("📊 Status updates every 30 seconds:\n\n");
+    
+    // Monitor for 1 hour with status updates every 30 seconds
+    for (int i = 0; i < 120; i++) { // 120 * 30 = 3600 seconds = 1 hour
+        sleep(30);
+        
+        result = get_remote_worker_status(status_buffer, sizeof(status_buffer));
+        if (result == 0) {
+            printf("[%d/120] 🟢 Status: %s\n", i + 1, status_buffer);
+        } else {
+            printf("[%d/120] 🔴 Failed to get status (error: %d)\n", i + 1, result);
+        }
+        
+        // Exit early if status indicates problems
+        if (strstr(status_buffer, "stopped") != NULL || 
+            strstr(status_buffer, "error") != NULL ||
+            strstr(status_buffer, "disconnected") != NULL) {
+            printf("❌ Device status indicates problems, exiting early\n");
+            break;
+        }
+    }
+    
+    printf("\n� Test 8: Stopping remote worker after monitoring period...\n");
     result = stop_remote_worker();
     
     if (result == 0) {
         printf("✅ Remote worker stopped successfully\n");
     } else {
         printf("❌ Failed to stop remote worker (error: %d)\n", result);
-    }
-    
-    // Test 8: Final status check
-    printf("\n📊 Test 8: Final status check...\n");
-    result = get_remote_worker_status(status_buffer, sizeof(status_buffer));
-    
-    if (result == 0) {
-        printf("✅ Final status: %s\n", status_buffer);
-    } else {
-        printf("❌ Failed to get final status (error: %d)\n", result);
+        return -1;
     }
     
     printf("\n🎉 GPUFabric C API Test completed!\n");
-    printf("✅ All tests executed including hot swapping functionality\n");
+    printf("✅ Device monitored for 1 hour and is now stopping\n");
     return 0;
 }
 

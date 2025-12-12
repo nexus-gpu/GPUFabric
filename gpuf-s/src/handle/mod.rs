@@ -1,9 +1,12 @@
-
 pub mod handle_connections;
 pub mod handle_agent;
 
-use crate::db::models::{ClientModelClass,HotModelClass};
-use crate::util::{cmd, db, protoc::{ClientId,ProxyConnId},pack::BufferPool,self};
+use crate::db::{models::{HotModelClass}, models::ClientModelClass};
+use crate::util::{
+    protoc::{ClientId, ProxyConnId}, cmd, db,
+};
+use crate::inference::InferenceScheduler;
+use crate::util::pack::BufferPool;
 
 use redis::Client as RedisClient;
 use serde::{Deserialize, Serialize};
@@ -87,9 +90,13 @@ pub struct ServerState {
     pub total_connections: Arc<Mutex<u64>>,
     #[allow(dead_code)] // Server configuration
     pub config: ServerConfig,
+    #[allow(dead_code)] // Database pool
     pub db_pool: Arc<Pool<Postgres>>,
+    #[allow(dead_code)] // Redis client
     pub redis_client: Arc<RedisClient>,
+    #[allow(dead_code)] // Kafka producer
     pub producer: Arc<FutureProducer>,
+    pub inference_scheduler: Arc<InferenceScheduler>,
     pub client_model: Arc<ClientModelClass>,
     pub hot_models: Arc<HotModelClass>,
     pub cert_chain: Arc<Vec<CertificateDer<'static>>>,
@@ -136,7 +143,7 @@ pub async fn new_server_state(args: &cmd::Args) -> Result<ServerState, anyhow::E
         ));
     }
 
-    let (db_pool, redis_client, producer) = db::init_db(&args.bootstrap_server, &args.database_url, &args.redis_url).await?;
+    let (db_pool, redis_client, producer): (Arc<Pool<Postgres>>, Arc<RedisClient>, Arc<FutureProducer>) = db::init_db(&args.bootstrap_server, &args.database_url, &args.redis_url).await?;
 
     let active_clients = Arc::new(Mutex::new(HashMap::new()));
     let pending_connections = Arc::new(Mutex::new(HashMap::new()));
@@ -144,8 +151,12 @@ pub async fn new_server_state(args: &cmd::Args) -> Result<ServerState, anyhow::E
     let token_db = Arc::new(Mutex::new(HashMap::new()));
     let total_connections = Arc::new(Mutex::new(0u64));
     let server_start_time = Utc::now();
-    let cert_chain = util::load_certs(&args.proxy_cert_chain_path)?;
-    let priv_key = util::load_private_key(&args.proxy_private_key_path)?;
+    let cert_chain = crate::util::load_certs(&args.proxy_cert_chain_path)?;
+    let priv_key = crate::util::load_private_key(&args.proxy_private_key_path)?;
+    
+    // Initialize inference scheduler
+    let inference_scheduler = Arc::new(InferenceScheduler::new(active_clients.clone()));
+    
     let app_state = ServerState {
         active_clients: active_clients.clone(),
         pending_connections: pending_connections.clone(),
@@ -167,6 +178,7 @@ pub async fn new_server_state(args: &cmd::Args) -> Result<ServerState, anyhow::E
         priv_key: Arc::new(priv_key),
         hot_models: Arc::new(HotModelClass::new(db_pool.clone())),
         client_model: Arc::new(ClientModelClass::new(db_pool.clone())),
+        inference_scheduler,
     };
     // If monitor flag is set, just print monitoring data and exit
     if args.monitor {

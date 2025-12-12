@@ -46,6 +46,7 @@ tokio = { workspace = true, default-features = false, features = ["rt", "net", "
 anyhow = { workspace = true }
 serde = { workspace = true, default-features = false, features = ["derive"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
+bincode = { version = "2.0.1", features = ["serde"] }
 tokio-rustls = { version = "0.26.2",default-features = false, features = ["ring"] }
 clap = { workspace = true }
 tracing = { workspace = true }

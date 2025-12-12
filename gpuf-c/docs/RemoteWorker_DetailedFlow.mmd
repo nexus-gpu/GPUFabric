@@ -1,0 +1,144 @@
+%% GPUFabric Remote Worker 详细内部调用流程图
+%% 包含 JNI 层、C API 层和系统层的交互
+
+sequenceDiagram
+    participant App as Android 应用
+    participant JNI as JNI 层<br/>(jni_remote_worker.rs)
+    participant CAPI as C API 层<br/>(lib.rs)
+    participant SDK as Android SDK<br/>(android_sdk.rs)
+    participant Server as GPUFabric 服务器
+    participant LLM as llama.cpp 引擎
+
+    Note over App,LLM: 1. 模型加载阶段
+    
+    App->>JNI: setRemoteWorkerModel(modelPath)
+    activate JNI
+    JNI->>JNI: 转换 JString 到 Rust String
+    JNI->>JNI: 创建 CString
+    JNI->>CAPI: set_remote_worker_model(model_path)
+    activate CAPI
+    CAPI->>CAPI: 初始化后端 (ensure_backend_initialized)
+    CAPI->>LLM: llama_backend_init()
+    LLM-->>CAPI: 初始化完成
+    CAPI->>LLM: gpuf_load_model(model_path)
+    LLM-->>CAPI: 返回 model_ptr
+    CAPI->>LLM: gpuf_create_context(model_ptr)
+    LLM-->>CAPI: 返回 context_ptr
+    CAPI->>CAPI: 原子交换全局指针
+    CAPI-->>JNI: 返回 0 (成功)
+    deactivate CAPI
+    JNI-->>App: 返回 0
+    deactivate JNI
+
+    Note over App,LLM: 2. 连接服务器阶段
+    
+    App->>JNI: startRemoteWorker(serverAddr, ports, type, clientId)
+    activate JNI
+    JNI->>JNI: 转换所有 Java 参数
+    JNI->>CAPI: start_remote_worker(params)
+    activate CAPI
+    CAPI->>SDK: init_global_worker(args)
+    activate SDK
+    SDK->>Server: TCP 连接 (control_port)
+    Server-->>SDK: 连接确认
+    SDK->>Server: 发送 Login 命令
+    Server-->>SDK: LoginResult (成功)
+    SDK-->>CAPI: 返回 Ok(())
+    deactivate SDK
+    CAPI-->>JNI: 返回 0
+    deactivate CAPI
+    JNI-->>App: 返回 0
+    deactivate JNI
+
+    Note over App,LLM: 3. 启动后台任务阶段
+    
+    App->>JNI: startRemoteWorkerTasks()
+    activate JNI
+    JNI->>CAPI: start_remote_worker_tasks()
+    activate CAPI
+    CAPI->>SDK: start_worker_tasks()
+    activate SDK
+    
+    par 心跳线程
+        SDK->>SDK: 启动心跳线程
+        loop 每30秒
+            SDK->>SDK: 收集系统信息 (CPU/内存/磁盘)
+            SDK->>Server: 发送 Heartbeat
+            Server-->>SDK: 确认
+        end
+    and 任务处理线程
+        SDK->>SDK: 启动任务处理线程
+        loop 持续监听
+            Server->>SDK: InferenceTask
+            SDK->>SDK: 解析任务参数
+            SDK->>LLM: gpuf_generate_final_solution_text()
+            LLM-->>SDK: 推理结果
+            SDK->>Server: InferenceResult
+        end
+    end
+    
+    SDK-->>CAPI: 返回 Ok(())
+    deactivate SDK
+    CAPI-->>JNI: 返回 0
+    deactivate CAPI
+    JNI-->>App: 返回 0
+    deactivate JNI
+
+    Note over App,LLM: 4. 状态监控阶段
+    
+    App->>JNI: getRemoteWorkerStatus()
+    activate JNI
+    JNI->>CAPI: get_remote_worker_status(buffer, size)
+    activate CAPI
+    CAPI->>SDK: get_worker_status()
+    activate SDK
+    SDK->>SDK: 读取当前状态
+    SDK-->>CAPI: 返回状态字符串
+    deactivate SDK
+    CAPI->>CAPI: 复制到 buffer
+    CAPI-->>JNI: 返回 0
+    deactivate CAPI
+    JNI->>JNI: 转换为 JString
+    JNI-->>App: 返回状态字符串
+    deactivate JNI
+
+    Note over App,LLM: 5. 热切换模型阶段 (可选)
+    
+    App->>JNI: setRemoteWorkerModel(newModelPath)
+    activate JNI
+    JNI->>CAPI: set_remote_worker_model(new_path)
+    activate CAPI
+    CAPI->>CAPI: 获取模型交换锁
+    CAPI->>LLM: 加载新模型
+    LLM-->>CAPI: 新 model_ptr
+    CAPI->>LLM: 创建新上下文
+    LLM-->>CAPI: 新 context_ptr
+    CAPI->>CAPI: 原子交换指针
+    CAPI->>LLM: 释放旧模型/上下文
+    CAPI->>CAPI: 释放交换锁
+    CAPI-->>JNI: 返回 0
+    deactivate CAPI
+    JNI-->>App: 返回 0
+    deactivate JNI
+    Note over SDK: 推理请求短暂暂停<br/>然后继续使用新模型
+
+    Note over App,LLM: 6. 停止工作器阶段
+    
+    App->>JNI: stopRemoteWorker()
+    activate JNI
+    JNI->>CAPI: stop_remote_worker()
+    activate CAPI
+    CAPI->>SDK: stop_worker()
+    activate SDK
+    SDK->>SDK: 停止心跳线程
+    SDK->>SDK: 停止任务处理线程
+    SDK->>Server: 断开连接
+    SDK->>LLM: 释放模型和上下文
+    SDK-->>CAPI: 返回 Ok(())
+    deactivate SDK
+    CAPI-->>JNI: 返回 0
+    deactivate CAPI
+    JNI-->>App: 返回 0
+    deactivate JNI
+
+    Note over App,LLM: 完成 - 所有资源已清理

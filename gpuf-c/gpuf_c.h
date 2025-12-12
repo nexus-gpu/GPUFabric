@@ -461,82 +461,6 @@ int gpuf_init(void);
 
 int gpuf_cleanup(void);
 
-jint Java_com_gpuf_c_GPUEngine_initialize(JNIEnv _env, JClass _class);
-
-jlong Java_com_gpuf_c_GPUEngine_loadModel(JNIEnv env, JClass _class, JString model_path);
-
-jlong Java_com_gpuf_c_GPUEngine_createContext(JNIEnv _env, JClass _class, jlong model_ptr);
-
-jint Java_com_gpuf_c_GPUEngine_generate(JNIEnv env,
-                                        JClass _class,
-                                        jlong model_ptr,
-                                        jlong context_ptr,
-                                        JString prompt,
-                                        jint max_tokens,
-                                        JObject _output_buffer);
-
-jstring Java_com_gpuf_c_GPUEngine_getVersion(JNIEnv env, JClass _class);
-
-jint Java_com_gpuf_c_GPUEngine_cleanup(JNIEnv _env, JClass _class);
-
-jstring Java_com_gpuf_c_GPUEngine_getSystemInfo(JNIEnv env, JClass _class);
-
-jint Java_com_gpuf_c_GPUEngine_gpuf_1init(JNIEnv _env, JClass _class);
-
-jint Java_com_gpuf_c_GPUEngine_startInferenceService(JNIEnv env,
-                                                     JClass _class,
-                                                     JString model_path,
-                                                     jint _port);
-
-/**
- * JNI: Async version of startInferenceService with progress callbacks
- * Focus on async model loading (slow operation), context creation is fast
- */
-jint Java_com_gpuf_c_GPUEngine_startInferenceServiceAsync(JNIEnv env,
-                                                          JClass _class,
-                                                          JString model_path,
-                                                          jint _port,
-                                                          JObject progress_callback);
-
-/**
- * JNI: Check if model is loaded (non-blocking)
- */
-jboolean Java_com_gpuf_c_GPUEngine_isModelLoaded(JNIEnv _env, JClass _class);
-
-/**
- * JNI: Check if context is ready (non-blocking)
- */
-jboolean Java_com_gpuf_c_GPUEngine_isContextReady(JNIEnv _env, JClass _class);
-
-/**
- * JNI: Get model loading status
- */
-jstring Java_com_gpuf_c_GPUEngine_getModelStatus(JNIEnv env, JClass _class);
-
-jint Java_com_gpuf_c_GPUEngine_stopInferenceService(JNIEnv _env, JClass _class);
-
-jint Java_com_gpuf_c_GPUEngine_loadModelNew(JNIEnv env, JClass _class, JString model_path);
-
-jstring Java_com_gpuf_c_GPUEngine_getCurrentModel(JNIEnv env, JClass _class);
-
-jstring Java_com_gpuf_c_GPUEngine_getModelLoadingStatus(JNIEnv env, JClass _class);
-
-jstring Java_com_gpuf_c_GPUEngine_generateText(JNIEnv env,
-                                               JClass _class,
-                                               JString prompt,
-                                               jint max_tokens);
-
-jstring Java_com_gpuf_c_GPUEngine_generateTextWithSampling(JNIEnv env,
-                                                           JClass _class,
-                                                           JString prompt,
-                                                           jint max_tokens,
-                                                           jfloat temperature,
-                                                           jint top_k,
-                                                           jfloat top_p,
-                                                           jfloat repeat_penalty);
-
-jstring Java_com_gpuf_c_GPUEngine_isInferenceServiceHealthy(JNIEnv env, JClass _class);
-
 /**
  * Stop ongoing generation
  */
@@ -556,35 +480,6 @@ int gpuf_start_generation_async(struct llama_context *ctx,
                                 void *user_data);
 
 /**
- * JNI: Start async generation with streaming callback (direct function pointer approach)
- */
-jint Java_com_gpuf_c_GPUEngine_startGenerationAsync(JNIEnv env,
-                                                    JClass _class,
-                                                    jlong ctx_ptr,
-                                                    JString prompt,
-                                                    jint max_tokens,
-                                                    jfloat temperature,
-                                                    jint top_k,
-                                                    jfloat top_p,
-                                                    jfloat repeat_penalty,
-                                                    jlong callback_function_ptr);
-
-/**
- * JNI: Stop ongoing generation
- */
-jint Java_com_gpuf_c_GPUEngine_stopGeneration(JNIEnv _env, JClass _class, jlong ctx_ptr);
-
-/**
- * JNI: Check if generation can be started (context validation)
- */
-jboolean Java_com_gpuf_c_GPUEngine_canStartGeneration(JNIEnv _env, JClass _class, jlong ctx_ptr);
-
-/**
- * JNI: Get current generation status
- */
-jstring Java_com_gpuf_c_GPUEngine_getGenerationStatus(JNIEnv env, JClass _class);
-
-/**
  * Simple single token generation for testing
  */
 int gpuf_generate_single_token(const struct llama_model *model,
@@ -594,49 +489,6 @@ int gpuf_generate_single_token(const struct llama_model *model,
                                int output_len);
 
 /**
- * JNI: Load multimodal model (text model + mmproj)
- */
-jlong Java_com_gpuf_c_GPUEngine_loadMultimodalModel(JNIEnv env,
-                                                    JClass _class,
-                                                    JString text_model_path,
-                                                    JString mmproj_path);
-
-/**
- * JNI: Create context for multimodal model
- */
-jlong Java_com_gpuf_c_GPUEngine_createMultimodalContext(JNIEnv _env,
-                                                        JClass _class,
-                                                        jlong multimodal_model_ptr);
-
-/**
- * JNI: Generate with multimodal input (text + image)
- */
-jstring Java_com_gpuf_c_GPUEngine_generateMultimodal(JNIEnv env,
-                                                     JClass _class,
-                                                     jlong multimodal_model_ptr,
-                                                     jlong ctx_ptr,
-                                                     JString text_prompt,
-                                                     jbyteArray image_data,
-                                                     jint max_tokens,
-                                                     jfloat temperature,
-                                                     jint top_k,
-                                                     jfloat top_p);
-
-/**
- * JNI: Check if multimodal model supports vision
- */
-jboolean Java_com_gpuf_c_GPUEngine_supportsVision(JNIEnv _env,
-                                                  JClass _class,
-                                                  jlong multimodal_model_ptr);
-
-/**
- * JNI: Free multimodal model
- */
-void Java_com_gpuf_c_GPUEngine_freeMultimodalModel(JNIEnv _env,
-                                                   JClass _class,
-                                                   jlong multimodal_model_ptr);
-
-/**
  * Start remote worker and initialize global worker (C API)
  */
 int start_remote_worker(const char *server_addr,
@@ -644,17 +496,6 @@ int start_remote_worker(const char *server_addr,
                         int proxy_port,
                         const char *worker_type,
                         const char *client_id);
-
-/**
- * Start remote worker and monitoring
- */
-jint Java_com_gpuf_c_GPUEngine_startRemoteWorker(JNIEnv env,
-                                                 JClass _class,
-                                                 JString server_addr,
-                                                 jint control_port,
-                                                 jint proxy_port,
-                                                 JString worker_type,
-                                                 JString client_id);
 
 /**
  * Set remote worker model (C API) - Safe Hot Swapping Version
@@ -707,5 +548,355 @@ int stop_remote_worker(void);
  * Caller must ensure `buffer` is valid and can hold `buffer_size` bytes
  */
 int get_remote_worker_status(char *buffer, size_t buffer_size);
+
+/**
+ * Sets the model path for the remote worker (hot swapping support)
+ *
+ * Java signature:
+ * public static native int setRemoteWorkerModel(String modelPath);
+ *
+ * @param modelPath Path to the GGUF model file
+ * @return 0 on success, -1 on failure
+ */
+jint Java_com_gpuf_c_RemoteWorker_setRemoteWorkerModel(JNIEnv env,
+                                                       JClass _class,
+                                                       JString model_path);
+
+/**
+ * Starts the remote worker connection to the server
+ *
+ * Java signature:
+ * public static native int startRemoteWorker(
+ *     String serverAddr,
+ *     int controlPort,
+ *     int proxyPort,
+ *     String workerType,
+ *     String clientId
+ * );
+ *
+ * @param serverAddr Server IP address or hostname
+ * @param controlPort Control port number
+ * @param proxyPort Proxy port number
+ * @param workerType Worker type ("TCP" or "WS")
+ * @param clientId Client ID (32 hex characters)
+ * @return 0 on success, -1 on failure
+ */
+jint Java_com_gpuf_c_RemoteWorker_startRemoteWorker(JNIEnv env,
+                                                    JClass _class,
+                                                    JString server_addr,
+                                                    jint control_port,
+                                                    jint proxy_port,
+                                                    JString worker_type,
+                                                    JString client_id);
+
+/**
+ * Starts the background tasks for the remote worker
+ *
+ * Java signature:
+ * public static native int startRemoteWorkerTasks();
+ *
+ * @return 0 on success, -1 on failure
+ */
+jint Java_com_gpuf_c_RemoteWorker_startRemoteWorkerTasks(JNIEnv _env, JClass _class);
+
+/**
+ * Gets the current status of the remote worker
+ *
+ * Java signature:
+ * public static native String getRemoteWorkerStatus();
+ *
+ * @return Status string or null on failure
+ */
+jstring Java_com_gpuf_c_RemoteWorker_getRemoteWorkerStatus(JNIEnv env, JClass _class);
+
+/**
+ * Stops the remote worker and cleans up resources
+ *
+ * Java signature:
+ * public static native int stopRemoteWorker();
+ *
+ * @return 0 on success, -1 on failure
+ */
+jint Java_com_gpuf_c_RemoteWorker_stopRemoteWorker(JNIEnv _env, JClass _class);
+
+/**
+ * Initialize the GPUFabric engine
+ *
+ * Java signature:
+ * public static native int initialize();
+ */
+jint Java_com_gpuf_c_GPUEngine_initialize(JNIEnv _env, JClass _class);
+
+/**
+ * Get GPUFabric version string
+ *
+ * Java signature:
+ * public static native String getVersion();
+ */
+jstring Java_com_gpuf_c_GPUEngine_getVersion(JNIEnv env, JClass _class);
+
+/**
+ * Cleanup and free resources
+ *
+ * Java signature:
+ * public static native int cleanup();
+ */
+jint Java_com_gpuf_c_GPUEngine_cleanup(JNIEnv _env, JClass _class);
+
+/**
+ * Get system information
+ *
+ * Java signature:
+ * public static native String getSystemInfo();
+ */
+jstring Java_com_gpuf_c_GPUEngine_getSystemInfo(JNIEnv env, JClass _class);
+
+/**
+ * Load a LLaMA model from file
+ *
+ * Java signature:
+ * public static native long loadModel(String modelPath);
+ *
+ * Returns: model pointer as long, or 0 on failure
+ */
+jlong Java_com_gpuf_c_GPUEngine_loadModel(JNIEnv env, JClass _class, JString model_path);
+
+/**
+ * Create inference context for a model
+ *
+ * Java signature:
+ * public static native long createContext(long modelPtr);
+ *
+ * Returns: context pointer as long, or 0 on failure
+ */
+jlong Java_com_gpuf_c_GPUEngine_createContext(JNIEnv _env, JClass _class, jlong model_ptr);
+
+/**
+ * Check if model is loaded
+ *
+ * Java signature:
+ * public static native boolean isModelLoaded();
+ */
+jboolean Java_com_gpuf_c_GPUEngine_isModelLoaded(JNIEnv _env, JClass _class);
+
+/**
+ * Check if context is ready
+ *
+ * Java signature:
+ * public static native boolean isContextReady();
+ */
+jboolean Java_com_gpuf_c_GPUEngine_isContextReady(JNIEnv _env, JClass _class);
+
+/**
+ * Get model loading status
+ *
+ * Java signature:
+ * public static native String getModelStatus();
+ *
+ * Returns: "not_loaded", "loading", "ready", "error", or "unknown"
+ */
+jstring Java_com_gpuf_c_GPUEngine_getModelStatus(JNIEnv env, JClass _class);
+
+/**
+ * Start inference service with model loading
+ *
+ * Java signature:
+ * public static native int startInferenceService(String modelPath, int port);
+ */
+jint Java_com_gpuf_c_GPUEngine_startInferenceService(JNIEnv env,
+                                                     JClass _class,
+                                                     JString model_path,
+                                                     jint _port);
+
+/**
+ * Start inference service asynchronously with progress callback
+ *
+ * Java signature:
+ * public static native int startInferenceServiceAsync(String modelPath, int port, Object progressCallback);
+ */
+jint Java_com_gpuf_c_GPUEngine_startInferenceServiceAsync(JNIEnv env,
+                                                          JClass _class,
+                                                          JString model_path,
+                                                          jint _port,
+                                                          JObject progress_callback);
+
+/**
+ * Stop inference service
+ *
+ * Java signature:
+ * public static native int stopInferenceService();
+ */
+jint Java_com_gpuf_c_GPUEngine_stopInferenceService(JNIEnv _env, JClass _class);
+
+/**
+ * Load model dynamically (alternative method)
+ *
+ * Java signature:
+ * public static native int loadModelNew(String modelPath);
+ */
+jint Java_com_gpuf_c_GPUEngine_loadModelNew(JNIEnv env, JClass _class, JString model_path);
+
+/**
+ * Get current loaded model path
+ *
+ * Java signature:
+ * public static native String getCurrentModel();
+ */
+jstring Java_com_gpuf_c_GPUEngine_getCurrentModel(JNIEnv env, JClass _class);
+
+/**
+ * Get model loading status string
+ *
+ * Java signature:
+ * public static native String getModelLoadingStatus();
+ */
+jstring Java_com_gpuf_c_GPUEngine_getModelLoadingStatus(JNIEnv env, JClass _class);
+
+/**
+ * Generate text using loaded model (basic version)
+ *
+ * Java signature:
+ * public static native int generate(long modelPtr, long contextPtr, String prompt, int maxTokens, Object outputBuffer);
+ */
+jint Java_com_gpuf_c_GPUEngine_generate(JNIEnv env,
+                                        JClass _class,
+                                        jlong model_ptr,
+                                        jlong context_ptr,
+                                        JString prompt,
+                                        jint max_tokens,
+                                        JObject _output_buffer);
+
+/**
+ * Generate text using global model
+ *
+ * Java signature:
+ * public static native String generateText(String prompt, int maxTokens);
+ */
+jstring Java_com_gpuf_c_GPUEngine_generateText(JNIEnv env,
+                                               JClass _class,
+                                               JString prompt,
+                                               jint max_tokens);
+
+/**
+ * Generate text with sampling parameters
+ *
+ * Java signature:
+ * public static native String generateTextWithSampling(String prompt, int maxTokens, float temperature, int topK, float topP, float repeatPenalty);
+ */
+jstring Java_com_gpuf_c_GPUEngine_generateTextWithSampling(JNIEnv env,
+                                                           JClass _class,
+                                                           JString prompt,
+                                                           jint max_tokens,
+                                                           jfloat temperature,
+                                                           jint top_k,
+                                                           jfloat top_p,
+                                                           jfloat repeat_penalty);
+
+/**
+ * Check inference service health
+ *
+ * Java signature:
+ * public static native String isInferenceServiceHealthy();
+ */
+jstring Java_com_gpuf_c_GPUEngine_isInferenceServiceHealthy(JNIEnv env, JClass _class);
+
+/**
+ * Start async generation with streaming callback
+ *
+ * Java signature:
+ * public static native int startGenerationAsync(long ctxPtr, String prompt, int maxTokens, float temperature, int topK, float topP, float repeatPenalty, long callbackFunctionPtr);
+ */
+jint Java_com_gpuf_c_GPUEngine_startGenerationAsync(JNIEnv env,
+                                                    JClass _class,
+                                                    jlong ctx_ptr,
+                                                    JString prompt,
+                                                    jint max_tokens,
+                                                    jfloat temperature,
+                                                    jint top_k,
+                                                    jfloat top_p,
+                                                    jfloat repeat_penalty,
+                                                    jlong callback_function_ptr);
+
+/**
+ * Stop ongoing generation
+ *
+ * Java signature:
+ * public static native int stopGeneration(long ctxPtr);
+ */
+jint Java_com_gpuf_c_GPUEngine_stopGeneration(JNIEnv _env, JClass _class, jlong ctx_ptr);
+
+/**
+ * Check if generation can be started
+ *
+ * Java signature:
+ * public static native boolean canStartGeneration(long ctxPtr);
+ */
+jboolean Java_com_gpuf_c_GPUEngine_canStartGeneration(JNIEnv _env, JClass _class, jlong ctx_ptr);
+
+/**
+ * Get current generation status
+ *
+ * Java signature:
+ * public static native String getGenerationStatus();
+ */
+jstring Java_com_gpuf_c_GPUEngine_getGenerationStatus(JNIEnv env, JClass _class);
+
+/**
+ * Load multimodal model (text model + mmproj)
+ *
+ * Java signature:
+ * public static native long loadMultimodalModel(String textModelPath, String mmprojPath);
+ */
+jlong Java_com_gpuf_c_GPUEngine_loadMultimodalModel(JNIEnv env,
+                                                    JClass _class,
+                                                    JString text_model_path,
+                                                    JString mmproj_path);
+
+/**
+ * Create context for multimodal model
+ *
+ * Java signature:
+ * public static native long createMultimodalContext(long multimodalModelPtr);
+ */
+jlong Java_com_gpuf_c_GPUEngine_createMultimodalContext(JNIEnv _env,
+                                                        JClass _class,
+                                                        jlong multimodal_model_ptr);
+
+/**
+ * Generate with multimodal input (text + image)
+ *
+ * Java signature:
+ * public static native String generateMultimodal(long multimodalModelPtr, long ctxPtr, String textPrompt, byte[] imageData, int maxTokens, float temperature, int topK, float topP);
+ */
+jstring Java_com_gpuf_c_GPUEngine_generateMultimodal(JNIEnv env,
+                                                     JClass _class,
+                                                     jlong multimodal_model_ptr,
+                                                     jlong ctx_ptr,
+                                                     JString text_prompt,
+                                                     jbyteArray image_data,
+                                                     jint max_tokens,
+                                                     jfloat temperature,
+                                                     jint top_k,
+                                                     jfloat top_p);
+
+/**
+ * Check if multimodal model supports vision
+ *
+ * Java signature:
+ * public static native boolean supportsVision(long multimodalModelPtr);
+ */
+jboolean Java_com_gpuf_c_GPUEngine_supportsVision(JNIEnv _env,
+                                                  JClass _class,
+                                                  jlong multimodal_model_ptr);
+
+/**
+ * Free multimodal model
+ *
+ * Java signature:
+ * public static native void freeMultimodalModel(long multimodalModelPtr);
+ */
+void Java_com_gpuf_c_GPUEngine_freeMultimodalModel(JNIEnv _env,
+                                                   JClass _class,
+                                                   jlong multimodal_model_ptr);
 
 #endif /* GPUF_C_H */

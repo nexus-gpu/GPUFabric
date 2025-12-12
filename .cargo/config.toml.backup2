@@ -1,0 +1,11 @@
+[env]
+CUDA_NVCC_FLAGS = "-Xcompiler -fPIC"
+CUDAFLAGS = "-Xcompiler -fPIC"
+
+[target.x86_64-unknown-linux-gnu]
+linker = "gcc"
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.x86_64-unknown-linux-musl]
+linker = "/usr/bin/musl-gcc"
+ar = "/usr/bin/ar"
