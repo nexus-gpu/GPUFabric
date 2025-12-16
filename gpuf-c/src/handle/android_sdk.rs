@@ -4,15 +4,23 @@
 //! the Tokio runtime issues in shell environments by using native threads
 //! and blocking I/O operations.
 
-use super::{Args, AutoWorker, WorkerHandle};
+#[cfg(target_os = "android")]
 use anyhow::{anyhow, Result};
-use bincode::{self as bincode, config as bincode_config};
-use common::{Command, CommandV1, DevicesInfo, EngineType, OsType, SystemInfo};
-use std::io::{Read, Write};
+
+#[cfg(target_os = "android")]
+use common::{Command, CommandV1, OsType, SystemInfo};
+
 use std::sync::{Arc, Mutex, OnceLock};
 
-
+#[cfg(target_os = "android")]
+use super::{Args, AutoWorker, WorkerHandle};
+#[cfg(target_os = "android")]
+use common::{DevicesInfo, EngineType};
+#[cfg(target_os = "android")]
+use std::io::Write;
+#[cfg(target_os = "android")]
 use tokio::task::JoinHandle;
+#[cfg(target_os = "android")]
 use tracing::info;
 
 
@@ -20,21 +28,30 @@ use tracing::info;
 #[cfg(target_os = "android")]
 use std::time::Duration;
 /// Global TCP connection storage for Android background tasks
-pub static ANDROID_TCP_STREAM: std::sync::OnceLock<Arc<Mutex<std::net::TcpStream>>> =
-    std::sync::OnceLock::new();
+pub static ANDROID_TCP_STREAM: std::sync::OnceLock<Arc<Mutex<std::net::TcpStream>>> = std::sync::OnceLock::new();
 
+/// Global server address storage for creating separate connections
+pub static ANDROID_SERVER_ADDR: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Global client_id storage for Android background tasks
+pub static ANDROID_CLIENT_ID: std::sync::OnceLock<[u8; 16]> = std::sync::OnceLock::new();
+
+#[cfg(target_os = "android")]
 /// Global worker instance for Android JNI
-static GLOBAL_WORKER: OnceLock<Mutex<Option<Arc<AutoWorker>>>> = OnceLock::new();
+static GLOBAL_WORKER: std::sync::OnceLock<Mutex<Option<Arc<AutoWorker>>>> = std::sync::OnceLock::new();
 
+#[cfg(target_os = "android")]
 /// Global worker task handle for background operations
-static GLOBAL_WORKER_HANDLES: OnceLock<Mutex<Option<(JoinHandle<()>, JoinHandle<()>)>>> =
-    OnceLock::new();
+static GLOBAL_WORKER_HANDLES: std::sync::OnceLock<Mutex<Option<(JoinHandle<()>, JoinHandle<()>)>>> =
+    std::sync::OnceLock::new();
 
 /// Perform Android-native login using blocking TCP and bincode protocol
 ///
 /// This function replicates the functionality of TCPWorker::login() but
 /// uses native threads and blocking I/O to avoid Tokio runtime issues
 /// in Android shell environments.
+/// 
+#[cfg(target_os = "android")]
 pub async fn perform_android_login(
     server_addr: &str,
     control_port: u16,
@@ -103,34 +120,10 @@ pub async fn perform_android_login(
         devices_info: vec![fixed_devices_info],
     };
 
-    // Serialize login command with bincode
-    info!("🔧 Android: Serializing login command...");
-    let config = bincode_config::standard()
-        .with_fixed_int_encoding()
-        .with_little_endian();
-
-    let buf = bincode::encode_to_vec(&Command::V1(login_cmd), config)
-        .map_err(|e| anyhow!("Failed to serialize login command: {}", e))?;
-
-    let len = buf.len() as u32;
-    if len as usize > 1024 {
-        return Err(anyhow!("Login command too large: {} bytes", len));
-    }
-
-    // Send length prefix + command data
-    info!("📤 Android: Sending login command ({} bytes)...", len);
-
-    stream
-        .write_all(&len.to_be_bytes())
-        .map_err(|e| anyhow!("Failed to send login length: {}", e))?;
-
-    stream
-        .write_all(&buf)
-        .map_err(|e| anyhow!("Failed to send login data: {}", e))?;
-
-    stream
-        .flush()
-        .map_err(|e| anyhow!("Failed to flush login data: {}", e))?;
+    // Send login command using common library function
+    info!("📤 Android: Sending login command...");
+    common::write_command_sync(&mut stream, &Command::V1(login_cmd))
+        .map_err(|e| anyhow!("Failed to send login command: {}", e))?;
 
     info!("✅ Android: Login command sent successfully");
 
@@ -140,7 +133,22 @@ pub async fn perform_android_login(
         .set(stream_arc.clone())
         .map_err(|_| anyhow!("Failed to store TCP connection globally"))?;
 
-    info!("✅ Android: TCP connection stored for background tasks");
+    // Store server address for heartbeat connections
+    let server_addr_str = format!("{}:{}", server_addr, control_port);
+    ANDROID_SERVER_ADDR
+        .set(server_addr_str.clone())
+        .map_err(|_| anyhow!("Failed to store server address globally"))?;
+
+    // Store client_id globally for background tasks
+    let client_id_bytes = hex::decode(client_id)
+        .unwrap_or_default()
+        .try_into()
+        .unwrap_or_default();
+    ANDROID_CLIENT_ID
+        .set(client_id_bytes)
+        .map_err(|_| anyhow!("Failed to store client_id globally"))?;
+
+    info!("✅ Android: TCP connection, server address, and client_id stored for background tasks");
 
     Ok(())
 }
@@ -232,20 +240,31 @@ pub async fn start_worker_tasks() -> Result<()> {
                 cpu_usage, memory_usage, disk_usage, device_info.memtotal_gb
             );
 
-            // Send heartbeat using TCP stream with timeout
-            let stream_result = heartbeat_stream.try_lock();
-            let mut stream = match stream_result {
-                Ok(guard) => guard,
-                Err(_) => {
-                    eprintln!("❌ Android: Failed to lock TCP stream - might be in use by handler");
-                    println!("🔧 Android: Skipping this heartbeat due to lock conflict");
+            // Send heartbeat using independent TCP connection to avoid lock conflicts
+            let server_addr = match ANDROID_SERVER_ADDR.get() {
+                Some(addr) => addr,
+                None => {
+                    eprintln!("❌ Android: Server address not stored, skipping heartbeat");
+                    continue;
+                }
+            };
+
+            // Create new connection for each heartbeat to avoid conflicts
+            let mut heartbeat_stream = match std::net::TcpStream::connect(server_addr) {
+                Ok(stream) => {
+                    println!("✅ Android: Connected to server for heartbeat");
+                    stream
+                }
+                Err(e) => {
+                    eprintln!("❌ Android: Failed to connect for heartbeat: {}", e);
                     continue;
                 }
             };
 
             // Create heartbeat command
+            let client_id = ANDROID_CLIENT_ID.get().copied().unwrap_or([0u8; 16]);
             let heartbeat_cmd = CommandV1::Heartbeat {
-                client_id: [0u8; 16], // TODO: Use actual client ID
+                client_id,
                 system_info: SystemInfo {
                     cpu_usage,
                     memory_usage,
@@ -259,31 +278,17 @@ pub async fn start_worker_tasks() -> Result<()> {
                 devices_info: vec![device_info],
             };
 
-            // Serialize and send heartbeat
-            let config = bincode_config::standard()
-                .with_fixed_int_encoding()
-                .with_little_endian();
-
-            if let Ok(buf) = bincode::encode_to_vec(&Command::V1(heartbeat_cmd), config) {
-                let len = buf.len() as u32;
-
-                // Send length prefix + heartbeat data
-                if let Err(e) = stream.write_all(&len.to_be_bytes()) {
-                    eprintln!("❌ Android: Failed to send heartbeat length: {}", e);
-                    continue;
-                }
-
-                if let Err(e) = stream.write_all(&buf) {
-                    eprintln!("❌ Android: Failed to send heartbeat data: {}", e);
-                    continue;
-                }
-
-                println!("✅ Android: Heartbeat sent successfully");
-                println!("🔧 Android: Heartbeat loop completed, starting next iteration...");
+            // Send heartbeat using common library function
+            if let Err(e) = common::write_command_sync(&mut heartbeat_stream, &Command::V1(heartbeat_cmd)) {
+                eprintln!("❌ Android: Failed to send heartbeat: {}", e);
+                println!("🔧 Android: Continuing heartbeat loop despite send failure...");
             } else {
-                eprintln!("❌ Android: Failed to serialize heartbeat command");
-                println!("🔧 Android: Continuing heartbeat loop despite serialization failure...");
+                println!("✅ Android: Heartbeat sent successfully");
             }
+            
+            // Close the connection after sending heartbeat
+            drop(heartbeat_stream);
+            println!("🔧 Android: Heartbeat connection closed, starting next iteration...");
         }
         // Note: This line is unreachable due to infinite loop above
         // println!("🔧 Android: Heartbeat thread stopped");
@@ -295,36 +300,12 @@ pub async fn start_worker_tasks() -> Result<()> {
         println!("🔧 Android: Integrated handler thread started");
         std::io::stdout().flush().ok();
 
-        // Buffer for reading length prefix and command data
-        let mut length_buf = [0u8; 4];
-        let mut command_buf = vec![0u8; 1024]; // MAX_MESSAGE_SIZE
-
         loop {
             let mut stream = handler_stream.lock().unwrap();
 
-            // Read 4-byte length prefix
-            match stream.read_exact(&mut length_buf) {
-                Ok(_) => {
-                    let length = u32::from_be_bytes(length_buf) as usize;
-                    if length > 1024 {
-                        eprintln!("❌ Android: Message too large: {} bytes", length);
-                        break;
-                    }
-
-                    // Resize buffer if needed and read command data
-                    if command_buf.len() < length {
-                        command_buf.resize(length, 0);
-                    }
-
-                    match stream.read_exact(&mut command_buf[..length]) {
-                        Ok(_) => {
-                            // Parse bincode command
-                            let config = bincode_config::standard()
-                                .with_fixed_int_encoding()
-                                .with_little_endian();
-
-                            match bincode::decode_from_slice(&command_buf[..length], config) {
-                                Ok((command, _)) => {
+            // Read command using common library function
+            match common::read_command_sync(&mut *stream) {
+                Ok(command) => {
                                     println!("🔧 Android: Received command: {:?}", command);
                                     std::io::stdout().flush().ok();
 
@@ -501,6 +482,10 @@ pub async fn start_worker_tasks() -> Result<()> {
                                                                 &output[..output.len().min(100)]
                                                             );
 
+                                                            // TODO: Implement proper token counting - temporarily using placeholder values
+                                                            let prompt_tokens_count = 0; // Placeholder
+                                                            let completion_tokens_count = 0; // Placeholder
+
                                                             // Create success result command
                                                             let result_command =
                                                                 CommandV1::InferenceResult {
@@ -510,32 +495,18 @@ pub async fn start_worker_tasks() -> Result<()> {
                                                                     error: None,
                                                                     execution_time_ms:
                                                                         execution_time,
+                                                                    prompt_tokens: prompt_tokens_count,
+                                                                    completion_tokens: completion_tokens_count,
                                                                 };
 
-                                                            // Send result using bincode
-                                                            let config = bincode_config::standard()
-                                                                .with_fixed_int_encoding()
-                                                                .with_little_endian();
-
-                                                            if let Ok(buf) = bincode::encode_to_vec(
+                                                            // Send result using common library function
+                                                            if let Err(e) = common::write_command_sync(
+                                                                &mut *stream,
                                                                 &Command::V1(result_command),
-                                                                config,
                                                             ) {
-                                                                let len = buf.len() as u32;
-
-                                                                if let Err(e) = stream
-                                                                    .write_all(&len.to_be_bytes())
-                                                                {
-                                                                    eprintln!("❌ Android: Failed to send result length: {}", e);
-                                                                } else if let Err(e) =
-                                                                    stream.write_all(&buf)
-                                                                {
-                                                                    eprintln!("❌ Android: Failed to send result data: {}", e);
-                                                                } else {
-                                                                    println!("✅ Android: Inference result sent successfully");
-                                                                }
+                                                                eprintln!("❌ Android: Failed to send inference result: {}", e);
                                                             } else {
-                                                                eprintln!("❌ Android: Failed to serialize inference result");
+                                                                println!("✅ Android: Inference result sent successfully");
                                                             }
                                                         }
                                                         Err(e) => {
@@ -553,30 +524,18 @@ pub async fn start_worker_tasks() -> Result<()> {
                                                                     error: Some(e.to_string()),
                                                                     execution_time_ms:
                                                                         execution_time,
+                                                                    prompt_tokens: 0,
+                                                                    completion_tokens: 0,
                                                                 };
 
-                                                            // Send error result
-                                                            let config = bincode_config::standard()
-                                                                .with_fixed_int_encoding()
-                                                                .with_little_endian();
-
-                                                            if let Ok(buf) = bincode::encode_to_vec(
+                                                            // Send error result using common library function
+                                                            if let Err(e) = common::write_command_sync(
+                                                                &mut *stream,
                                                                 &Command::V1(result_command),
-                                                                config,
                                                             ) {
-                                                                let len = buf.len() as u32;
-
-                                                                if let Err(e) = stream
-                                                                    .write_all(&len.to_be_bytes())
-                                                                {
-                                                                    eprintln!("❌ Android: Failed to send error result length: {}", e);
-                                                                } else if let Err(e) =
-                                                                    stream.write_all(&buf)
-                                                                {
-                                                                    eprintln!("❌ Android: Failed to send error result data: {}", e);
-                                                                } else {
-                                                                    println!("✅ Android: Error result sent successfully");
-                                                                }
+                                                                eprintln!("❌ Android: Failed to send error result: {}", e);
+                                                            } else {
+                                                                println!("✅ Android: Error result sent successfully");
                                                             }
                                                         }
                                                     }
@@ -591,19 +550,8 @@ pub async fn start_worker_tasks() -> Result<()> {
                                         }
                                     }
                                 }
-                                Err(e) => {
-                                    eprintln!("❌ Android: Failed to parse command: {}", e);
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("❌ Android: Failed to read command data: {}", e);
-                            break;
-                        }
-                    }
-                }
                 Err(e) => {
-                    eprintln!("❌ Android: Failed to read length prefix: {}", e);
+                    eprintln!("❌ Android: Failed to read command: {}", e);
                     break;
                 }
             }

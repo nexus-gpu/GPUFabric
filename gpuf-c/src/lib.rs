@@ -18,6 +18,7 @@ use jni::sys::{jboolean, jbyteArray, jfloat, jint, jlong, jstring};
 use jni::JNIEnv;
 use once_cell::sync::Lazy;
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
+#[cfg(target_os = "android")]
 use std::os::raw::c_ulonglong;
 #[cfg(target_os = "android")]
 use libc::size_t;

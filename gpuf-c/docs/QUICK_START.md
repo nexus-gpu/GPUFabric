@@ -27,7 +27,7 @@ gpuf-c/
 ```
 
 **Build Artifacts:**
-- `libgpuf_c.so` (40MB) - ARM64 dynamic library
+- `libgpuf_c.so` (50MB) - ARM64 dynamic library
 - Complete LLM inference functionality
 - Network support
 

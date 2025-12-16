@@ -232,6 +232,8 @@ async fn handle_single_client(
                 result,
                 error,
                 execution_time_ms,
+                prompt_tokens,
+                completion_tokens,
             })) => {
                 info!("Received inference result for task {} from device {}", task_id, hex::encode(&session_client_id.0));
                 // Route result to inference scheduler to complete HTTP response
@@ -241,6 +243,8 @@ async fn handle_single_client(
                     result,
                     error,
                     execution_time_ms,
+                    prompt_tokens,
+                    completion_tokens,
                 ).await;
             }
             _ => {

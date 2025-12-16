@@ -261,7 +261,7 @@ pub async fn collect_device_info() -> Result<(DevicesInfo, u32)> {
         {
             // Fallback: Lightweight Android version - no GPU monitoring
             let devices_info = DevicesInfo {
-                num: 0,
+                num: 1,
                 pod_id: 0,
                 total_tflops: 0,
                 memtotal_gb: 0,

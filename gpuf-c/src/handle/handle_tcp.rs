@@ -38,7 +38,7 @@ const CURRENT_VERSION: u32 = 1;
 
 impl TCPWorker {
     /// Execute inference task using local LLM engine (Android specific)
-    #[cfg(target_os = "android")]
+
     async fn execute_inference_task(
         &self,
         prompt: &str,
@@ -632,7 +632,6 @@ impl WorkerHandle for TCPWorker {
                             }
                         });
                     }
-                    #[cfg(target_os = "android")]
                     Command::V1(CommandV1::InferenceTask {
                         task_id,
                         prompt,
@@ -666,6 +665,8 @@ impl WorkerHandle for TCPWorker {
                                     result: Some(output),
                                     error: None,
                                     execution_time_ms: execution_time,
+                                    prompt_tokens: 0, // TODO: Implement proper token counting for TCP handler
+                                    completion_tokens: 0, // TODO: Implement proper token counting for TCP handler
                                 };
                                 self.send_command(result_command).await?;
                             }
@@ -676,6 +677,8 @@ impl WorkerHandle for TCPWorker {
                                     result: None,
                                     error: Some(e.to_string()),
                                     execution_time_ms: execution_time,
+                                    prompt_tokens: 0,
+                                    completion_tokens: 0,
                                 };
                                 self.send_command(result_command).await?;
                             }

@@ -11,18 +11,6 @@ crate-type = ["rlib"]
 name = "gpuf-c"
 path = "src/main.rs"
 
-[[bin]]
-name = "model_download"
-path = "src/bin/model_download.rs"
-
-[[bin]]
-name = "validate_gguf"
-path = "src/bin/validate_gguf.rs"
-
-[[bin]]
-name = "download_and_validate"
-path = "src/bin/download_and_validate.rs"
-
 [[example]]
 name = "test_vulkan_device"
 path = "examples/test_vulkan_device.rs"
@@ -140,7 +128,3 @@ tempfile = "3.3"
 [build-dependencies]
 cbindgen = "0.26"
 embed-resource = "2.4"
-
-[[bin]]
-name = "test_inference"
-path = "test_inference.c"

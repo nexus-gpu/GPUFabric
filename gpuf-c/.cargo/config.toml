@@ -1,31 +1,35 @@
 [target.aarch64-linux-android]
-ar = "/home/jack/android-ndk-r27d/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
-linker = "/home/jack/android-ndk-r27d/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang"
+ar = "${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+linker = "${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang"
 
 [target.armv7-linux-androideabi]
-ar = "/home/jack/android-ndk-r27d/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
-linker = "/home/jack/android-ndk-r27d/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi21-clang"
+ar = "${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+linker = "${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi21-clang"
 
 [target.x86_64-linux-android]
-ar = "/home/jack/android-ndk-r27d/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
-linker = "/home/jack/android-ndk-r27d/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android21-clang"
+ar = "${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+linker = "${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android21-clang"
 
 [target.i686-linux-android]
-ar = "/home/jack/android-ndk-r27d/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
-linker = "/home/jack/android-ndk-r27d/toolchains/llvm/prebuilt/linux-x86_64/bin/i686-linux-android21-clang"
+ar = "${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+linker = "${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/i686-linux-android21-clang"
 
 # Environment variables for C/C++ compilation
 [target.aarch64-linux-android.env]
-CC_aarch64_linux_android = "/home/jack/android-ndk-r27d/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang"
-CXX_aarch64_linux_android = "/home/jack/android-ndk-r27d/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang++"
-AR_aarch64_linux_android = "/home/jack/android-ndk-r27d/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
-CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER = "/home/jack/android-ndk-r27d/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang"
+CC_aarch64_linux_android = "${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang"
+CXX_aarch64_linux_android = "${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang++"
+AR_aarch64_linux_android = "${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER = "${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang"
 
 # CMake configuration for aws-lc-sys
-CMAKE_TOOLCHAIN_FILE = "/home/jack/android-ndk-r27d/build/cmake/android.toolchain.cmake"
+CMAKE_TOOLCHAIN_FILE = "${ANDROID_NDK_ROOT}/build/cmake/android.toolchain.cmake"
 ANDROID_ABI = "arm64-v8a"
 ANDROID_PLATFORM = "android-21"
 ANDROID_STL = "c++_shared"
+
+[target.aarch64-apple-darwin]
+linker = "aarch64-apple-darwin20.4-clang"
+ar = "aarch64-apple-darwin20.4-ar"
 
 [build]
 incremental = true

@@ -13,7 +13,7 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 #[cfg(target_os = "linux")]
 use tokio::signal::unix::{signal, SignalKind};
-use tracing::{info,error, Level};
+use tracing::{info,error};
 
 #[cfg(debug_assertions)]
 #[global_allocator]
@@ -27,9 +27,7 @@ async fn main() -> Result<()> {
 
     //parse args
     let args = util::cmd::Args::parse();
-    tracing_subscriber::fmt()
-        .with_max_level(Level::DEBUG)
-        .init();
+    util::init_logging();
 
     //bind port
     let control_listener = TcpListener::bind(format!("0.0.0.0:{}", args.control_port)).await?;
@@ -50,7 +48,11 @@ async fn main() -> Result<()> {
     let _server_state4 = Arc::clone(&server_state);
 
     // Start inference gateway on port 8081
-    let inference_gateway = Arc::new(inference::InferenceGateway::new(server_state.inference_scheduler.clone()));
+    let inference_gateway = Arc::new(inference::InferenceGateway::new(
+        server_state.inference_scheduler.clone(),
+        server_state.db_pool.clone(),
+        server_state.producer.clone(),
+    ));
     let inference_gateway_task = tokio::spawn(async move {
         info!("Starting Inference Gateway on port 8081...");
         if let Err(e) = inference_gateway.run(8081).await {

@@ -33,6 +33,8 @@ pub struct LlamaEngine {
     pub cached_backend: Option<Arc<LlamaBackend>>,
     #[cfg(not(target_os = "android"))]
     pub cached_model: Option<Arc<Mutex<LlamaModel>>>,
+    #[cfg(not(target_os = "android"))]
+    pub cached_model_path: Option<String>, // Track which model is currently cached
 }
 
 // llama-cpp-2 state wrapper (no longer stored, used for single inference)
@@ -66,21 +68,29 @@ impl LlamaEngine {
         
         #[cfg(not(target_os = "android"))]
         {
-            if self.cached_model.is_some() {
-                // Verify cached model matches current configuration
-                let current_model_path = self.model_path.as_ref()
-                    .ok_or_else(|| anyhow!("Model path not set"))?;
-                
-                info!("Model already loaded and cached: {}", current_model_path);
-                return Ok(());
-            }
-            
             let model_path = self.model_path.as_ref()
                 .ok_or_else(|| anyhow!("Model path not set"))?
                 .clone();
-            let n_gpu_layers = self.n_gpu_layers;
+
+            let resolved_model_path = self.validate_model_path(&model_path)?;
+            let resolved_model_path_str = resolved_model_path.to_string_lossy().to_string();
             
-            info!("Loading and caching llama-cpp-2 model: {}", model_path);
+            // Check if model is already cached AND matches current path
+            if let Some(ref cached_path) = self.cached_model_path {
+                if cached_path == &resolved_model_path_str && self.cached_model.is_some() {
+                    info!("Model already loaded and cached: {}", resolved_model_path_str);
+                    return Ok(());
+                } else if cached_path != &resolved_model_path_str {
+                    // Model path changed, clear old cache
+                    warn!("Model path changed from {} to {}, clearing cache", cached_path, resolved_model_path_str);
+                    self.clear_cache();
+                }
+            }
+            let n_gpu_layers = self.n_gpu_layers;
+            let model_path_for_closure = resolved_model_path_str.clone();
+            let model_path_for_cache = model_path_for_closure.clone();
+            
+            info!("Loading and caching llama-cpp-2 model: {}", model_path_for_closure);
             
             // Run model loading in blocking thread
             let (backend, model) = tokio::task::spawn_blocking(move || {
@@ -90,18 +100,19 @@ impl LlamaEngine {
                 let model_params = LlamaModelParams::default()
                     .with_n_gpu_layers(n_gpu_layers);
                 
-                let model = LlamaModel::load_from_file(&backend, &model_path, &model_params)
+                let model = LlamaModel::load_from_file(&backend, &model_path_for_closure, &model_params)
                     .map_err(|e| anyhow!("Failed to load model: {:?}", e))?;
                 
                 Ok::<(LlamaBackend, LlamaModel), anyhow::Error>((backend, model))
             }).await??;
             
-            // Cache the components
+            // Cache the components and store the model path
             self.cached_backend = Some(Arc::new(backend));
             self.cached_model = Some(Arc::new(Mutex::new(model)));
+            self.cached_model_path = Some(model_path_for_cache.clone());
             self.is_initialized = true;
             
-            info!("Model successfully loaded and cached");
+            info!("Model successfully loaded and cached: {}", model_path_for_cache);
             Ok(())
         }
     }
@@ -113,6 +124,7 @@ impl LlamaEngine {
             info!("Clearing model cache to free memory");
             self.cached_model = None;
             self.cached_backend = None;
+            self.cached_model_path = None;
             self.is_initialized = false;
             info!("Model cache cleared");
         }
@@ -259,6 +271,8 @@ impl LlamaEngine {
             cached_backend: None,
             #[cfg(not(target_os = "android"))]
             cached_model: None,
+            #[cfg(not(target_os = "android"))]
+            cached_model_path: None,
         }
     }
 
@@ -283,6 +297,8 @@ impl LlamaEngine {
             cached_backend: None,
             #[cfg(not(target_os = "android"))]
             cached_model: None,
+            #[cfg(not(target_os = "android"))]
+            cached_model_path: None,
         }
     }
 
@@ -320,15 +336,44 @@ impl LlamaEngine {
         !model_ptr.is_null() && !context_ptr.is_null()
     }
 
-    fn validate_model_path(&self, path: &str) -> Result<PathBuf> {
+    /// Resolve model path: if relative, try models_dir first; if absolute, use directly
+    fn resolve_model_path(&self, path: &str) -> Result<PathBuf> {
         let path_buf = PathBuf::from(path);
-        if !path_buf.exists() {
-            return Err(anyhow!("Model file does not exist: {}", path));
+        
+        // If absolute path, use it directly
+        if path_buf.is_absolute() {
+            if !path_buf.exists() {
+                return Err(anyhow!("Model file does not exist: {}", path));
+            }
+            if !path_buf.is_file() {
+                return Err(anyhow!("Model path is not a file: {}", path));
+            }
+            return Ok(path_buf);
         }
-        if !path_buf.is_file() {
-            return Err(anyhow!("Model path is not a file: {}", path));
+        
+        // If relative path, try models_dir first
+        let models_dir_path = self.models_dir.join(path);
+        if models_dir_path.exists() && models_dir_path.is_file() {
+            info!("Resolved relative path '{}' to '{}'", path, models_dir_path.display());
+            return Ok(models_dir_path);
         }
-        Ok(path_buf)
+        
+        // Fallback: try current directory
+        if path_buf.exists() && path_buf.is_file() {
+            warn!("Using model from current directory: {}", path);
+            return Ok(path_buf);
+        }
+        
+        Err(anyhow!(
+            "Model file not found: '{}' (checked: {} and current dir)",
+            path,
+            models_dir_path.display()
+        ))
+    }
+    
+    fn validate_model_path(&self, path: &str) -> Result<PathBuf> {
+        // Use resolve_model_path for consistent path handling
+        self.resolve_model_path(path)
     }
 
     async fn generate_response(&self, prompt: &str, max_tokens: usize) -> Result<String> {

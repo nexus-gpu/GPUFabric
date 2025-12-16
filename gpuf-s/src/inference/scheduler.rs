@@ -54,7 +54,7 @@ pub struct CompletionResponse {
     pub created: u64,
     pub model: String,
     pub choices: Vec<CompletionChoice>,
-    pub usage: CompletionUsage,
+    // pub usage: CompletionUsage,
 }
 
 #[derive(Debug, Serialize)]
@@ -64,7 +64,7 @@ pub struct ChatCompletionResponse {
     pub created: u64,
     pub model: String,
     pub choices: Vec<ChatCompletionChoice>,
-    pub usage: CompletionUsage,
+    // pub usage: CompletionUsage,
 }
 
 #[derive(Debug, Serialize)]
@@ -121,6 +121,8 @@ impl InferenceScheduler {
         result: Option<String>,
         error: Option<String>,
         _execution_time_ms: u64,
+        prompt_tokens: u32,
+        completion_tokens: u32,
     ) {
         info!("Handling inference result for task {} (success: {})", task_id, success);
         
@@ -151,11 +153,11 @@ impl InferenceScheduler {
                         logprobs: None,
                         finish_reason: "stop".to_string(),
                     }],
-                    usage: CompletionUsage {
-                        prompt_tokens: 0,
-                        completion_tokens: 0,
-                        total_tokens: 0,
-                    },
+                    // usage: CompletionUsage {
+                    //     prompt_tokens,
+                    //     completion_tokens,
+                    //     total_tokens: prompt_tokens + completion_tokens,
+                    // },
                 })
             } else {
                 Err(anyhow!("Inference failed: {}", error.unwrap_or_default()))
@@ -179,27 +181,45 @@ impl InferenceScheduler {
     }
 
     /// Select best Android device for inference
-    async fn select_best_device(&self) -> Result<ClientId> {
+    async fn select_best_device(&self, allowed_client_ids: Option<&[ClientId]>) -> Result<ClientId> {
         let clients = self.active_clients.lock().await;
         
         let mut best_device: Option<(ClientId, u16)> = None;
         let mut device_count = 0;
-        
-        for (client_id, client_info) in clients.iter() {
+
+        let mut consider_device = |client_id: &ClientId, client_info: &crate::handle::ClientInfo| {
             // Only consider authenticated Android devices
             if !client_info.authed {
-                continue;
+                return;
             }
-            
+
             // Check if device has system info (Android devices should have this)
-            if let Some(system_info) = &client_info.system_info {
-                // Simple load balancing: choose device with lowest CPU + Memory usage
-                let total_load: u16 = (system_info.cpu_usage + system_info.memory_usage) as u16;
-                
-                device_count += 1;
-                
-                if best_device.is_none() || total_load < best_device.as_ref().unwrap().1 {
-                    best_device = Some((*client_id, total_load));
+            let Some(system_info) = &client_info.system_info else {
+                return;
+            };
+
+            // Simple load balancing: choose device with lowest CPU + Memory usage
+            let total_load: u16 = (system_info.cpu_usage + system_info.memory_usage) as u16;
+            device_count += 1;
+
+            if best_device.is_none() || total_load < best_device.as_ref().unwrap().1 {
+                best_device = Some((*client_id, total_load));
+            }
+        };
+
+        match allowed_client_ids {
+            Some(allowed) => {
+                // Base set = allowed ids; lookup active client info from map (O(1) average)
+                for client_id in allowed {
+                    if let Some(client_info) = clients.get(client_id) {
+                        consider_device(client_id, client_info);
+                    }
+                }
+            }
+            None => {
+                // No restriction; base set = all active clients
+                for (client_id, client_info) in clients.iter() {
+                    consider_device(client_id, client_info);
                 }
             }
         }
@@ -253,7 +273,11 @@ impl InferenceScheduler {
     }
 
     /// Execute inference task
-    pub async fn execute_inference(&self, request: CompletionRequest) -> Result<CompletionResponse> {
+    pub async fn execute_inference(
+        &self,
+        request: CompletionRequest,
+        allowed_client_ids: Option<&[ClientId]>,
+    ) -> Result<CompletionResponse> {
         let task_id = Uuid::new_v4().to_string();
         
         // Create response channel
@@ -269,7 +293,7 @@ impl InferenceScheduler {
         }
 
         // Select best available device
-        let device_id = self.select_best_device().await?;
+        let device_id = self.select_best_device(allowed_client_ids).await?;
         
         // Send task to device
         info!("About to send task {} to device {:?}", task_id, device_id);
@@ -327,20 +351,40 @@ impl InferenceScheduler {
     }
 
     /// Get list of available devices
-    pub async fn get_available_devices(&self) -> Vec<DeviceInfo> {
+    pub async fn get_available_devices(&self, allowed_client_ids: Option<&[ClientId]>) -> Vec<DeviceInfo> {
         let clients = self.active_clients.lock().await;
         let mut devices = Vec::new();
         
-        for (client_id, client_info) in clients.iter() {
-            if client_info.authed {
-                let device = DeviceInfo {
-                    client_id: hex::encode(&client_id.0),
-                    status: if client_info.system_info.is_some() { "online".to_string() } else { "initializing".to_string() },
-                    cpu_usage: client_info.system_info.as_ref().map(|s| s.cpu_usage).unwrap_or(0),
-                    memory_usage: client_info.system_info.as_ref().map(|s| s.memory_usage).unwrap_or(0),
-                    device_count: client_info.devices_info.len() as u32,
-                };
-                devices.push(device);
+        let mut maybe_push_device = |client_id: &ClientId, client_info: &crate::handle::ClientInfo| {
+            if !client_info.authed {
+                return;
+            }
+            let device = DeviceInfo {
+                client_id: hex::encode(&client_id.0),
+                status: if client_info.system_info.is_some() {
+                    "online".to_string()
+                } else {
+                    "initializing".to_string()
+                },
+                cpu_usage: client_info.system_info.as_ref().map(|s| s.cpu_usage).unwrap_or(0),
+                memory_usage: client_info.system_info.as_ref().map(|s| s.memory_usage).unwrap_or(0),
+                device_count: client_info.devices_info.len() as u32,
+            };
+            devices.push(device);
+        };
+
+        match allowed_client_ids {
+            Some(allowed) => {
+                for client_id in allowed {
+                    if let Some(client_info) = clients.get(client_id) {
+                        maybe_push_device(client_id, client_info);
+                    }
+                }
+            }
+            None => {
+                for (client_id, client_info) in clients.iter() {
+                    maybe_push_device(client_id, client_info);
+                }
             }
         }
         

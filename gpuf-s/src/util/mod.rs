@@ -3,7 +3,7 @@ pub mod cmd;
 pub mod pack;
 pub mod protoc;
 pub mod msg;
-use tracing::info;
+use tracing::{debug,info, Level};
 use anyhow::Result;
 use tokio_rustls::{
     rustls::{
@@ -45,4 +45,35 @@ pub fn load_private_key(path: &str) -> Result<PrivateKeyDer<'static>> {
     }
 
     anyhow::bail!("no private keys found in {}", path);
+}
+
+
+pub fn init_logging() {
+    // Use DEBUG level for debug builds, INFO for release builds
+
+    #[cfg(not(debug_assertions))]
+    tracing_subscriber::fmt()
+        .with_max_level(Level::INFO)
+        .with_ansi(!cfg!(windows))
+        .with_target(false)
+        .with_thread_ids(false)
+        .with_thread_names(false)
+        .with_file(false)
+        .with_line_number(false)
+        .compact()
+        .init();
+
+    #[cfg(debug_assertions)]
+    tracing_subscriber::fmt()
+        .with_max_level(Level::DEBUG)
+        .with_ansi(!cfg!(windows))
+        .with_target(false)
+        .with_thread_ids(true)
+        .with_thread_names(true)
+        .with_file(true)
+        .with_line_number(true)
+        .compact()
+        .init();
+    
+    debug!("Logging initialized");
 }

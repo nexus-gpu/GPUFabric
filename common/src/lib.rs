@@ -198,6 +198,8 @@ pub enum CommandV1 {
         result: Option<String>,
         error: Option<String>,
         execution_time_ms: u64,
+        prompt_tokens: u32,
+        completion_tokens: u32,
     },
 }
 
@@ -345,6 +347,56 @@ pub async fn write_command<W: AsyncWrite + Unpin>(writer: &mut W, command: &Comm
     writer.write_all(&len.to_be_bytes()).await?;
     writer.write_all(&buf).await?;
     writer.flush().await?;
+    Ok(())
+}
+
+/// Synchronous version: Reads a command from a blocking reader.
+/// The format is a 4-byte length prefix (u32) followed by the bincode-encoded command.
+pub fn read_command_sync<R: std::io::Read>(reader: &mut R) -> Result<Command> {
+    let mut len_buf = [0u8; 4];
+    reader.read_exact(&mut len_buf)?;
+    let len = u32::from_be_bytes(len_buf) as usize;
+    
+    if len > MAX_MESSAGE_SIZE {
+        warn!(
+            "read_command_sync: Message too large: {} bytes (max: {} bytes)",
+            len, MAX_MESSAGE_SIZE
+        );
+        return Err(anyhow!("Message too large"));
+    }
+
+    let config = bincode_config::standard()
+        .with_fixed_int_encoding()
+        .with_little_endian();
+
+    let mut buf = vec![0u8; len];
+    reader.read_exact(&mut buf)?;
+
+    let (command, _) = bincode::decode_from_slice(&buf, config)
+        .map_err(|e| anyhow!("Failed to deserialize command: {}", e))?;
+    Ok(command)
+}
+
+/// Synchronous version: Writes a command to a blocking writer.
+/// The format is a 4-byte length prefix (u32) followed by the bincode-encoded command.
+pub fn write_command_sync<W: std::io::Write>(writer: &mut W, command: &Command) -> Result<()> {
+    let config = bincode_config::standard()
+        .with_fixed_int_encoding()
+        .with_little_endian();
+    let buf = bincode::encode_to_vec(command, config)?;
+    let len = buf.len() as u32;
+    
+    if len as usize > MAX_MESSAGE_SIZE {
+        warn!(
+            "write_command_sync: Message too large: {} bytes (max: {} bytes)",
+            len, MAX_MESSAGE_SIZE
+        );
+        return Err(anyhow!("Message too large"));
+    }
+
+    writer.write_all(&len.to_be_bytes())?;
+    writer.write_all(&buf)?;
+    writer.flush()?;
     Ok(())
 }
 

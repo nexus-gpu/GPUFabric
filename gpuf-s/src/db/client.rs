@@ -76,7 +76,7 @@ pub async fn get_user_client_by_token(
         .collect::<Result<Vec<ClientId>>>()?;
 
     if client_ids.is_empty() {
-        return Err(anyhow!("No active client found for the provided API key"));
+        return Ok((vec![], token_info.access_level));
     }
 
     Ok((client_ids, token_info.access_level))

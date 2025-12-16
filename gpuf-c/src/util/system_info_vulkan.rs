@@ -9,8 +9,17 @@ use common::{DevicesInfo, OsType, EngineType};
 #[cfg(feature = "vulkan")]
 use sysinfo;
 
+// Conditional debug printing: only print in debug builds
+macro_rules! debug_println {
+    ($($arg:tt)*) => {
+        #[cfg(debug_assertions)]
+        println!($($arg)*);
+    };
+}
+
 #[cfg(feature = "vulkan")]
 pub async fn collect_device_info_vulkan_cross_platform() -> Result<(DevicesInfo, u16)> {
+    #[allow(unused)]
     let platform_name = if cfg!(target_os = "windows") {
         "Windows"
     } else if cfg!(target_os = "linux") {
@@ -21,13 +30,13 @@ pub async fn collect_device_info_vulkan_cross_platform() -> Result<(DevicesInfo,
         "Unknown"
     };
     
-    println!("Starting Vulkan API device info collection for {}...", platform_name);
+    debug_println!("Starting Vulkan API device info collection for {}...", platform_name);
     
     // Initialize Vulkan
     let entry = unsafe { Entry::load() }
         .map_err(|e| anyhow::anyhow!("Failed to load Vulkan entry: {}", e))?;
     
-    println!("Vulkan entry point loaded successfully");
+    debug_println!("Vulkan entry point loaded successfully");
     
     // Create instance
     let app_info = vk::ApplicationInfo::builder()
@@ -39,13 +48,13 @@ pub async fn collect_device_info_vulkan_cross_platform() -> Result<(DevicesInfo,
     let instance = unsafe { entry.create_instance(&create_info, None) }
         .map_err(|e| anyhow::anyhow!("Failed to create Vulkan instance: {}", e))?;
     
-    println!("Vulkan instance created successfully");
+    debug_println!("Vulkan instance created successfully");
     
     // Enumerate physical devices
     let physical_devices = unsafe { instance.enumerate_physical_devices() }
         .map_err(|e| anyhow::anyhow!("Failed to enumerate physical devices: {}", e))?;
     
-    println!("Found {} Vulkan physical devices", physical_devices.len());
+    debug_println!("Found {} Vulkan physical devices", physical_devices.len());
     
     let mut total_tflops = 0u16;
     let mut total_memory_gb = 0u32;
@@ -65,12 +74,19 @@ pub async fn collect_device_info_vulkan_cross_platform() -> Result<(DevicesInfo,
             std::ffi::CStr::from_ptr(properties.device_name.as_ptr())
                 .to_string_lossy()
         };
+
+        let is_software_or_cpu = {
+            let name_lc = device_name.to_ascii_lowercase();
+            properties.device_type == vk::PhysicalDeviceType::CPU
+                || name_lc.contains("llvmpipe")
+                || name_lc.contains("lavapipe")
+        };
         
         // Calculate device memory
         let mut device_memory = 0u64;
         let mut heap_count = 0;
         for (i, heap) in memory_properties.memory_heaps.iter().enumerate() {
-            println!("  Memory heap {}: {}MB, flags: {:?}", 
+            debug_println!("  Memory heap {}: {}MB, flags: {:?}", 
                 i, heap.size / (1024 * 1024), heap.flags);
             if heap.flags.contains(vk::MemoryHeapFlags::DEVICE_LOCAL) {
                 device_memory += heap.size;
@@ -78,11 +94,19 @@ pub async fn collect_device_info_vulkan_cross_platform() -> Result<(DevicesInfo,
             }
         }
         let device_memory_gb = (device_memory / (1024 * 1024 * 1024)) as u32;
-        total_memory_gb += device_memory_gb;
+        if !is_software_or_cpu {
+            total_memory_gb += device_memory_gb;
+        }
         
         // Estimate TFLOPS based on device type and vendor
-        let tflops = estimate_gpu_tflops_cross_platform(properties.vendor_id, properties.device_id, device_name.as_bytes());
-        total_tflops = total_tflops.saturating_add(tflops);
+        let tflops = if is_software_or_cpu {
+            0
+        } else {
+            estimate_gpu_tflops_cross_platform(properties.vendor_id, properties.device_id, device_name.as_bytes())
+        };
+        if !is_software_or_cpu {
+            total_tflops = total_tflops.saturating_add(tflops);
+        }
         
         // Count queue families
         let mut graphics_queues = 0;
@@ -102,36 +126,43 @@ pub async fn collect_device_info_vulkan_cross_platform() -> Result<(DevicesInfo,
         }
         
         // Print detailed GPU information
-        println!("\nGPU {} Details:", index + 1);
-        println!("  Device Name: {}", device_name);
-        println!("  Device Type: {:?}", properties.device_type);
-        println!("  Vendor ID: 0x{:04x}", properties.vendor_id);
-        println!("  Device ID: 0x{:04x}", properties.device_id);
-        println!("  Device Memory: {}GB ({} heaps)", device_memory_gb, heap_count);
-        println!("  Performance Estimate: {} TFLOPS", tflops);
-        println!("  API Version: {}.{}.{}", 
+        debug_println!("\nGPU {} Details:", index + 1);
+        debug_println!("  Device Name: {}", device_name);
+        debug_println!("  Device Type: {:?}", properties.device_type);
+        if is_software_or_cpu {
+            debug_println!("  Note: software/CPU Vulkan device (not a real GPU)");
+        }
+        debug_println!("  Vendor ID: 0x{:04x}", properties.vendor_id);
+        debug_println!("  Device ID: 0x{:04x}", properties.device_id);
+        debug_println!("  Device Memory: {}GB ({} heaps)", device_memory_gb, heap_count);
+        debug_println!("  Performance Estimate: {} TFLOPS", tflops);
+        debug_println!("  API Version: {}.{}.{}", 
             vk::api_version_major(properties.api_version),
             vk::api_version_minor(properties.api_version),
             vk::api_version_patch(properties.api_version)
         );
-        println!("  Queue Count: Graphics{} Compute{} Transfer{}", graphics_queues, compute_queues, transfer_queues);
-        println!("  Supported Features:");
-        println!("    - Geometry Shader: {}", features.geometry_shader != 0);
-        println!("    - Tessellation Shader: {}", features.tessellation_shader != 0);
-        println!("    - Multi Viewport: {}", features.multi_viewport != 0);
-        println!("    - Shader Storage: {}", features.shader_storage_image_extended_formats != 0);
+        debug_println!("  Queue Count: Graphics{} Compute{} Transfer{}", graphics_queues, compute_queues, transfer_queues);
+        debug_println!("  Supported Features:");
+        debug_println!("    - Geometry Shader: {}", features.geometry_shader != 0);
+        debug_println!("    - Tessellation Shader: {}", features.tessellation_shader != 0);
+        debug_println!("    - Multi Viewport: {}", features.multi_viewport != 0);
+        debug_println!("    - Shader Storage: {}", features.shader_storage_image_extended_formats != 0);
         
         // Store GPU details for summary
-        gpu_details.push(format!("GPU{}: {} ({}GB, {}TFLOPS)", 
-            index + 1, device_name, device_memory_gb, tflops));
+        if !is_software_or_cpu {
+            gpu_details.push(format!("GPU{}: {} ({}GB, {}TFLOPS)", 
+                index + 1, device_name, device_memory_gb, tflops));
+        }
         
         // Store first device info for DevicesInfo
-        if index == 0 {
+        if !is_software_or_cpu && first_vendor_id == 0 {
             first_vendor_id = properties.vendor_id as u128;
             first_device_id = properties.device_id as u128;
         }
         
-        device_count = device_count.saturating_add(1);
+        if !is_software_or_cpu {
+            device_count = device_count.saturating_add(1);
+        }
     }
     
     // Get system information
@@ -150,30 +181,30 @@ pub async fn collect_device_info_vulkan_cross_platform() -> Result<(DevicesInfo,
     let (gpu_usage, gpu_mem_usage, power_usage, temp) = 
         get_accurate_gpu_metrics(first_vendor_id, device_count, total_tflops, total_memory_gb);
     
-    println!("\nSystem Information Summary:");
-    println!("  CPU: {}", cpu_brand);
-    println!("  System Memory: {}GB", system_memory_gb);
-    println!("  System Memory Usage: {}% ({}GB/{}GB)", ((used_memory as f32 / total_memory as f32) * 100.0) as u64, used_memory / (1024*1024*1024), total_memory / (1024*1024*1024));
-    println!("  CPU Usage: {}%", system.global_cpu_usage());
-    println!("  GPU Count: {}", device_count);
-    println!("  Total Compute Power: {} TFLOPS", total_tflops);
+    debug_println!("\nSystem Information Summary:");
+    debug_println!("  CPU: {}", cpu_brand);
+    debug_println!("  System Memory: {}GB", system_memory_gb);
+    debug_println!("  System Memory Usage: {}% ({}GB/{}GB)", ((used_memory as f32 / total_memory as f32) * 100.0) as u64, used_memory / (1024*1024*1024), total_memory / (1024*1024*1024));
+    debug_println!("  CPU Usage: {}%", system.global_cpu_usage());
+    debug_println!("  GPU Count: {}", device_count);
+    debug_println!("  Total Compute Power: {} TFLOPS", total_tflops);
     
     // Show GPU metrics with accuracy indication
     if gpu_usage > 0 || gpu_mem_usage > 0 {
-        println!("  GPU Usage: {}%", gpu_usage);
-        println!("  GPU Memory Usage: {}%", gpu_mem_usage);
-        println!("  GPU Power: {}W", power_usage);
-        println!("  GPU Temperature: {}°C", temp);
+        debug_println!("  GPU Usage: {}%", gpu_usage);
+        debug_println!("  GPU Memory Usage: {}%", gpu_mem_usage);
+        debug_println!("  GPU Power: {}W", power_usage);
+        debug_println!("  GPU Temperature: {}°C", temp);
     } else {
-        println!("  GPU Usage (estimated): {}%", gpu_usage);
-        println!("  GPU Memory Usage (estimated): {}%", gpu_mem_usage);
-        println!("  GPU Power (estimated): {}W", power_usage);
-        println!("  GPU Temperature (estimated): {}°C", temp);
+        debug_println!("  GPU Usage (estimated): {}%", gpu_usage);
+        debug_println!("  GPU Memory Usage (estimated): {}%", gpu_mem_usage);
+        debug_println!("  GPU Power (estimated): {}W", power_usage);
+        debug_println!("  GPU Temperature (estimated): {}°C", temp);
     }
-    println!("  Operating System: {}", platform_name);
+    debug_println!("  Operating System: {}", platform_name);
     
     if device_count > 0 {
-        println!("  GPU List: {}", gpu_details.join(", "));
+        debug_println!("  GPU List: {}", gpu_details.join(", "));
     }
 
     
@@ -213,7 +244,7 @@ pub async fn collect_device_info_vulkan_cross_platform() -> Result<(DevicesInfo,
     
     unsafe { instance.destroy_instance(None) };
     
-    println!("\n✅ Device information collection completed!");
+    debug_println!("\n✅ Device information collection completed!");
     Ok((devices_info, device_count))
 }
 
@@ -294,7 +325,7 @@ fn get_accurate_gpu_metrics(
     #[cfg(all(feature = "nvml", not(target_os = "macos"), not(target_os = "android")))]
     {
         if let Ok((usage, mem_usage, power, temp)) = try_nvml_metrics() {
-            println!("🎯 Using NVML for accurate GPU metrics");
+            debug_println!("🎯 Using NVML for accurate GPU metrics");
             return (usage, mem_usage, power, temp);
         }
     }
@@ -303,7 +334,7 @@ fn get_accurate_gpu_metrics(
     #[cfg(all(feature = "rocm", target_os = "linux"))]
     {
         if let Ok((usage, mem_usage, power, temp)) = try_rocm_metrics() {
-            println!("🎯 Using ROCm SMI for accurate GPU metrics");
+            debug_println!("🎯 Using ROCm SMI for accurate GPU metrics");
             return (usage, mem_usage, power, temp);
         }
     }
@@ -312,7 +343,7 @@ fn get_accurate_gpu_metrics(
     #[cfg(all(target_os = "windows", not(feature = "nvml")))]
     {
         if let Ok((usage, mem_usage, power, temp)) = try_wmi_gpu_metrics() {
-            println!("🎯 Using WMI for accurate GPU metrics");
+            debug_println!("🎯 Using WMI for accurate GPU metrics");
             return (usage, mem_usage, power, temp);
         }
     }
@@ -321,7 +352,7 @@ fn get_accurate_gpu_metrics(
     #[cfg(target_os = "macos")]
     {
         if let Ok((usage, mem_usage, power, temp)) = try_macos_gpu_metrics() {
-            println!("🎯 Using PowerMetrics for accurate GPU metrics");
+            debug_println!("🎯 Using PowerMetrics for accurate GPU metrics");
             return (usage, mem_usage, power, temp);
         }
     }
@@ -330,13 +361,13 @@ fn get_accurate_gpu_metrics(
     #[cfg(all(target_os = "linux", not(feature = "nvml")))]
     {
         if let Ok((usage, mem_usage, power, temp)) = try_sysfs_gpu_metrics(vendor_id) {
-            println!("🎯 Using sysfs for accurate GPU metrics");
+            debug_println!("🎯 Using sysfs for accurate GPU metrics");
             return (usage, mem_usage, power, temp);
         }
     }
     
     // Fallback to estimation (always available)
-    println!("⚠️  Using estimated GPU metrics (no accurate method available)");
+    debug_println!("⚠️  Using estimated GPU metrics (no accurate method available)");
     estimate_gpu_metrics_fallback(device_count, total_tflops, total_memory_gb)
 }
 
@@ -412,8 +443,8 @@ fn try_rocm_metrics() -> Result<(u64, u64, u64, u64), Box<dyn std::error::Error>
 fn try_wmi_gpu_metrics() -> Result<(u64, u64, u64, u64), Box<dyn std::error::Error>> {
     // WMI on most consumer systems doesn't provide real-time GPU metrics
     // Performance counters are often unavailable or return errors
-    println!("⚠️  WMI GPU metrics not available on this system");
-    println!("💡 Note: Consider installing NVML for NVIDIA GPU monitoring");
+    debug_println!("⚠️  WMI GPU metrics not available on this system");
+    debug_println!("💡 Note: Consider installing NVML for NVIDIA GPU monitoring");
     
     // Use simple fallback instead of complex estimation
     Err("WMI GPU metrics not available".into())
@@ -433,6 +464,136 @@ fn try_sysfs_gpu_metrics(_vendor_id: u128) -> Result<(u64, u64, u64, u64), Box<d
     // TODO: Implement actual sysfs reading logic based on vendor_id
     // For AMD: /sys/class/drm/card0/device/gpu_busy_percent
     // For Intel: /sys/class/drm/card0/gt/gt0/freq_mhz (approximation)
-    // For now, return error to trigger fallback
-    Err("Sysfs GPU metrics not implemented yet".into())
+    // For now, best-effort implementation using common sysfs/hwmon nodes.
+
+    fn read_trimmed(path: &std::path::Path) -> std::io::Result<String> {
+        Ok(std::fs::read_to_string(path)?.trim().to_string())
+    }
+
+    fn parse_u64(s: &str) -> Option<u64> {
+        s.trim().parse::<u64>().ok()
+    }
+
+    fn parse_hex_u32(s: &str) -> Option<u32> {
+        let s = s.trim();
+        let s = s.strip_prefix("0x").unwrap_or(s);
+        u32::from_str_radix(s, 16).ok()
+    }
+
+    let drm_dir = std::path::Path::new("/sys/class/drm");
+    let entries = std::fs::read_dir(drm_dir)?;
+
+    let mut candidates: Vec<(std::path::PathBuf, Option<u32>)> = Vec::new();
+    for e in entries {
+        let e = e?;
+        let name = e.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with("card") {
+            continue;
+        }
+        if name.contains("-") {
+            continue;
+        }
+
+        let device_dir = e.path().join("device");
+        if !device_dir.exists() {
+            continue;
+        }
+
+        let vendor = read_trimmed(&device_dir.join("vendor")).ok().and_then(|v| parse_hex_u32(&v));
+        candidates.push((device_dir, vendor));
+    }
+
+    if candidates.is_empty() {
+        return Err("No DRM devices found in /sys/class/drm".into());
+    }
+
+    let wanted_vendor = if _vendor_id > u32::MAX as u128 {
+        None
+    } else {
+        Some(_vendor_id as u32)
+    };
+
+    let device_dir = candidates
+        .iter()
+        .find(|(_, v)| wanted_vendor.is_some() && v.is_some() && v.unwrap() == wanted_vendor.unwrap())
+        .map(|(p, _)| p.clone())
+        .or_else(|| candidates.first().map(|(p, _)| p.clone()))
+        .ok_or("No usable DRM device found")?;
+
+    // Utilization
+    let usage = {
+        let busy_paths = [
+            device_dir.join("gpu_busy_percent"),
+            device_dir.join("gt_busy_percent"),
+            device_dir.join("busy_percent"),
+        ];
+        let mut val: Option<u64> = None;
+        for p in &busy_paths {
+            if let Ok(s) = read_trimmed(p) {
+                val = parse_u64(&s);
+                if val.is_some() {
+                    break;
+                }
+            }
+        }
+        val.unwrap_or(0).min(100)
+    };
+
+    // VRAM usage (percentage)
+    let mem_usage = {
+        let total = read_trimmed(&device_dir.join("mem_info_vram_total")).ok().and_then(|s| parse_u64(&s));
+        let used = read_trimmed(&device_dir.join("mem_info_vram_used")).ok().and_then(|s| parse_u64(&s));
+        match (total, used) {
+            (Some(t), Some(u)) if t > 0 => ((u as f64 / t as f64) * 100.0).round() as u64,
+            _ => 0,
+        }
+    };
+
+    // Power (W) and temperature (°C) from hwmon if available
+    let (power_usage, temp) = {
+        let mut power_w: u64 = 0;
+        let mut temp_c: u64 = 0;
+
+        let hwmon_base = device_dir.join("hwmon");
+        if let Ok(hwmons) = std::fs::read_dir(&hwmon_base) {
+            for h in hwmons.flatten() {
+                let hpath = h.path();
+                let power_paths = [
+                    hpath.join("power1_average"),
+                    hpath.join("power1_input"),
+                ];
+                for p in &power_paths {
+                    if let Ok(s) = read_trimmed(p) {
+                        if let Some(uw) = parse_u64(&s) {
+                            power_w = (uw / 1_000_000).max(0);
+                            break;
+                        }
+                    }
+                }
+
+                let temp_paths = [hpath.join("temp1_input"), hpath.join("temp2_input")];
+                for t in &temp_paths {
+                    if let Ok(s) = read_trimmed(t) {
+                        if let Some(millic) = parse_u64(&s) {
+                            temp_c = (millic / 1000).max(0);
+                            break;
+                        }
+                    }
+                }
+
+                if power_w > 0 || temp_c > 0 {
+                    break;
+                }
+            }
+        }
+
+        (power_w, temp_c)
+    };
+
+    if usage == 0 && mem_usage == 0 && power_usage == 0 && temp == 0 {
+        return Err("Sysfs GPU metrics not available on this system".into());
+    }
+
+    Ok((usage, mem_usage.min(100), power_usage, temp))
 }

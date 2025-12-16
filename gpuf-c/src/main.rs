@@ -42,36 +42,49 @@ async fn run_standalone_llama(mut args: Args) -> Result<()> {
     }
     
     // Get model path
-    let model_path = if let Some(path) = args.llama_model_path {
-        path
-    } else {
-        // Auto-download default model
-        info!("No model specified, downloading default TinyLlama model...");
-        let models_dir = dirs::home_dir()
-            .ok_or_else(|| anyhow!("Could not determine home directory"))?
-            .join(".llama")
-            .join("models");
-        
-        std::fs::create_dir_all(&models_dir)?;
-        
-        let model_name = "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf";
-        let model_path = models_dir.join(model_name);
-        
-        if !model_path.exists() {
-            info!("Downloading {} (~600MB)...", model_name);
+    let default_model_name = "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf";
+    let requested = args
+        .llama_model_path
+        .clone()
+        .ok_or_else(|| anyhow!("Model path not set"))?;
+
+    let models_dir = dirs::home_dir()
+        .ok_or_else(|| anyhow!("Could not determine home directory"))?
+        .join(".llama")
+        .join("models");
+    std::fs::create_dir_all(&models_dir)?;
+
+    let model_path_buf = {
+        let p = std::path::Path::new(&requested);
+        if p.components().count() == 1 {
+            models_dir.join(p)
+        } else {
+            p.to_path_buf()
+        }
+    };
+
+    if !model_path_buf.exists() {
+        if requested == default_model_name {
+            info!("No local model found, downloading default TinyLlama model...");
+            info!("Downloading {} (~600MB)...", default_model_name);
             let url = "https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf";
-            
+
             let response = reqwest::get(url).await?;
             let bytes = response.bytes().await?;
-            std::fs::write(&model_path, bytes)?;
-            
+            std::fs::write(&model_path_buf, bytes)?;
+
             info!("Model downloaded successfully!");
         } else {
-            info!("Using existing model at {:?}", model_path);
+            return Err(anyhow!(
+                "Model file not found: {}",
+                model_path_buf.to_string_lossy()
+            ));
         }
-        
-        model_path.to_string_lossy().to_string()
-    };
+    } else {
+        info!("Using existing model at {:?}", model_path_buf);
+    }
+
+    let model_path = model_path_buf.to_string_lossy().to_string();
     
     info!("Loading model: {}", model_path);
     info!("Configuration:");

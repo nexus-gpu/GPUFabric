@@ -10,7 +10,6 @@ use common::{OsType,DevicesInfo, SystemInfo, EngineType as ClientEngineType};
 use tracing::{info,error};
 
 use anyhow::{anyhow, Result};
-use std::sync::OnceLock;
 use tokio::sync::Mutex;
 
 use tokio_tungstenite::{WebSocketStream, tungstenite::Message};
@@ -109,7 +108,7 @@ pub async fn new_worker(args: Args) -> AutoWorker {
                         return AutoWorker::TCP(worker);
                     },
                     Err(e) => {
-                        tracing::error!("Failed to create TCP worker: {}. Retrying in 5 seconds...", e);
+                        error!("Failed to create TCP worker: {}. Retrying in 5 seconds...", e);
                     }
                 }
             }
@@ -121,7 +120,7 @@ pub async fn new_worker(args: Args) -> AutoWorker {
                         return AutoWorker::WS(worker);
                     },
                     Err(e) => {
-                        tracing::error!("Failed to create WS worker: {}. Retrying in 5 seconds...", e);
+                        error!("Failed to create WS worker: {}. Retrying in 5 seconds...", e);
                     }
                 }
             }
