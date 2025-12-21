@@ -567,6 +567,13 @@ jint Java_com_gpuf_c_RemoteWorker_setRemoteWorkerModel(JNIEnv env,
                                                        JClass _class,
                                                        JString model_path);
 
+jint Java_com_gpuf_c_RemoteWorker_registerCallbackEmitter(JNIEnv env,
+                                                          JClass _class,
+                                                          JObject emitter);
+
+jint Java_com_gpuf_c_RemoteWorker_startRemoteWorkerTasksWithJavaCallback(JNIEnv _env,
+                                                                         JClass _class);
+
 /**
  * Starts the remote worker connection to the server
  *

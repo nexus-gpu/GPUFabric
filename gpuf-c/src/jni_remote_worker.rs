@@ -9,17 +9,79 @@
 // ============================================================================
 
 #[cfg(target_os = "android")]
-use jni::objects::{JClass, JString};
+use jni::objects::{GlobalRef, JClass, JObject, JString, JValue};
 #[cfg(target_os = "android")]
-use jni::JNIEnv;
+use jni::{JNIEnv, JavaVM};
 use jni::sys::{jint, jlong, jstring, jboolean, jbyteArray, jfloat};
 use std::ffi::{c_char, c_void};
 use std::ptr;
+use std::sync::OnceLock;
+use std::sync::Mutex;
 
 use crate::{
     get_remote_worker_status, set_remote_worker_model, start_remote_worker,
     start_remote_worker_tasks_with_callback_ptr, stop_remote_worker, 
 };
+
+#[cfg(target_os = "android")]
+static RN_JAVA_VM: OnceLock<JavaVM> = OnceLock::new();
+
+#[cfg(target_os = "android")]
+static RN_CALLBACK_EMITTER: OnceLock<Mutex<Option<GlobalRef>>> = OnceLock::new();
+
+#[cfg(target_os = "android")]
+fn rn_emit_status(message: &str) {
+    let jvm = match RN_JAVA_VM.get() {
+        Some(vm) => vm,
+        None => {
+            eprintln!("❌ JNI: RN JavaVM not initialized (did you call registerCallbackEmitter?)");
+            return;
+        }
+    };
+
+    let emitter = match RN_CALLBACK_EMITTER
+        .get()
+        .and_then(|m| m.lock().ok().and_then(|g| g.clone()))
+    {
+        Some(e) => e,
+        None => {
+            eprintln!("❌ JNI: RN callback emitter not registered");
+            return;
+        }
+    };
+
+    let mut env = match jvm.attach_current_thread() {
+        Ok(env) => env,
+        Err(e) => {
+            eprintln!("❌ JNI: Failed to attach current thread: {:?}", e);
+            return;
+        }
+    };
+
+    let jmsg = match env.new_string(message) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("❌ JNI: Failed to create Java string for callback: {:?}", e);
+            return;
+        }
+    };
+
+    let obj = emitter.as_obj();
+    if let Err(e) = env.call_method(obj, "emit", "(Ljava/lang/String;)V", &[JValue::Object(&jmsg)]) {
+        eprintln!("❌ JNI: Failed to call emitter.emit(String): {:?}", e);
+    }
+}
+
+#[cfg(target_os = "android")]
+extern "C" fn rn_status_callback(message: *const c_char, _user_data: *mut c_void) {
+    if message.is_null() {
+        return;
+    }
+
+    let msg = unsafe { std::ffi::CStr::from_ptr(message) };
+    let msg = msg.to_string_lossy();
+    rn_emit_status(&msg);
+}
 
 // ============================================================================
 // JNI Function: Set Remote Worker Model
@@ -78,6 +140,57 @@ pub extern "C" fn Java_com_gpuf_c_RemoteWorker_setRemoteWorkerModel(
     }
 
     result
+}
+
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_gpuf_c_RemoteWorker_registerCallbackEmitter(
+    mut env: JNIEnv,
+    _class: JClass,
+    emitter: JObject,
+) -> jint {
+    let vm = match env.get_java_vm() {
+        Ok(vm) => vm,
+        Err(e) => {
+            eprintln!("❌ JNI: Failed to get JavaVM: {:?}", e);
+            return -1;
+        }
+    };
+    let _ = RN_JAVA_VM.set(vm);
+
+    let global = match env.new_global_ref(emitter) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("❌ JNI: Failed to create GlobalRef for emitter: {:?}", e);
+            return -1;
+        }
+    };
+
+    let slot = RN_CALLBACK_EMITTER.get_or_init(|| Mutex::new(None));
+    let mut guard = slot.lock().unwrap();
+    *guard = Some(global);
+
+    0
+}
+
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_gpuf_c_RemoteWorker_startRemoteWorkerTasksWithJavaCallback(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jint {
+    // Ensure emitter is registered
+    let registered = RN_CALLBACK_EMITTER
+        .get()
+        .and_then(|m| m.lock().ok().and_then(|g| g.as_ref().map(|_| ())))
+        .is_some();
+
+    if !registered {
+        eprintln!("❌ JNI: Callback emitter not registered. Call registerCallbackEmitter() first.");
+        return -1;
+    }
+
+    start_remote_worker_tasks_with_callback_ptr(Some(rn_status_callback))
 }
 
 // ============================================================================

@@ -50,6 +50,110 @@ if (result == 0) {
 }
 ```
 
+### React Native 使用（推荐）
+
+#### 1. JNI 方法
+
+SDK 新增两个 JNI 方法（`com.gpuf.c.RemoteWorker`）：
+
+```java
+// 注册 Java/Kotlin emitter（用于把 native 状态消息转发到 JS）
+public static native int registerCallbackEmitter(Object emitter);
+
+// 启动后台任务（不需要 callback 指针）
+public static native int startRemoteWorkerTasksWithJavaCallback();
+```
+
+#### 2. Java/Kotlin emitter 示例
+
+emitter 需要实现一个方法：
+
+```java
+public void emit(String message)
+```
+
+示例（Kotlin）：
+
+```kotlin
+import android.os.Handler
+import android.os.Looper
+import com.facebook.react.bridge.ReactApplicationContext
+import com.facebook.react.modules.core.DeviceEventManagerModule
+
+class RemoteWorkerEmitter(
+  private val reactContext: ReactApplicationContext
+) {
+  private val mainHandler = Handler(Looper.getMainLooper())
+
+  fun emit(message: String) {
+    // 建议切到主线程再发给 JS（更稳）
+    mainHandler.post {
+      reactContext
+        .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+        .emit("RemoteWorkerEvent", message)
+    }
+  }
+}
+```
+
+#### 3. RN NativeModule 中注册 emitter 并启动任务
+
+示例（Kotlin，概念代码）：
+
+```kotlin
+import com.facebook.react.bridge.ReactApplicationContext
+import com.facebook.react.bridge.ReactContextBaseJavaModule
+import com.facebook.react.bridge.ReactMethod
+
+class RemoteWorkerModule(
+  private val reactContext: ReactApplicationContext
+) : ReactContextBaseJavaModule(reactContext) {
+
+  override fun getName(): String = "RemoteWorker"
+
+  @ReactMethod
+  fun registerEmitter() {
+    val emitter = RemoteWorkerEmitter(reactContext)
+    com.gpuf.c.RemoteWorker.registerCallbackEmitter(emitter)
+  }
+
+  @ReactMethod
+  fun startTasksWithCallback(): Int {
+    return com.gpuf.c.RemoteWorker.startRemoteWorkerTasksWithJavaCallback()
+  }
+}
+```
+
+#### 4. JS 侧监听事件
+
+```ts
+import { NativeEventEmitter, NativeModules } from 'react-native';
+
+const { RemoteWorker } = NativeModules;
+const emitter = new NativeEventEmitter();
+
+// 注册 emitter（建议在应用启动时执行一次）
+RemoteWorker.registerEmitter();
+
+const sub = emitter.addListener('RemoteWorkerEvent', (message: string) => {
+  console.log('[RemoteWorkerEvent]', message);
+});
+
+// 启动后台任务
+RemoteWorker.startTasksWithCallback();
+
+// 退出页面/销毁时
+// sub.remove();
+```
+
+#### 5. 调用顺序建议
+
+1. `setRemoteWorkerModel(...)`
+2. `startRemoteWorker(...)`
+3. `registerCallbackEmitter(emitter)`（或通过 RN NativeModule 的 `registerEmitter()`）
+4. `startRemoteWorkerTasksWithJavaCallback()`
+5. JS 侧监听 `RemoteWorkerEvent`
+
 ---
 
 ### 2. startRemoteWorker
@@ -340,6 +444,14 @@ if (result != 0) {
 ### 概述
 
 `startRemoteWorkerTasks(long callbackFunctionPtr)` 支持通过函数指针提供实时状态更新回调。这允许应用实时接收工作器状态变化，而无需轮询。
+
+另外，为了适配 React Native（JS 无法直接传递 native 函数指针），SDK 提供了 **Java 回调转发**方案：
+
+- JNI 层通过 `registerCallbackEmitter(Object emitter)` 注册一个 Java/Kotlin emitter 对象
+- native 内部将回调消息转发到 `emitter.emit(String message)`
+- emitter 再通过 React Native 的 `DeviceEventEmitter` 将事件发给 JS
+
+该方案在 native 内部通过 `RN_CALLBACK_EMITTER` 保存 emitter 的全局引用，并在后台线程中 attach 到 JVM 后调用 `emit()`。
 
 ### 实现步骤
 

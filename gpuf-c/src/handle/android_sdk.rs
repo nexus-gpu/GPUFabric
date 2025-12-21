@@ -207,20 +207,16 @@ fn read_disk_usage() -> Option<u32> {
     }
 }
 /// Global TCP connection storage for Android background tasks
-pub static ANDROID_TCP_STREAM: OnceLock<Arc<Mutex<std::net::TcpStream>>> = OnceLock::new();
+pub static ANDROID_TCP_STREAM: OnceLock<Mutex<Option<Arc<Mutex<std::net::TcpStream>>>>> = OnceLock::new();
 
 /// Global server address storage for creating separate connections
-pub static ANDROID_SERVER_ADDR: OnceLock<String> = OnceLock::new();
+pub static ANDROID_SERVER_ADDR: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
 /// Global control port storage for heartbeat connections
-pub static ANDROID_CONTROL_PORT: OnceLock<u16> = OnceLock::new();
+pub static ANDROID_CONTROL_PORT: OnceLock<Mutex<Option<u16>>> = OnceLock::new();
 
 /// Global client_id storage for Android background tasks
-pub static ANDROID_CLIENT_ID: OnceLock<[u8; 16]> = OnceLock::new();
-
-#[cfg(target_os = "android")]
-/// Global worker instance for Android JNI
-static GLOBAL_WORKER: OnceLock<Mutex<Option<Arc<AutoWorker>>>> = OnceLock::new();
+pub static ANDROID_CLIENT_ID: OnceLock<Mutex<Option<[u8; 16]>>> = OnceLock::new();
 
 #[cfg(target_os = "android")]
 /// Global worker task handle for background operations
@@ -314,28 +310,36 @@ pub async fn perform_android_login(
 
     // Store TCP connection globally for background tasks
     let stream_arc = Arc::new(Mutex::new(stream));
-    ANDROID_TCP_STREAM
-        .set(stream_arc.clone())
-        .map_err(|_| anyhow!("Failed to store TCP connection globally"))?;
+    {
+        let slot = ANDROID_TCP_STREAM.get_or_init(|| Mutex::new(None));
+        let mut guard = slot.lock().unwrap();
+        *guard = Some(stream_arc.clone());
+    }
 
     // Store server address for heartbeat connections (only IP, without port)
-    ANDROID_SERVER_ADDR
-        .set(server_addr.to_string())
-        .map_err(|_| anyhow!("Failed to store server address globally"))?;
+    {
+        let slot = ANDROID_SERVER_ADDR.get_or_init(|| Mutex::new(None));
+        let mut guard = slot.lock().unwrap();
+        *guard = Some(server_addr.to_string());
+    }
 
     // Store control port for heartbeat connections
-    ANDROID_CONTROL_PORT
-        .set(control_port)
-        .map_err(|_| anyhow!("Failed to store control port globally"))?;
+    {
+        let slot = ANDROID_CONTROL_PORT.get_or_init(|| Mutex::new(None));
+        let mut guard = slot.lock().unwrap();
+        *guard = Some(control_port);
+    }
 
     // Store client_id globally for background tasks
     let client_id_bytes = hex::decode(client_id)
         .unwrap_or_default()
         .try_into()
         .unwrap_or_default();
-    ANDROID_CLIENT_ID
-        .set(client_id_bytes)
-        .map_err(|_| anyhow!("Failed to store client_id globally"))?;
+    {
+        let slot = ANDROID_CLIENT_ID.get_or_init(|| Mutex::new(None));
+        let mut guard = slot.lock().unwrap();
+        *guard = Some(client_id_bytes);
+    }
 
     info!("✅ Android: TCP connection, server address, and client_id stored for background tasks");
 
@@ -344,7 +348,9 @@ pub async fn perform_android_login(
 
 /// Get the stored TCP connection for background tasks
 pub fn get_android_tcp_stream() -> Option<Arc<Mutex<std::net::TcpStream>>> {
-    ANDROID_TCP_STREAM.get().cloned()
+    ANDROID_TCP_STREAM
+        .get()
+        .and_then(|m| m.lock().ok().and_then(|g| g.clone()))
 }
 
 /// Initialize global worker for Android
@@ -364,14 +370,6 @@ pub async fn init_global_worker(args: Args) -> Result<()> {
         .await
         .map_err(|e| anyhow!("Failed to login worker: {}", e))?;
     info!("✅ init_global_worker: login() completed");
-
-    // Wrap in Arc for shared access
-    let worker_arc = Arc::new(worker);
-
-    // Store in global instance
-    let global = GLOBAL_WORKER.get_or_init(|| Mutex::new(None));
-    let mut guard = global.lock().unwrap();
-    *guard = Some(worker_arc);
 
     tracing::info!("Global worker initialized successfully");
     Ok(())
@@ -443,7 +441,7 @@ pub async fn start_worker_tasks() -> Result<()> {
             );
 
             // Send heartbeat using independent TCP connection to avoid lock conflicts
-            let server_addr = match ANDROID_SERVER_ADDR.get() {
+            let server_addr = match ANDROID_SERVER_ADDR.get().and_then(|m| m.lock().ok().and_then(|g| g.clone())) {
                 Some(addr) => addr,
                 None => {
                     eprintln!("❌ Android: Server address not stored, skipping heartbeat");
@@ -464,7 +462,10 @@ pub async fn start_worker_tasks() -> Result<()> {
             };
 
             // Create heartbeat command
-            let client_id = ANDROID_CLIENT_ID.get().copied().unwrap_or([0u8; 16]);
+            let client_id = ANDROID_CLIENT_ID
+                .get()
+                .and_then(|m| m.lock().ok().and_then(|g| *g))
+                .unwrap_or([0u8; 16]);
             let heartbeat_cmd = CommandV1::Heartbeat {
                 client_id,
                 system_info: SystemInfo {
@@ -495,8 +496,8 @@ pub async fn start_worker_tasks() -> Result<()> {
             println!("🔧 Android: Heartbeat connection closed, starting next iteration...");
             
             // Sleep with periodic stop signal checks
-            for _ in 0..12 { // 120 seconds / 10 seconds intervals
-                thread::sleep(Duration::from_secs(10));
+            for _ in 0..120 { // 120 seconds / 1 second intervals
+                thread::sleep(Duration::from_secs(1));
                 if heartbeat_stop_signal.load(Ordering::Relaxed) {
                     println!("🔧 Android: Heartbeat thread received stop signal during sleep");
                     break;
@@ -527,6 +528,8 @@ pub async fn start_worker_tasks() -> Result<()> {
             }
             
             let mut stream = handler_stream.lock().unwrap();
+
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(1)));
 
             // Read command using common library function
             match common::read_command_sync(&mut *stream) {
@@ -751,12 +754,18 @@ pub async fn start_worker_tasks() -> Result<()> {
                     }
                 }
                 Err(e) => {
-                    eprintln!("❌ Android: Failed to read command: {}", e);
+                    // If the read timed out, loop again to re-check stop signal
+                    if let Some(ioe) = e.downcast_ref::<std::io::Error>() {
+                        if matches!(ioe.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock) {
+                            drop(stream);
+                            continue;
+                        }
+                    }
+                    eprintln!("❌ Android: Error reading command: {}", e);
                     break;
                 }
             }
 
-            // Release lock before next iteration
             drop(stream);
         }
 
@@ -781,6 +790,20 @@ pub async fn start_worker_tasks_with_callback_ptr(
     use std::ffi::CString;
 
     info!("🔧 Android: Starting background tasks with native threads and callback...");
+
+    // Get or initialize stop signal
+    let stop_signal = if let Some(existing_signal) = GLOBAL_STOP_SIGNAL.get() {
+        existing_signal.clone()
+    } else {
+        let new_signal = Arc::new(AtomicBool::new(false));
+        GLOBAL_STOP_SIGNAL
+            .set(new_signal.clone())
+            .map_err(|_| anyhow!("Failed to set stop signal"))?;
+        new_signal
+    };
+
+    // Reset stop signal on (re)start
+    stop_signal.store(false, Ordering::Relaxed);
 
     // Copy callback for use in closures
     let callback_copy = callback;
@@ -824,10 +847,17 @@ pub async fn start_worker_tasks_with_callback_ptr(
     // Spawn heartbeat task using native thread with full heartbeat logic
     let heartbeat_stream = tcp_stream.clone();
     let heartbeat_callback = callback;
+    let heartbeat_stop_signal = stop_signal.clone();
     let heartbeat_handle = thread::spawn(move || {
         println!("🔧 Android: Heartbeat thread started");
 
         loop {
+            // Check stop signal before sleeping
+            if heartbeat_stop_signal.load(Ordering::Relaxed) {
+                println!("🔧 Android: Heartbeat thread received stop signal");
+                break;
+            }
+            
             println!("🔧 Android: Heartbeat loop - sleeping for 120 seconds...");
 
             println!("💓 Android: Woke up - collecting system info for heartbeat...");
@@ -858,7 +888,7 @@ pub async fn start_worker_tasks_with_callback_ptr(
             );
 
             // Send heartbeat using independent TCP connection to avoid lock conflicts
-            let server_addr = match ANDROID_SERVER_ADDR.get() {
+            let server_addr = match ANDROID_SERVER_ADDR.get().and_then(|m| m.lock().ok().and_then(|g| g.clone())) {
                 Some(addr) => addr,
                 None => {
                     eprintln!("❌ Android: Server address not set");
@@ -866,7 +896,7 @@ pub async fn start_worker_tasks_with_callback_ptr(
                 }
             };
 
-            let control_port = match ANDROID_CONTROL_PORT.get() {
+            let control_port = match ANDROID_CONTROL_PORT.get().and_then(|m| m.lock().ok().and_then(|g| *g)) {
                 Some(port) => port,
                 None => {
                     eprintln!("❌ Android: Control port not set");
@@ -895,7 +925,10 @@ pub async fn start_worker_tasks_with_callback_ptr(
             };
 
             // Create heartbeat command
-            let client_id = ANDROID_CLIENT_ID.get().copied().unwrap_or([0u8; 16]);
+            let client_id = ANDROID_CLIENT_ID
+                .get()
+                .and_then(|m| m.lock().ok().and_then(|g| *g))
+                .unwrap_or([0u8; 16]);
             let heartbeat_cmd = CommandV1::Heartbeat {
                 client_id,
                 system_info: SystemInfo {
@@ -942,15 +975,29 @@ pub async fn start_worker_tasks_with_callback_ptr(
             // Close the connection after sending heartbeat
             drop(stream);
             println!("🔧 Android: Heartbeat connection closed, starting next iteration...");
-            thread::sleep(Duration::from_secs(120)); // reduce lock conflictsconds heartbeat for testing
+            
+            // Sleep with periodic stop signal checks
+            for _ in 0..120 { // 120 seconds / 1 second intervals
+                thread::sleep(Duration::from_secs(1));
+                if heartbeat_stop_signal.load(Ordering::Relaxed) {
+                    println!("🔧 Android: Heartbeat thread received stop signal during sleep");
+                    break;
+                }
+            }
+            
+            // Check stop signal after sleep
+            if heartbeat_stop_signal.load(Ordering::Relaxed) {
+                println!("🔧 Android: Heartbeat thread received stop signal after sleep");
+                break;
+            }
         }
-        // Note: This line is unreachable due to infinite loop above
-        // println!("🔧 Android: Heartbeat thread stopped");
+        println!("🔧 Android: Heartbeat thread stopped");
     });
 
     // Spawn integrated handler task using native thread
     let handler_stream = tcp_stream.clone();
     let handler_callback = callback;
+    let handler_stop_signal = stop_signal.clone();
     let handler_handle = thread::spawn(move || -> Result<()> {
         println!("🔧 Android: Integrated handler thread started");
         std::io::stdout().flush().ok();
@@ -966,8 +1013,35 @@ pub async fn start_worker_tasks_with_callback_ptr(
             }
         }
 
+        // Ensure blocking reads wake up periodically so stop signal can be observed
+        // (read_command_sync uses read_exact and can otherwise block forever)
+        {
+            if let Ok(mut stream) = handler_stream.lock() {
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(1)));
+            }
+        }
+
         loop {
-            let mut stream = handler_stream.lock().unwrap();
+            // Check stop signal before waiting for command
+            if handler_stop_signal.load(Ordering::Relaxed) {
+                println!("🔧 Android: Handler thread received stop signal");
+                break;
+            }
+            
+            // Try to get stream lock with timeout to avoid deadlock
+            let stream_result = {
+                let stream = handler_stream.try_lock();
+                stream
+            };
+            
+            let mut stream = match stream_result {
+                Ok(s) => s,
+                Err(_) => {
+                    // Lock is contended, wait a bit and retry
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    continue;
+                }
+            };
 
             // Read command using common library function
             match common::read_command_sync(&mut *stream) {
@@ -1257,6 +1331,12 @@ pub async fn start_worker_tasks_with_callback_ptr(
                     }
                 }
                 Err(e) => {
+                    if let Some(ioe) = e.downcast_ref::<std::io::Error>() {
+                        if matches!(ioe.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted) {
+                            drop(stream);
+                            continue;
+                        }
+                    }
                     eprintln!("❌ Android: Failed to read command: {}", e);
                     invoke_callback("ERROR", &format!("Failed to read command: {}", e));
                     break;
@@ -1280,11 +1360,11 @@ pub async fn start_worker_tasks_with_callback_ptr(
         Ok(())
     });
 
-    // Store thread handles for cleanup
-    if let Err(e) = GLOBAL_WORKER_HANDLES.set(Mutex::new(Some((heartbeat_handle, handler_handle)))) {
-        eprintln!("❌ Android: Failed to store worker handles: {:?}", e);
-        invoke_callback("ERROR", "Failed to store worker handles");
-        return Err(anyhow!("Failed to store worker handles"));
+    // Store thread handles for cleanup (support multiple start/stop cycles)
+    let handles = GLOBAL_WORKER_HANDLES.get_or_init(|| Mutex::new(None));
+    {
+        let mut guard = handles.lock().unwrap();
+        *guard = Some((heartbeat_handle, handler_handle));
     }
 
     info!("✅ Android: Background tasks with callback started successfully");
@@ -1303,28 +1383,53 @@ pub async fn stop_global_worker() {
     }
 
     // Wait for background tasks to finish
-    if let Some(global_handles) = GLOBAL_WORKER_HANDLES.get() {
-        let mut guard = global_handles.lock().unwrap();
-        if let Some((heartbeat_handle, handler_handle)) = guard.take() {
-            tracing::info!("Waiting for heartbeat thread to finish...");
-            if let Err(e) = heartbeat_handle.join() {
-                tracing::error!("Error joining heartbeat thread: {:?}", e);
+    let handles_opt = GLOBAL_WORKER_HANDLES
+        .get()
+        .and_then(|m| m.lock().ok().and_then(|mut g| g.take()));
+
+    if let Some((heartbeat_handle, handler_handle)) = handles_opt {
+        tracing::info!("Waiting for heartbeat thread to finish...");
+        match heartbeat_handle.join() {
+            Ok(()) => tracing::info!("Heartbeat thread finished successfully"),
+            Err(e) => tracing::error!("Heartbeat thread panicked: {:?}", e),
+        }
+
+        tracing::info!("Waiting for handler thread to finish...");
+        match handler_handle.join() {
+            Ok(Ok(())) => tracing::info!("Handler thread finished successfully"),
+            Ok(Err(e)) => tracing::error!("Handler thread returned error: {:?}", e),
+            Err(e) => tracing::error!("Handler thread panicked: {:?}", e),
+        }
+
+        tracing::info!("All background threads stopped");
+    }
+
+    if let Some(m) = ANDROID_TCP_STREAM.get() {
+        if let Ok(mut guard) = m.lock() {
+            if let Some(stream) = guard.take() {
+                if let Ok(stream) = stream.lock() {
+                    let _ = stream.shutdown(std::net::Shutdown::Both);
+                }
             }
-            
-            tracing::info!("Waiting for handler thread to finish...");
-            if let Err(e) = handler_handle.join() {
-                tracing::error!("Error joining handler thread: {:?}", e);
-            }
-            
-            tracing::info!("All background threads stopped");
         }
     }
 
-    // Cleanup worker
-    if let Some(global) = GLOBAL_WORKER.get() {
-        let mut guard = global.lock().unwrap();
-        *guard = None;
-        tracing::info!("Global worker cleaned up");
+    if let Some(m) = ANDROID_SERVER_ADDR.get() {
+        if let Ok(mut guard) = m.lock() {
+            *guard = None;
+        }
+    }
+
+    if let Some(m) = ANDROID_CONTROL_PORT.get() {
+        if let Ok(mut guard) = m.lock() {
+            *guard = None;
+        }
+    }
+
+    if let Some(m) = ANDROID_CLIENT_ID.get() {
+        if let Ok(mut guard) = m.lock() {
+            *guard = None;
+        }
     }
 }
 
