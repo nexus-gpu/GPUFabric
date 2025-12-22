@@ -1,19 +1,17 @@
 use super::*;
-use crate::util::{
-    system_info::{
-        collect_device_info, collect_system_info, get_engine_models, pull_ollama_model, run_model,
-    },
-};
-use tokio::io::AsyncWriteExt;
 #[cfg(not(target_os = "macos"))]
 // LLM engine is not available in lightweight Android version
 #[cfg(not(target_os = "android"))]
 use crate::llm_engine::{self, llama_engine::LlamaEngine};
+use crate::util::system_info::{
+    collect_device_info, collect_system_info, get_engine_models, pull_ollama_model, run_model,
+};
 use anyhow::Result;
 use common::{
-    format_bytes, format_duration, join_streams, read_command, write_command, Command,
-    CommandV1, EngineType as ClientEngineType, SystemInfo, MAX_MESSAGE_SIZE, OsType,
+    format_bytes, format_duration, join_streams, read_command, write_command, Command, CommandV1,
+    EngineType as ClientEngineType, OsType, SystemInfo, MAX_MESSAGE_SIZE,
 };
+use tokio::io::AsyncWriteExt;
 
 use bytes::BytesMut;
 use std::fs::File;
@@ -43,65 +41,101 @@ impl TCPWorker {
         &self,
         prompt: &str,
         max_tokens: u32,
-        _temperature: f32,
-        _top_k: u32,
-        _top_p: f32,
-        _repeat_penalty: f32,
+        temperature: f32,
+        top_k: u32,
+        top_p: f32,
+        repeat_penalty: f32,
+        repeat_last_n: i32,
+        min_keep: u32,
     ) -> Result<String> {
-        use crate::{GLOBAL_MODEL_PTR, GLOBAL_CONTEXT_PTR, gpuf_generate_final_solution_text, GLOBAL_INFERENCE_MUTEX};
-        use std::ffi::CString;
-        use std::sync::atomic::Ordering;
-        
-        // Acquire global inference lock to prevent concurrent execution
-        let _lock = GLOBAL_INFERENCE_MUTEX.lock().unwrap();
-        
-        // Get global model and context pointers
-        let model_ptr = GLOBAL_MODEL_PTR.load(Ordering::SeqCst);
-        let context_ptr = GLOBAL_CONTEXT_PTR.load(Ordering::SeqCst);
-        
-        if model_ptr.is_null() || context_ptr.is_null() {
-            return Err(anyhow!("Model not loaded - please load a model first"));
+        #[cfg(not(target_os = "android"))]
+        {
+            let engine_guard = self.engine.lock().await;
+            let engine = engine_guard
+                .as_ref()
+                .ok_or_else(|| anyhow!("Engine not initialized"))?;
+
+            match engine {
+                AnyEngine::Llama(llama) => {
+                    let sampling = crate::llm_engine::llama_engine::SamplingParams {
+                        temperature: temperature,
+                        top_k: top_k as i32,
+                        top_p: top_p,
+                        repeat_penalty: repeat_penalty,
+                        repeat_last_n: repeat_last_n,
+                        seed: 0,
+                        min_keep: min_keep as usize,
+                    };
+
+                    let (text, _prompt_tokens, _completion_tokens) = llama
+                        .generate_with_cached_model_sampling(prompt, max_tokens as usize, &sampling)
+                        .await?;
+                    Ok(text)
+                }
+                
+                _ => Err(anyhow!(
+                    "execute_inference_task is only supported for LLAMA engine"
+                )),
+            }
         }
-        
-        // Convert prompt to CString
-        let prompt_cstr = CString::new(prompt)
-            .map_err(|e| anyhow!("Invalid prompt: {}", e))?;
-        
-        // Create output buffer
-        let mut output = vec![0u8; 4096];
-        
-        // Execute inference using existing JNI function
-        // SAFETY: We're calling an FFI function with valid pointers:
-        // - model_ptr and context_ptr are checked for null above
-        // - prompt_cstr.as_ptr() is a valid C string pointer
-        // - output buffer is properly sized and mutable
-        let result = unsafe {
-            gpuf_generate_final_solution_text(
+
+        #[cfg(target_os = "android")]
+        {
+            use crate::{
+                gpuf_generate_final_solution_text, GLOBAL_CONTEXT_PTR, GLOBAL_INFERENCE_MUTEX,
+                GLOBAL_MODEL_PTR,
+            };
+            use std::ffi::CString;
+            use std::sync::atomic::Ordering;
+
+            // Acquire global inference lock to prevent concurrent execution
+            let _lock = GLOBAL_INFERENCE_MUTEX.lock().unwrap();
+
+            // Get global model and context pointers
+            let model_ptr = GLOBAL_MODEL_PTR.load(Ordering::SeqCst);
+            let context_ptr = GLOBAL_CONTEXT_PTR.load(Ordering::SeqCst);
+
+            if model_ptr.is_null() || context_ptr.is_null() {
+                return Err(anyhow!("Model not loaded - please load a model first"));
+            }
+
+            // Convert prompt to CString
+            let prompt_cstr = CString::new(prompt).map_err(|e| anyhow!("Invalid prompt: {}", e))?;
+
+            // Create output buffer
+            let mut output = vec![0u8; 4096];
+
+            // Execute inference using existing JNI function
+            // SAFETY: We're calling an FFI function with valid pointers:
+            // - model_ptr and context_ptr are checked for null above
+            // - prompt_cstr.as_ptr() is a valid C string pointer
+            // - output buffer is properly sized and mutable
+            let result = gpuf_generate_final_solution_text(
                 model_ptr,
                 context_ptr,
                 prompt_cstr.as_ptr(),
                 max_tokens as i32,
                 output.as_mut_ptr() as *mut std::os::raw::c_char,
                 output.len() as i32,
-            )
-        };
-        
-        if result > 0 {
-            let output_str = unsafe {
-                std::ffi::CStr::from_ptr(output.as_ptr() as *const std::os::raw::c_char)
-                    .to_str()
-                    .map_err(|e| anyhow!("Invalid UTF-8 in output: {}", e))?
-            };
-            Ok(output_str.to_string())
-        } else {
-            Err(anyhow!("Inference failed with code: {}", result))
+            );
+
+            if result > 0 {
+                let output_str = unsafe {
+                    std::ffi::CStr::from_ptr(output.as_ptr() as *const std::os::raw::c_char)
+                        .to_str()
+                        .map_err(|e| anyhow!("Invalid UTF-8 in output: {}", e))?
+                };
+                Ok(output_str.to_string())
+            } else {
+                Err(anyhow!("Inference failed with code: {}", result))
+            }
         }
     }
 
     /// Send command to server
     async fn send_command(&self, command: CommandV1) -> Result<()> {
         use common::{write_command, Command};
-        
+
         let command = Command::V1(command);
         let mut writer = self.writer.lock().await;
         write_command(&mut *writer, &command).await?;
@@ -109,22 +143,9 @@ impl TCPWorker {
         Ok(())
     }
     pub async fn new(args: Args) -> Result<Self> {
-        let addr_str = format!("{}:{}", args.server_addr, args.control_port);
-        let addr = addr_str.to_socket_addrs()?.next().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "Invalid server address or port",
-            )
-        })?;
-        let ip_addr = addr.ip();
-        let control_stream = TcpStream::connect(addr).await?;
-
-        info!("Connected to control port.");
-        let (reader, writer) = tokio::io::split(control_stream);
+       
         let (device_info, device_memtotal_mb) = match collect_device_info().await {
-            Ok(info) => {
-                info
-            },
+            Ok(info) => info,
             Err(e) => {
                 error!("Failed to collect device info: {}", e);
                 return Err(anyhow!("Failed to collect device info"));
@@ -135,7 +156,7 @@ impl TCPWorker {
             error!(" device is empty");
             return Err(anyhow!(" device is empty"));
         }
-        
+
         info!("Debug: Engine type from args: {:?}", args.engine_type);
 
         let os_type = if cfg!(target_os = "macos") {
@@ -180,8 +201,8 @@ impl TCPWorker {
                     info!("Creating LLAMA engine with model: {}", model_path);
                     llm_engine::AnyEngine::Llama(LlamaEngine::with_config(
                         model_path.clone(),
-                        4096,  // context size
-                        999,    // GPU layers (999 = try to offload all layers)
+                        4096, // context size
+                        999,  // GPU layers (999 = try to offload all layers)
                     ))
                 } else {
                     // Create engine without model (will be set later)
@@ -192,7 +213,7 @@ impl TCPWorker {
                         args.chat_template_path.clone(),
                     )
                 };
-                
+
                 // Initialize the engine (only once)
                 match llama_worker.init().await {
                     Ok(_) => {
@@ -202,46 +223,51 @@ impl TCPWorker {
                             Ok(_) => info!("LLAMA worker started"),
                             Err(e) => error!("LLAMA worker start failed: {}", e),
                         }
-                    },
+                    }
                     Err(e) => error!("LLAMA init failed: {}", e),
                 }
-                
+
                 // Clone the engine for HTTP server (same instance, shared data via Arc)
                 let server_engine = match llama_worker {
                     AnyEngine::Llama(ref e) => e.clone(),
                     _ => unreachable!(),
                 };
-                
+
                 // Store engine for GPUFabric worker
                 engine = Some(llama_worker);
-                
+
                 // Start local HTTP API server for LLAMA (for proxy forwarding)
                 // Use the SAME engine instance for both worker and HTTP server
                 let local_addr = args.local_addr.clone();
                 let local_port = args.local_port;
                 let local_addr_clone = local_addr.clone();
-                info!("Starting LLAMA HTTP API server on {}:{}", local_addr, local_port);
-                
+                info!(
+                    "Starting LLAMA HTTP API server on {}:{}",
+                    local_addr, local_port
+                );
+
+                use crate::llm_engine::llama_server::start_server;
                 use std::sync::Arc;
                 use tokio::sync::RwLock;
-                use crate::llm_engine::llama_server::start_server;
-                
+
                 // Wrap the shared engine in Arc<RwLock> for HTTP server
                 let engine_arc = Arc::new(RwLock::new(server_engine));
-                
+
                 // Spawn server in background
                 tokio::spawn(async move {
                     if let Err(e) = start_server(engine_arc, &local_addr_clone, local_port).await {
                         error!("LLAMA HTTP server error: {}", e);
                     }
                 });
-                
-                info!("LLAMA HTTP API server started successfully on {}:{}", local_addr, local_port);
+
+                info!(
+                    "LLAMA HTTP API server started successfully on {}:{}",
+                    local_addr, local_port
+                );
             }
         }
         #[cfg(target_os = "macos")]
         {
-
             // if args.engine_type == EngineType::OLLAMA {
             //     let mut llvm_worker = llm_engine::create_engine(
             //         args.engine_type.clone(),
@@ -264,7 +290,20 @@ impl TCPWorker {
         }
         let device_memtotal_gb = device_memtotal_mb as u32;
         let device_total_tflops = device_info.total_tflops as u32;
+        
+        let addr_str = format!("{}:{}", args.server_addr, args.control_port);
+        let addr = addr_str.to_socket_addrs()?.next().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Invalid server address or port",
+            )
+        })?;
+        let ip_addr = addr.ip();
+        let control_stream = TcpStream::connect(addr).await?;
 
+        info!("Connected to control port.");
+        
+        let (reader, writer) = tokio::io::split(control_stream);
         //network monitor
         let network_monitor = Arc::new(Mutex::new(
             SessionNetworkMonitor::new(None).expect("Failed to create network monitor"),
@@ -473,8 +512,8 @@ impl WorkerHandle for TCPWorker {
                         models: models.unwrap_or_default(),
                         auto_models_device: devices_info.clone().to_vec(),
                     };
-                    let _ =
-                        write_command(&mut *writer_clone.lock().await, &Command::V1(model_cmd)).await;
+                    let _ = write_command(&mut *writer_clone.lock().await, &Command::V1(model_cmd))
+                        .await;
                 }
             });
             Ok(())
@@ -498,7 +537,7 @@ impl WorkerHandle for TCPWorker {
                             Ok(info) => info,
                             Err(e) => {
                                 error!("Failed to collect system info: {}", e);
-                                continue; 
+                                continue;
                             }
                         };
 
@@ -559,138 +598,163 @@ impl WorkerHandle for TCPWorker {
             let mut buf = BytesMut::with_capacity(MAX_MESSAGE_SIZE);
             loop {
                 match read_command(&mut *self.reader.lock().await, &mut buf).await? {
-                    Command::V1(CommandV1::LoginResult {
-                        success,
-                        pods_model,
-                        error,
-                    }) => {
-                        if success {
-                            if pods_model.is_empty() {
-                                error!("Received empty models from server");
-                                return Err(anyhow!("device is not compatible with the model"));
-                            }
-                            //TODO models is local models
-                            for pod_model in pods_model {
-                                if let Some(model_name) = pod_model.model_name {
-                                    self.model_task(&model_name).await?;
-                                }
-                            }
-                            self.heartbeat_task().await?;
-                            debug!("Successfully logged in.");
-                            continue;
-                        } else {
-                            error!("Login failed: {}", error.unwrap_or_default());
-                            return Err(anyhow!("Login failed"));
-                        }
-                    }
-                    Command::V1(CommandV1::PullModelResult { pods_model, error }) => {
-                        if error.is_some() {
-                            error!("Pull model failed: {}", error.unwrap_or_default());
-                            return Err(anyhow!("Pull model failed"));
-                        }
-                        if pods_model.is_empty() {
-                            error!("device is not compatible with the model");
-                            return Err(anyhow!("device is not compatible with the model"));
-                        }
-                        // TODO: pull model
-                        for pod_model in pods_model {
-                            if let Some(model_name) = pod_model.model_name {
-                                match self.engine_type {
-                                    common::EngineType::Ollama => {
-                                        pull_ollama_model(&model_name, self.args.local_port).await?
+                    Command::V1(cmd_v1) => {
+                        match cmd_v1 {
+                            CommandV1::LoginResult {
+                                success,
+                                pods_model,
+                                error,
+                            } => {
+                                if success {
+                                    if pods_model.is_empty() {
+                                        error!("Received empty models from server");
+                                        return Err(anyhow!(
+                                            "device is not compatible with the model"
+                                        ));
                                     }
-                                    common::EngineType::Vllm => {
-                                        #[cfg(all(not(target_os = "macos"), not(target_os = "android")))]
-                                        if let Some(_engine) = self.engine.lock().await.as_mut() {
-                                            // Engine functionality disabled in lightweight version
+                                    //TODO models is local models
+                                    for pod_model in pods_model {
+                                        if let Some(model_name) = pod_model.model_name {
+                                            self.model_task(&model_name).await?;
                                         }
                                     }
-                                    _ => {}
+                                    self.heartbeat_task().await?;
+                                    debug!("Successfully logged in.");
+                                    continue;
+                                } else {
+                                    error!("Login failed: {}", error.unwrap_or_default());
+                                    return Err(anyhow!("Login failed"));
                                 }
-                                match run_model(self.args.local_port, &model_name, "hello world").await
-                                {
-                                    Ok(output) => info!("Model {} output: {}", model_name, output),
-                                    Err(e) => error!("run_model Error: {}", e),
+                            }
+                            CommandV1::PullModelResult { pods_model, error } => {
+                                if error.is_some() {
+                                    error!("Pull model failed: {}", error.unwrap_or_default());
+                                    return Err(anyhow!("Pull model failed"));
                                 }
+                                if pods_model.is_empty() {
+                                    error!("device is not compatible with the model");
+                                    return Err(anyhow!("device is not compatible with the model"));
+                                }
+                                // TODO: pull model
+                                for pod_model in pods_model {
+                                    if let Some(model_name) = pod_model.model_name {
+                                        match self.engine_type {
+                                            common::EngineType::Ollama => {
+                                                pull_ollama_model(&model_name, self.args.local_port)
+                                                    .await?
+                                            }
+                                            common::EngineType::Vllm => {
+                                                #[cfg(all(
+                                                    not(target_os = "macos"),
+                                                    not(target_os = "android")
+                                                ))]
+                                                if let Some(_engine) =
+                                                    self.engine.lock().await.as_mut()
+                                                {
+                                                    // Engine functionality disabled in lightweight version
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                        match run_model(
+                                            self.args.local_port,
+                                            &model_name,
+                                            "hello world",
+                                        )
+                                        .await
+                                        {
+                                            Ok(output) => {
+                                                info!("Model {} output: {}", model_name, output)
+                                            }
+                                            Err(e) => error!("run_model Error: {}", e),
+                                        }
+                                    }
+                                }
+                            }
+                            CommandV1::RequestNewProxyConn { proxy_conn_id } => {
+                                info!(
+                                    "Received request for new proxy connection: {:?}",
+                                    proxy_conn_id
+                                );
+                                let args_clone = self.args.clone();
+                                let cert_chain_path_clone = self.args.cert_chain_path.clone();
+                                let addr_clone = self.addr;
+                                tokio::spawn(async move {
+                                    if let Err(e) = create_proxy_connection(
+                                        args_clone,
+                                        addr_clone,
+                                        proxy_conn_id,
+                                        cert_chain_path_clone,
+                                    )
+                                    .await
+                                    {
+                                        error!("Failed to create proxy connection: {}", e);
+                                    }
+                                });
+                            }
+                            CommandV1::InferenceTask {
+                                task_id,
+                                prompt,
+                                max_tokens,
+                                temperature,
+                                top_k,
+                                top_p,
+                                repeat_penalty,
+                                repeat_last_n,
+                                min_keep,
+                            } => {
+                                info!("Received inference task: {} max_tokens: {}", task_id, max_tokens);
+
+                                let start_time = std::time::Instant::now();
+
+                                let result = self
+                                    .execute_inference_task(
+                                        &prompt,
+                                        max_tokens,
+                                        temperature,
+                                        top_k,
+                                        top_p,
+                                        repeat_penalty,
+                                        repeat_last_n,
+                                        min_keep,
+                                    )
+                                    .await;
+
+                                let execution_time = start_time.elapsed().as_millis() as u64;
+
+                                match result {
+                                    Ok(output) => {
+                                        let result_command = CommandV1::InferenceResult {
+                                            task_id,
+                                            success: true,
+                                            result: Some(output),
+                                            error: None,
+                                            execution_time_ms: execution_time,
+                                            prompt_tokens: 0,
+                                            completion_tokens: 0,
+                                        };
+                                        self.send_command(result_command).await?;
+                                    }
+                                    Err(e) => {
+                                        let result_command = CommandV1::InferenceResult {
+                                            task_id,
+                                            success: false,
+                                            result: None,
+                                            error: Some(e.to_string()),
+                                            execution_time_ms: execution_time,
+                                            prompt_tokens: 0,
+                                            completion_tokens: 0,
+                                        };
+                                        self.send_command(result_command).await?;
+                                    }
+                                }
+                            }
+                            _ => {
+                                warn!("Received unexpected CommandV1");
                             }
                         }
                     }
-                    Command::V1(CommandV1::RequestNewProxyConn { proxy_conn_id }) => {
-                        info!(
-                            "Received request for new proxy connection: {:?}",
-                            proxy_conn_id
-                        );
-                        let args_clone = self.args.clone();
-                        let cert_chain_path_clone = self.args.cert_chain_path.clone();
-                        let addr_clone = self.addr;
-                        tokio::spawn(async move {
-                            if let Err(e) = create_proxy_connection(
-                                args_clone,
-                                addr_clone,
-                                proxy_conn_id,
-                                cert_chain_path_clone,
-                            )
-                            .await
-                            {
-                                error!("Failed to create proxy connection: {}", e);
-                            }
-                        });
-                    }
-                    Command::V1(CommandV1::InferenceTask {
-                        task_id,
-                        prompt,
-                        max_tokens,
-                        temperature,
-                        top_k,
-                        top_p,
-                        repeat_penalty,
-                    }) => {
-                        info!("Received inference task: {}", task_id);
-                        let start_time = std::time::Instant::now();
-                        
-                        // Execute inference task on Android
-                        let result = self.execute_inference_task(
-                            &prompt,
-                            max_tokens,
-                            temperature,
-                            top_k,
-                            top_p,
-                            repeat_penalty,
-                        ).await;
-                        
-                        let execution_time = start_time.elapsed().as_millis() as u64;
-                        
-                        // Send result back to server
-                        match result {
-                            Ok(output) => {
-                                let result_command = CommandV1::InferenceResult {
-                                    task_id,
-                                    success: true,
-                                    result: Some(output),
-                                    error: None,
-                                    execution_time_ms: execution_time,
-                                    prompt_tokens: 0, // TODO: Implement proper token counting for TCP handler
-                                    completion_tokens: 0, // TODO: Implement proper token counting for TCP handler
-                                };
-                                self.send_command(result_command).await?;
-                            }
-                            Err(e) => {
-                                let result_command = CommandV1::InferenceResult {
-                                    task_id,
-                                    success: false,
-                                    result: None,
-                                    error: Some(e.to_string()),
-                                    execution_time_ms: execution_time,
-                                    prompt_tokens: 0,
-                                    completion_tokens: 0,
-                                };
-                                self.send_command(result_command).await?;
-                            }
-                        }
-                    }
-                    _ => {
-                        warn!("Received unexpected command");
-                    }
+                    Command::V2(_cmd_v2) => {}
                 }
             }
         }
@@ -701,7 +765,7 @@ impl WorkerHandle for TCPWorker {
 fn load_root_cert(path: &str) -> anyhow::Result<Vec<CertificateDer<'static>>> {
     let f = File::open(path)?;
     let mut reader = BufReader::new(f);
-        let certs: Vec<CertificateDer<'static>> =
+    let certs: Vec<CertificateDer<'static>> =
         rustls_pemfile::certs(&mut reader).collect::<Result<Vec<_>, _>>()?; // Manually collect and handle errors
 
     if certs.is_empty() {
@@ -719,7 +783,7 @@ fn load_root_cert(path: &str) -> anyhow::Result<Vec<u8>> {
         .into_iter()
         .map(|cert| cert.to_vec())
         .collect();
-    
+
     if certs.is_empty() {
         anyhow::bail!("no certificates found in {}", path);
     }
@@ -842,7 +906,6 @@ pub async fn create_proxy_connection(
             return Ok(());
         }
         Err(e) => {
-
             if e.kind() == std::io::ErrorKind::UnexpectedEof {
                 info!(
                     "proxy_conn_id {:?} Connection closed by peer",
@@ -869,7 +932,7 @@ pub async fn create_proxy_connection(
 ) -> Result<()> {
     // Android implementation using native TLS - simplified version
     warn!("Android TLS proxy connections are simplified - full TLS support requires additional configuration");
-    
+
     // For now, just establish TCP connection without TLS
     let addr_str = format!("{}:{}", addr.to_string(), args.proxy_port);
     let addr = addr_str.to_socket_addrs()?.next().ok_or_else(|| {
@@ -895,7 +958,10 @@ pub async fn create_proxy_connection(
         ),
     };
 
-    info!("proxy_conn_id {:?} Connected to proxy port (Android - TCP only).", proxy_conn_id);
+    info!(
+        "proxy_conn_id {:?} Connected to proxy port (Android - TCP only).",
+        proxy_conn_id
+    );
 
     let notify_cmd = Command::V1(CommandV1::NewProxyConn {
         proxy_conn_id: proxy_conn_id.clone(),
@@ -939,7 +1005,10 @@ pub async fn create_proxy_connection(
             return Ok(());
         }
         Err(e) => {
-            error!("proxy_conn_id {:?} Failed to join streams: {}", proxy_conn_id, e);
+            error!(
+                "proxy_conn_id {:?} Failed to join streams: {}",
+                proxy_conn_id, e
+            );
             return Err(e.into());
         }
     }

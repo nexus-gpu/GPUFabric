@@ -37,6 +37,31 @@ pub struct LlamaEngine {
     pub cached_model_path: Option<String>, // Track which model is currently cached
 }
 
+#[derive(Clone, Debug)]
+pub struct SamplingParams {
+    pub temperature: f32,
+    pub top_k: i32,
+    pub top_p: f32,
+    pub repeat_penalty: f32,
+    pub repeat_last_n: i32,
+    pub seed: u32,
+    pub min_keep: usize,
+}
+
+impl Default for SamplingParams {
+    fn default() -> Self {
+        Self {
+            temperature: 0.8,
+            top_k: 40,
+            top_p: 0.95,
+            repeat_penalty: 1.1,
+            repeat_last_n: 64,
+            seed: 0,
+            min_keep: 1,
+        }
+    }
+}
+
 // llama-cpp-2 state wrapper (no longer stored, used for single inference)
 #[cfg(not(target_os = "android"))]
 pub struct LlamaCppState<'a> {
@@ -133,6 +158,17 @@ impl LlamaEngine {
     /// Generate text using cached model (inference only)
     /// Returns (generated_text, prompt_tokens, completion_tokens)
     pub async fn generate_with_cached_model(&self, prompt: &str, max_tokens: usize) -> Result<(String, usize, usize)> {
+        let params = SamplingParams::default();
+        self.generate_with_cached_model_sampling(prompt, max_tokens, &params)
+            .await
+    }
+
+    pub async fn generate_with_cached_model_sampling(
+        &self,
+        prompt: &str,
+        max_tokens: usize,
+        sampling: &SamplingParams,
+    ) -> Result<(String, usize, usize)> {
         if !self.is_initialized {
             return Err(anyhow!("Engine not initialized - call load_model() first"));
         }
@@ -160,11 +196,13 @@ impl LlamaEngine {
             
             let prompt = prompt.to_string();
             let n_ctx = self.n_ctx;
+            let sampling = sampling.clone();
             
             // Run inference in blocking thread
             tokio::task::spawn_blocking(move || {
                 use llama_cpp_2::model::AddBos;
                 use llama_cpp_2::llama_batch::LlamaBatch;
+                use llama_cpp_2::sampling::LlamaSampler;
                 
                 let context_params = LlamaContextParams::default()
                     .with_n_ctx(NonZeroU32::new(n_ctx));
@@ -197,19 +235,45 @@ impl LlamaEngine {
                 let mut output_text = String::new();
                 let mut n_cur = tokens.len(); // Current position in sequence
                 
-                // Create a sampler chain for better sampling
-                use llama_cpp_2::sampling::LlamaSampler;
-                let mut sampler = LlamaSampler::chain_simple(vec![
-                    LlamaSampler::temp(0.8),
-                    LlamaSampler::dist(0),
-                ]);
+                let mut samplers = Vec::new();
+
+                if sampling.repeat_penalty != 1.0 {
+                    samplers.push(LlamaSampler::penalties(
+                        sampling.repeat_last_n,
+                        sampling.repeat_penalty,
+                        0.0,
+                        0.0,
+                    ));
+                }
+                if sampling.top_k > 0 {
+                    samplers.push(LlamaSampler::top_k(sampling.top_k));
+                }
+                if sampling.top_p > 0.0 && sampling.top_p < 1.0 {
+                    samplers.push(LlamaSampler::top_p(sampling.top_p, sampling.min_keep));
+                }
+                samplers.push(LlamaSampler::temp(sampling.temperature));
+                if sampling.temperature <= 0.0 {
+                    samplers.push(LlamaSampler::greedy());
+                } else {
+                    samplers.push(LlamaSampler::dist(sampling.seed));
+                }
+
+                let mut sampler = LlamaSampler::chain_simple(samplers);
+                sampler.accept_many(tokens.iter());
                 
                 for i in 0..max_tokens {
                     // Sample using the sampler chain
                     let new_token = sampler.sample(&context, -1);
+                    sampler.accept(new_token);
                     
-                    eprintln!("Token {}: id={}, text={:?}", i, new_token, 
-                        model_guard.token_to_str(new_token, llama_cpp_2::model::Special::Tokenize).ok());
+                    debug!(
+                        "Token {}: id={}, text={:?}",
+                        i,
+                        new_token,
+                        model_guard
+                            .token_to_str(new_token, llama_cpp_2::model::Special::Tokenize)
+                            .ok()
+                    );
                     
                     // Check for EOS token
                     if new_token == model_guard.token_eos() {

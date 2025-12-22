@@ -11,6 +11,7 @@ use anyhow::{anyhow, Result};
 use common::{Command, CommandV1, OsType, SystemInfo};
 
 use std::sync::{Arc, Mutex, OnceLock};
+#[cfg(target_os = "android")]
 use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(target_os = "android")]
@@ -224,6 +225,7 @@ static GLOBAL_WORKER_HANDLES: OnceLock<Mutex<Option<(std::thread::JoinHandle<()>
     OnceLock::new();
 
 /// Global stop signal for background threads
+#[cfg(target_os = "android")]
 static GLOBAL_STOP_SIGNAL: OnceLock<Arc<AtomicBool>> = OnceLock::new();
 
 /// Perform Android-native login using blocking TCP and bincode protocol
@@ -371,7 +373,7 @@ pub async fn init_global_worker(args: Args) -> Result<()> {
         .map_err(|e| anyhow!("Failed to login worker: {}", e))?;
     info!("✅ init_global_worker: login() completed");
 
-    tracing::info!("Global worker initialized successfully");
+    info!("Global worker initialized successfully");
     Ok(())
 }
 

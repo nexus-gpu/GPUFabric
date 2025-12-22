@@ -115,6 +115,8 @@ pub async fn handle_chat_completion(
         top_k: request.top_k,
         top_p: request.top_p,
         repeat_penalty: request.repeat_penalty,
+        repeat_last_n: request.repeat_last_n,
+        min_keep: request.min_keep,
         model: request.model,
         stream: request.stream,
     };

@@ -189,6 +189,8 @@ pub enum CommandV1 {
         top_k: u32,
         top_p: f32,
         repeat_penalty: f32,
+        repeat_last_n: i32,
+        min_keep: u32,
     },
 
     // Inference result from client to server
@@ -296,7 +298,7 @@ pub fn process_id(id: &[u8; 32]) -> &str {
 }
 
 // Max message size 10MB
-pub const MAX_MESSAGE_SIZE: usize = 1024;
+pub const MAX_MESSAGE_SIZE: usize = 10 * 1024 * 1024;
 
 /// Reads a command from an async reader.
 /// The format is a 4-byte length prefix (u32) followed by the bin-encoded command.

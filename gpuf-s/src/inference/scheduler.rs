@@ -23,6 +23,8 @@ pub struct CompletionRequest {
     pub top_k: Option<u32>,
     pub top_p: Option<f32>,
     pub repeat_penalty: Option<f32>,
+    pub repeat_last_n: Option<i32>,
+    pub min_keep: Option<u32>,
     #[allow(dead_code)] // Part of OpenAI API spec, will be used later
     pub model: Option<String>,
     #[allow(dead_code)] // Streaming support to be implemented later
@@ -38,6 +40,8 @@ pub struct ChatCompletionRequest {
     pub top_k: Option<u32>,
     pub top_p: Option<f32>,
     pub repeat_penalty: Option<f32>,
+    pub repeat_last_n: Option<i32>,
+    pub min_keep: Option<u32>,
     pub stream: Option<bool>,
 }
 
@@ -121,7 +125,7 @@ impl InferenceScheduler {
         result: Option<String>,
         error: Option<String>,
         _execution_time_ms: u64,
-        prompt_tokens: u32,
+        _prompt_tokens: u32,
         _completion_tokens: u32,
     ) {
         info!("Handling inference result for task {} (success: {})", task_id, success);
@@ -234,7 +238,7 @@ impl InferenceScheduler {
     }
 
     /// Send inference task to device
-    async fn send_task_to_device(&self, device_id: &ClientId, task_id: String, prompt: String, max_tokens: u32, temperature: f32, top_k: u32, top_p: f32, repeat_penalty: f32) -> Result<()> {
+    async fn send_task_to_device(&self, device_id: &ClientId, task_id: String, prompt: String, max_tokens: u32, temperature: f32, top_k: u32, top_p: f32, repeat_penalty: f32, repeat_last_n: i32, min_keep: u32) -> Result<()> {
         use common::write_command;
         
         // Find active client connection
@@ -261,6 +265,8 @@ impl InferenceScheduler {
             top_k,
             top_p,
             repeat_penalty,
+            repeat_last_n,
+            min_keep,
         };
         
         let command = Command::V1(inference_task);
@@ -306,6 +312,8 @@ impl InferenceScheduler {
             request.top_k.unwrap_or(40),
             request.top_p.unwrap_or(0.9),
             request.repeat_penalty.unwrap_or(1.1),
+            request.repeat_last_n.unwrap_or(64),
+            request.min_keep.unwrap_or(1),
         ).await {
             // Clean up pending task on failure
             let mut tasks = self.pending_tasks.lock().await;

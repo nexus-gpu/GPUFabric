@@ -1,5 +1,5 @@
 // HTTP API Server for LlamaEngine (OpenAI compatible)
-use super::llama_engine::LlamaEngine;
+use super::llama_engine::{LlamaEngine, SamplingParams};
 use anyhow::Result;
 use axum::{
     extract::State,
@@ -22,6 +22,18 @@ pub struct ChatCompletionRequest {
     pub max_tokens: Option<usize>,
     #[serde(default)]
     pub temperature: Option<f32>,
+    #[serde(default)]
+    pub top_k: Option<i32>,
+    #[serde(default)]
+    pub top_p: Option<f32>,
+    #[serde(default)]
+    pub repeat_penalty: Option<f32>,
+    #[serde(default)]
+    pub repeat_last_n: Option<i32>,
+    #[serde(default)]
+    pub seed: Option<u32>,
+    #[serde(default)]
+    pub min_keep: Option<usize>,
     #[serde(default)]
     pub stream: bool,
 }
@@ -66,6 +78,18 @@ pub struct CompletionRequest {
     pub max_tokens: Option<usize>,
     #[serde(default)]
     pub temperature: Option<f32>,
+    #[serde(default)]
+    pub top_k: Option<i32>,
+    #[serde(default)]
+    pub top_p: Option<f32>,
+    #[serde(default)]
+    pub repeat_penalty: Option<f32>,
+    #[serde(default)]
+    pub repeat_last_n: Option<i32>,
+    #[serde(default)]
+    pub seed: Option<u32>,
+    #[serde(default)]
+    pub min_keep: Option<usize>,
 }
 
 /// Text completion response
@@ -185,7 +209,32 @@ async fn chat_completions(
     // Generate text
     let engine = state.engine.read().await;
     let max_tokens = req.max_tokens.unwrap_or(100);
-    let (response_text, prompt_tokens, completion_tokens) = engine.generate(&prompt, max_tokens).await?;
+    let mut sampling = SamplingParams::default();
+    if let Some(v) = req.temperature {
+        sampling.temperature = v;
+    }
+    if let Some(v) = req.top_k {
+        sampling.top_k = v;
+    }
+    if let Some(v) = req.top_p {
+        sampling.top_p = v;
+    }
+    if let Some(v) = req.repeat_penalty {
+        sampling.repeat_penalty = v;
+    }
+    if let Some(v) = req.repeat_last_n {
+        sampling.repeat_last_n = v;
+    }
+    if let Some(v) = req.seed {
+        sampling.seed = v;
+    }
+    if let Some(v) = req.min_keep {
+        sampling.min_keep = v;
+    }
+
+    let (response_text, prompt_tokens, completion_tokens) = engine
+        .generate_with_cached_model_sampling(&prompt, max_tokens, &sampling)
+        .await?;
 
     let response = ChatCompletionResponse {
         id: format!("chatcmpl-{}", uuid::Uuid::new_v4()),
@@ -222,7 +271,32 @@ async fn completions(
 
     let engine = state.engine.read().await;
     let max_tokens = req.max_tokens.unwrap_or(100);
-    let (response_text, prompt_tokens, completion_tokens) = engine.generate(&req.prompt, max_tokens).await?;
+    let mut sampling = SamplingParams::default();
+    if let Some(v) = req.temperature {
+        sampling.temperature = v;
+    }
+    if let Some(v) = req.top_k {
+        sampling.top_k = v;
+    }
+    if let Some(v) = req.top_p {
+        sampling.top_p = v;
+    }
+    if let Some(v) = req.repeat_penalty {
+        sampling.repeat_penalty = v;
+    }
+    if let Some(v) = req.repeat_last_n {
+        sampling.repeat_last_n = v;
+    }
+    if let Some(v) = req.seed {
+        sampling.seed = v;
+    }
+    if let Some(v) = req.min_keep {
+        sampling.min_keep = v;
+    }
+
+    let (response_text, prompt_tokens, completion_tokens) = engine
+        .generate_with_cached_model_sampling(&req.prompt, max_tokens, &sampling)
+        .await?;
 
     let response = CompletionResponse {
         id: format!("cmpl-{}", uuid::Uuid::new_v4()),
