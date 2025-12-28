@@ -839,6 +839,13 @@ impl LlamaEngine {
     /// Load a new model dynamically
     pub async fn load_model(&mut self, model_path: &str) -> Result<()> {
         info!("Starting to load model: {}", model_path);
+
+        {
+            let mut status = crate::MODEL_STATUS
+                .lock()
+                .map_err(|e| anyhow!("Failed to lock MODEL_STATUS: {:?}", e))?;
+            status.set_loading(model_path);
+        }
         
         // Set loading status
         {
@@ -854,6 +861,14 @@ impl LlamaEngine {
         if !tokio::fs::metadata(model_path).await.is_ok() {
             let mut status = self.loading_status.write().await;
             *status = format!("error: Model file not found: {}", model_path);
+
+            {
+                let mut status = crate::MODEL_STATUS
+                    .lock()
+                    .map_err(|e| anyhow!("Failed to lock MODEL_STATUS: {:?}", e))?;
+                status.set_error(&format!("Model file not found: {}", model_path));
+            }
+
             return Err(anyhow!("Model file not found: {}", model_path));
         }
         
@@ -875,6 +890,13 @@ impl LlamaEngine {
                     let mut status = self.loading_status.write().await;
                     *status = "loaded".to_string();
                 }
+
+                {
+                    let mut status = crate::MODEL_STATUS
+                        .lock()
+                        .map_err(|e| anyhow!("Failed to lock MODEL_STATUS: {:?}", e))?;
+                    status.set_loaded(model_path);
+                }
                 
                 info!("Model loaded successfully: {}", model_path);
                 Ok(())
@@ -882,6 +904,14 @@ impl LlamaEngine {
             Err(e) => {
                 let mut status = self.loading_status.write().await;
                 *status = format!("error: {}", e);
+
+                {
+                    let mut status = crate::MODEL_STATUS
+                        .lock()
+                        .map_err(|e| anyhow!("Failed to lock MODEL_STATUS: {:?}", e))?;
+                    status.set_error(&e.to_string());
+                }
+
                 Err(e)
             }
         }

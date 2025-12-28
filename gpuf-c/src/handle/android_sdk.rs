@@ -817,6 +817,7 @@ pub async fn start_worker_tasks() -> Result<()> {
                                             .unwrap_or_else(|| "android".to_string());
                                         let model_id =
                                             derive_model_id_from_path(&current_model_path);
+                                        println!("model_id: {}", model_id);
                                         let models = vec![Model {
                                             id: model_id,
                                             object: "model".to_string(),
@@ -1127,7 +1128,6 @@ pub async fn start_worker_tasks() -> Result<()> {
                                         );
                                     });
                                 }
-
                                 CommandV1::ChatInferenceTask {
                                     task_id,
                                     model: _,
@@ -1389,7 +1389,6 @@ pub async fn start_worker_tasks() -> Result<()> {
                                         }
                                     });
                                 }
-
                                 CommandV1::CancelInference { task_id } => {
                                     let should_cancel = {
                                         let active_lock = ANDROID_ACTIVE_TASK_ID
@@ -1638,6 +1637,33 @@ pub async fn start_worker_tasks_with_callback_ptr(
                 }
             } else {
                 println!("✅ Android: Heartbeat sent successfully");
+                {
+                    let current_model_path = crate::MODEL_STATUS
+                        .lock()
+                        .ok()
+                        .and_then(|s| s.current_model.clone())
+                        .unwrap_or_else(|| "android".to_string());
+                    let model_id = derive_model_id_from_path(&current_model_path);
+                    let models = vec![Model {
+                        id: model_id,
+                        object: "model".to_string(),
+                        created: 0,
+                        owned_by: "android".to_string(),
+                    }];
+                    let model_status = CommandV1::ModelStatus {
+                        client_id,
+                        models,
+                        auto_models_device: Vec::new(),
+                    };
+                    if let Err(e) =
+                        common::write_command_sync(&mut stream, &Command::V1(model_status))
+                    {
+                        eprintln!("❌ Android: Failed to send model status: {}", e);
+                    } else {
+                        println!("✅ Android: Model status sent successfully");
+                    }
+                    std::io::stdout().flush().ok();
+                }
                 if let Some(callback_fn) = heartbeat_callback {
                     let success_msg = match CString::new("SUCCESS - Heartbeat sent successfully") {
                         Ok(s) => s,
@@ -1761,6 +1787,7 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                             .unwrap_or_else(|| "android".to_string());
                                         let model_id =
                                             derive_model_id_from_path(&current_model_path);
+                                        println!("model_id: {}", model_id);
                                         let models = vec![Model {
                                             id: model_id,
                                             object: "model".to_string(),

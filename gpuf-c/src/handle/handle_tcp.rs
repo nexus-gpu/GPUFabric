@@ -9,7 +9,7 @@ use crate::util::system_info::{
 use anyhow::Result;
 use common::{
     format_bytes, format_duration, join_streams, read_command, write_command, Command, CommandV1,
-    EngineType as ClientEngineType, OsType, SystemInfo, MAX_MESSAGE_SIZE,
+    EngineType as ClientEngineType, Model, OsType, SystemInfo, MAX_MESSAGE_SIZE,
 };
 use tokio::io::AsyncWriteExt;
 
@@ -106,6 +106,23 @@ fn filter_control_tokens(text: &str) -> String {
         .replace("<|start|>", "")
         .replace("<|channel|>", "")
         .replace("<|message|>", "")
+}
+
+fn derive_model_id_from_path(model_path: &str) -> String {
+    let lower = model_path.to_ascii_lowercase();
+    if lower.contains("llama-3") || lower.contains("llama3") {
+        return "llama3".to_string();
+    }
+
+    let file_name = std::path::Path::new(model_path)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(model_path);
+
+    file_name
+        .trim_end_matches(".gguf")
+        .trim_end_matches(".bin")
+        .to_string()
 }
 
 const CURRENT_VERSION: u32 = 1;
@@ -789,23 +806,58 @@ impl WorkerHandle for TCPWorker {
                 loop {
                     interval.tick().await;
 
-                    let models = match get_engine_models(local_port).await {
-                        Ok(models) => {
-                            info!("Successfully fetched {} models from Ollama.", models.len());
-                            Some(models)
+                    let models: Vec<common::Model> = match engine_type {
+                        common::EngineType::Ollama => match get_engine_models(local_port).await {
+                            Ok(models) => {
+                                info!(
+                                    "Successfully fetched {} models from Ollama.",
+                                    models.len()
+                                );
+                                models
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "Could not fetch models from Ollama: {}. This is okay if Ollama is not running.",
+                                    e
+                                );
+                                Vec::new()
+                            }
+                        },
+                        common::EngineType::Llama => {
+                            let current_model_path = crate::MODEL_STATUS
+                                .lock()
+                                .ok()
+                                .and_then(|s| s.current_model.clone());
+
+                            match current_model_path {
+                                Some(model_path) => {
+                                    let model_id = derive_model_id_from_path(&model_path);
+                                    vec![Model {
+                                        id: model_id,
+                                        object: "model".to_string(),
+                                        created: 0,
+                                        owned_by: "gpuf-c".to_string(),
+                                    }]
+                                }
+                                None => Vec::new(),
+                            }
                         }
-                        Err(e) => {
-                            warn!("Could not fetch models from Ollama: {}. This is okay if Ollama is not running.", e);
-                            None
-                        }
+                        _ => Vec::new(),
                     };
                     let model_cmd = CommandV1::ModelStatus {
                         client_id: *client_id,
-                        models: models.unwrap_or_default(),
+                        models,
                         auto_models_device: devices_info.clone().to_vec(),
                     };
-                    let _ = write_command(&mut *writer_clone.lock().await, &Command::V1(model_cmd))
-                        .await;
+                    if let Err(e) =
+                        write_command(&mut *writer_clone.lock().await, &Command::V1(model_cmd)).await
+                    {
+                        error!(
+                            "Failed to send model status (connection may be closed): {}",
+                            e
+                        );
+                        break;
+                    }
                 }
             });
             Ok(())
@@ -843,11 +895,14 @@ impl WorkerHandle for TCPWorker {
                     };
 
                     // TODO: device_info is remote device info
-                    let mut writer = { writer_clone.lock().await };
                     info!("Sending heartbeat to server cpu_usage {}% memory_usage {}% disk_usage {}% device_memtotal {}mb", cpu_usage, memory_usage, disk_usage, device_memtotal_mb);
-                    let mut network_monitor = network_monitor.lock().await;
-                    let stats = network_monitor.refresh().unwrap_or((0, 0));
-                    let session_stats = network_monitor.get_session_stats();
+
+                    let (stats, session_stats) = {
+                        let mut monitor = network_monitor.lock().await;
+                        let stats = monitor.refresh().unwrap_or((0, 0));
+                        let session_stats = monitor.get_session_stats();
+                        (stats, session_stats)
+                    };
                     info!(
                         "Network stats - Current: up {} down {} | Session Total: up {} down {} | Duration: {} ", 
                         format_bytes!(stats.1),
@@ -856,6 +911,8 @@ impl WorkerHandle for TCPWorker {
                         format_bytes!(session_stats.0),
                         format_duration!(session_stats.2.as_secs())
                     );
+
+                    let mut writer = writer_clone.lock().await;
                     if let Err(e) = write_command(
                         &mut *writer,
                         &Command::V1(CommandV1::Heartbeat {
