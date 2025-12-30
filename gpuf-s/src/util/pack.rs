@@ -1,6 +1,6 @@
+use bytes::BytesMut;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use bytes::BytesMut;
 
 // Buffer pool structure
 #[derive(Clone)]
@@ -16,7 +16,7 @@ impl BufferPool {
         for _ in 0..initial_capacity {
             pool.push(BytesMut::with_capacity(buffer_size));
         }
-        
+
         BufferPool {
             pool: Arc::new(Mutex::new(pool)),
             buffer_size,
@@ -39,7 +39,8 @@ impl BufferPool {
     pub async fn put(&self, mut buf: BytesMut) {
         if buf.capacity() == self.buffer_size {
             let mut pool = self.pool.lock().await;
-            if pool.len() < 100 { // Limit pool size to avoid excessive memory usage
+            if pool.len() < 100 {
+                // Limit pool size to avoid excessive memory usage
                 buf.clear();
                 pool.push(buf);
             }

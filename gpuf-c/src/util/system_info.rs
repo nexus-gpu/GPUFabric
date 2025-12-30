@@ -1,4 +1,3 @@
-
 use anyhow::{anyhow, Result};
 use common::{DevicesInfo, Model};
 use futures_util::StreamExt;
@@ -7,12 +6,9 @@ use serde_json;
 use sysinfo::{Disks, System};
 use tracing::{debug, error, info};
 
-
-
 #[cfg(not(target_os = "macos"))]
 // Unused imports kept for potential future use
 // use common::{set_u16_to_u128, set_u8_to_u64};
-
 #[cfg(all(target_os = "linux", any(target_arch = "x86", target_arch = "x86_64")))]
 use crate::util::asm;
 
@@ -198,7 +194,7 @@ pub async fn collect_device_info() -> Result<(DevicesInfo, u32)> {
     {
         collect_device_info_vulkan().await
     }
-    
+
     #[cfg(not(feature = "vulkan"))]
     {
         // Improved Android version - collect real device information
@@ -219,28 +215,28 @@ async fn collect_device_info_vulkan() -> Result<(DevicesInfo, u32)> {
 #[cfg(target_os = "android")]
 async fn collect_android_device_info() -> Result<DevicesInfo> {
     use std::fs;
-    
+
     // Get memory information from /proc/meminfo
     let memtotal_gb = read_memory_info().unwrap_or(0);
-    
+
     // Get CPU information
     let cpu_cores = read_cpu_cores().unwrap_or(1);
-    
+
     // Get device temperature (if available)
     let temp = read_thermal_info().unwrap_or(0);
-    
+
     // Get system usage information
     let (cpu_usage, memory_usage, disk_usage) = read_system_usage().unwrap_or((25, 45, 60));
-    
+
     // ARM vendor ID for Android devices
     let vendor_id = 0x41; // ARM
-    
+
     // Generic device ID for Android
     let device_id = 0x1000;
-    
+
     // Calculate estimated TFLOPS based on CPU cores (very rough estimate)
     let total_tflops = estimate_cpu_tflops(cpu_cores).unwrap_or(0.0);
-    
+
     let devices_info = DevicesInfo {
         num: 1, // Android typically has 1 unified compute device
         pod_id: 0,
@@ -250,16 +246,16 @@ async fn collect_android_device_info() -> Result<DevicesInfo> {
         ip: 0,   // Will be assigned by server
         os_type: common::OsType::ANDROID,
         engine_type: common::EngineType::Llama, // Default to Llama engine
-        usage: cpu_usage as u64, // Real CPU usage
-        mem_usage: memory_usage as u64, // Real memory usage
-        power_usage: 0, // Not available on most Android devices
+        usage: cpu_usage as u64,                // Real CPU usage
+        mem_usage: memory_usage as u64,         // Real memory usage
+        power_usage: 0,                         // Not available on most Android devices
         temp: temp as u64,
         vendor_id,
         device_id,
         memsize_gb: memtotal_gb as u128,
         powerlimit_w: 150, // Typical Android power limit
     };
-    
+
     Ok(devices_info)
 }
 
@@ -268,7 +264,7 @@ async fn collect_android_device_info() -> Result<DevicesInfo> {
 fn read_memory_info() -> Option<u32> {
     use std::fs::File;
     use std::io::{BufRead, BufReader};
-    
+
     if let Ok(file) = File::open("/proc/meminfo") {
         let reader = BufReader::new(file);
         for line in reader.lines().flatten() {
@@ -290,7 +286,7 @@ fn read_memory_info() -> Option<u32> {
 fn read_cpu_cores() -> Option<u32> {
     use std::fs::File;
     use std::io::{BufRead, BufReader};
-    
+
     let mut core_count = 0;
     if let Ok(file) = File::open("/proc/cpuinfo") {
         let reader = BufReader::new(file);
@@ -300,7 +296,7 @@ fn read_cpu_cores() -> Option<u32> {
             }
         }
     }
-    
+
     if core_count == 0 {
         // Fallback to sysconf
         Some(1)
@@ -313,26 +309,27 @@ fn read_cpu_cores() -> Option<u32> {
 #[cfg(target_os = "android")]
 fn read_thermal_info() -> Option<u32> {
     use std::fs;
-    
+
     // Try to read from common thermal zones
     let thermal_zones = [
         "/sys/class/thermal/thermal_zone0/temp",
         "/sys/class/thermal/thermal_zone1/temp",
         "/sys/devices/virtual/thermal/thermal_zone0/temp",
     ];
-    
+
     for zone_path in &thermal_zones {
         if let Ok(temp_str) = fs::read_to_string(zone_path) {
             if let Ok(temp_milli_c) = temp_str.trim().parse::<i32>() {
                 // Convert from millidegrees Celsius to degrees Celsius
                 let temp_c = temp_milli_c / 1000;
-                if temp_c > 0 && temp_c < 150 { // Reasonable temperature range
+                if temp_c > 0 && temp_c < 150 {
+                    // Reasonable temperature range
                     return Some(temp_c as u32);
                 }
             }
         }
     }
-    
+
     None
 }
 
@@ -350,13 +347,13 @@ fn estimate_cpu_tflops(cpu_cores: u32) -> Option<f64> {
 fn read_system_usage() -> Option<(u32, u32, u32)> {
     // Get CPU usage from /proc/stat
     let cpu_usage = read_cpu_usage().unwrap_or(25);
-    
+
     // Get memory usage from /proc/meminfo
     let memory_usage = read_memory_usage().unwrap_or(45);
-    
+
     // Get disk usage from statvfs
     let disk_usage = read_disk_usage().unwrap_or(60);
-    
+
     Some((cpu_usage, memory_usage, disk_usage))
 }
 
@@ -365,7 +362,7 @@ fn read_system_usage() -> Option<(u32, u32, u32)> {
 fn read_cpu_usage() -> Option<u32> {
     use std::fs::File;
     use std::io::{BufRead, BufReader};
-    
+
     if let Ok(file) = File::open("/proc/stat") {
         let reader = BufReader::new(file);
         for line in reader.lines().flatten() {
@@ -379,11 +376,11 @@ fn read_cpu_usage() -> Option<u32> {
                             times.push(time);
                         }
                     }
-                    
+
                     if times.len() >= 4 {
                         let total_time: u64 = times.iter().sum();
                         let idle_time = times[3]; // idle time is the 4th value
-                        
+
                         if total_time > 0 {
                             let usage_percent = ((total_time - idle_time) * 100) / total_time;
                             return Some(usage_percent as u32);
@@ -401,10 +398,10 @@ fn read_cpu_usage() -> Option<u32> {
 fn read_memory_usage() -> Option<u32> {
     use std::fs::File;
     use std::io::{BufRead, BufReader};
-    
+
     let mut total_memory = 0u64;
     let mut available_memory = 0u64;
-    
+
     if let Ok(file) = File::open("/proc/meminfo") {
         let reader = BufReader::new(file);
         for line in reader.lines().flatten() {
@@ -425,7 +422,7 @@ fn read_memory_usage() -> Option<u32> {
             }
         }
     }
-    
+
     if total_memory > 0 && available_memory > 0 {
         let used_memory = total_memory - available_memory;
         let usage_percent = (used_memory * 100) / total_memory;
@@ -439,7 +436,7 @@ fn read_memory_usage() -> Option<u32> {
 #[cfg(target_os = "android")]
 fn read_disk_usage() -> Option<u32> {
     use std::fs;
-    
+
     // Try to get disk usage for the data partition
     if let Ok(metadata) = fs::metadata("/data") {
         // On Android, we can't easily get disk usage without additional syscalls
@@ -452,10 +449,14 @@ fn read_disk_usage() -> Option<u32> {
 }
 
 // Fallback implementation when NVML is not available (Windows/Linux without CUDA Toolkit)
-#[cfg(all(not(target_os = "macos"), not(target_os = "android"), not(feature = "cuda")))]
+#[cfg(all(
+    not(target_os = "macos"),
+    not(target_os = "android"),
+    not(feature = "cuda")
+))]
 pub async fn collect_device_info() -> Result<(DevicesInfo, u32)> {
     debug!("Using system API for device info (NVML available but not CUDA-specific).");
-    
+
     #[cfg(feature = "vulkan")]
     {
         // Use Vulkan for all platforms that support it
@@ -463,19 +464,19 @@ pub async fn collect_device_info() -> Result<(DevicesInfo, u32)> {
         let (devices_info, device_count) = collect_device_info_vulkan_cross_platform().await?;
         Ok((devices_info, device_count as u32))
     }
-    
+
     #[cfg(not(feature = "vulkan"))]
     {
         #[cfg(target_os = "windows")]
         {
             collect_device_info_wmi().await
         }
-        
+
         #[cfg(target_os = "linux")]
         {
             collect_device_info_sysfs().await
         }
-        
+
         #[cfg(target_os = "android")]
         {
             // Fallback: Lightweight Android version - no GPU monitoring
@@ -499,7 +500,7 @@ pub async fn collect_device_info() -> Result<(DevicesInfo, u32)> {
             };
             Ok((devices_info, 0))
         }
-        
+
         #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "android")))]
         {
             // Default fallback for other platforms
@@ -526,50 +527,50 @@ pub async fn collect_device_info() -> Result<(DevicesInfo, u32)> {
     }
 }
 
-
-
 // Windows WMI-based device info collection
 #[cfg(all(target_os = "windows", not(feature = "nvml")))]
 async fn collect_device_info_wmi() -> Result<(DevicesInfo, u32)> {
     use std::collections::HashMap;
     use wmi::{COMLibrary, Variant, WMIConnection};
-    
+
     // Perform WMI query synchronously to avoid Send issues
     let gpu_info: Result<Option<(u64, String, usize)>, String> = (|| {
-        let com_con = COMLibrary::new()
-            .map_err(|e| format!("Failed to initialize COM: {}", e))?;
-        
-        let wmi_con = WMIConnection::new(com_con)
-            .map_err(|e| format!("Failed to connect to WMI: {}", e))?;
-        
+        let com_con = COMLibrary::new().map_err(|e| format!("Failed to initialize COM: {}", e))?;
+
+        let wmi_con =
+            WMIConnection::new(com_con).map_err(|e| format!("Failed to connect to WMI: {}", e))?;
+
         // Query GPU information
         let query = "SELECT Name, AdapterRAM, VideoProcessor FROM Win32_VideoController";
-        let results: Vec<HashMap<String, Variant>> = wmi_con.raw_query(query)
+        let results: Vec<HashMap<String, Variant>> = wmi_con
+            .raw_query(query)
             .map_err(|e| format!("Failed to query GPU info: {}", e))?;
-        
+
         if let Some(gpu) = results.first() {
-            let vram = gpu.get("AdapterRAM")
+            let vram = gpu
+                .get("AdapterRAM")
                 .and_then(|v| match v {
                     Variant::UI4(val) => Some(*val as u64),
                     Variant::UI8(val) => Some(*val),
                     _ => None,
                 })
                 .unwrap_or(0);
-            
-            let gpu_name = gpu.get("Name")
+
+            let gpu_name = gpu
+                .get("Name")
                 .and_then(|v| match v {
                     Variant::String(s) => Some(s.clone()),
                     _ => None,
                 })
                 .unwrap_or_else(|| "Unknown GPU".to_string());
-            
+
             Ok(Some((vram, gpu_name, results.len())))
         } else {
             Ok(None)
         }
         // COM objects are dropped here, before any await
     })();
-    
+
     match gpu_info {
         Ok(Some((vram, gpu_name, count))) => {
             println!("Found GPU: {}, VRAM: {} bytes", gpu_name, vram);
@@ -592,7 +593,7 @@ async fn collect_device_info_wmi() -> Result<(DevicesInfo, u32)> {
                 memsize_gb: (vram >> 30) as u128,
                 powerlimit_w: 0,
             };
-            
+
             Ok((device_info, (vram >> 30) as u32))
         }
         Ok(None) => {
@@ -610,19 +611,19 @@ async fn collect_device_info_wmi() -> Result<(DevicesInfo, u32)> {
 #[cfg(all(target_os = "linux", not(feature = "nvml")))]
 async fn collect_device_info_sysfs() -> Result<(DevicesInfo, u32)> {
     use std::fs;
-    
+
     // Try to read DRM device information
     let drm_path = "/sys/class/drm";
     let mut gpu_count = 0u8;
     let mut total_memory = 0u64;
-    
+
     if let Ok(entries) = fs::read_dir(drm_path) {
         for entry in entries.flatten() {
             let path = entry.path();
             if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                 if name.starts_with("card") && !name.contains('-') {
                     gpu_count += 1;
-                    
+
                     // Try to read VRAM size (AMD GPUs)
                     let mem_path = path.join("device/mem_info_vram_total");
                     if let Ok(mem_str) = fs::read_to_string(&mem_path) {
@@ -635,10 +636,13 @@ async fn collect_device_info_sysfs() -> Result<(DevicesInfo, u32)> {
             }
         }
     }
-    
+
     if gpu_count > 0 {
-        debug!("Found {} GPU(s) via sysfs, total VRAM: {} bytes", gpu_count, total_memory);
-        
+        debug!(
+            "Found {} GPU(s) via sysfs, total VRAM: {} bytes",
+            gpu_count, total_memory
+        );
+
         let device_info = DevicesInfo {
             num: gpu_count as u16,
             pod_id: 0,
@@ -657,7 +661,7 @@ async fn collect_device_info_sysfs() -> Result<(DevicesInfo, u32)> {
             memsize_gb: (total_memory >> 30) as u128,
             powerlimit_w: 0,
         };
-        
+
         Ok((device_info, (total_memory >> 30) as u32))
     } else {
         debug!("No GPU found via sysfs, falling back to CPU info");
@@ -666,16 +670,20 @@ async fn collect_device_info_sysfs() -> Result<(DevicesInfo, u32)> {
 }
 
 // CPU-based device info collection (universal fallback)
-#[cfg(all(not(target_os = "macos"), not(target_os = "android"), not(feature = "nvml")))]
+#[cfg(all(
+    not(target_os = "macos"),
+    not(target_os = "android"),
+    not(feature = "nvml")
+))]
 async fn collect_device_info_cpu() -> Result<(DevicesInfo, u32)> {
     let mut sys = System::new_all();
     sys.refresh_all();
-    
+
     let total_memory = sys.total_memory();
     let used_memory = sys.used_memory();
-    
+
     debug!("Using CPU mode: {} GB total memory", total_memory >> 30);
-    
+
     let device_info = DevicesInfo {
         num: 1, // CPU as a single "device"
         pod_id: 0,
@@ -698,15 +706,15 @@ async fn collect_device_info_cpu() -> Result<(DevicesInfo, u32)> {
         memsize_gb: (total_memory >> 30) as u128,
         powerlimit_w: 0,
     };
-    
+
     Ok((device_info, (total_memory >> 30) as u32))
 }
 
 #[cfg(all(not(target_os = "macos"), not(target_os = "android"), feature = "cuda"))]
 pub async fn collect_device_info() -> Result<(DevicesInfo, u32)> {
     use common::{set_u16_to_u128, set_u8_to_u64, to_tflops};
-    use std::sync::Once;
     use nvml_wrapper::NVML as NVMLWrapper;
+    use std::sync::Once;
 
     static INIT: Once = Once::new();
     static mut NVML: Option<Result<NVMLWrapper, nvml_wrapper::error::Error>> = None;
@@ -715,11 +723,11 @@ pub async fn collect_device_info() -> Result<(DevicesInfo, u32)> {
     INIT.call_once(|| unsafe {
         NVML = Some(NVMLWrapper::init());
     });
-    
+
     let nvml_ptr = &raw const NVML;
 
     // Get the NVML instance
-    let nvml = match unsafe {&*nvml_ptr} {
+    let nvml = match unsafe { &*nvml_ptr } {
         Some(Ok(nvml)) => nvml,
         Some(Err(e)) => {
             debug!(
@@ -737,7 +745,6 @@ pub async fn collect_device_info() -> Result<(DevicesInfo, u32)> {
     // Rest of the function remains the same...
     match nvml.device_count() {
         Ok(count) => {
-
             let mut device_info = DevicesInfo::default();
             device_info.pod_id = 0;
             device_info.num = count.try_into().unwrap();
@@ -760,8 +767,11 @@ pub async fn collect_device_info() -> Result<(DevicesInfo, u32)> {
                             pci_info.bus_id.split(|c| c == ':' || c == '.').collect();
                         if parts.len() >= 4 {
                             let _domain = u32::from_str_radix(parts[0], 16).unwrap_or(0);
-               
-                            #[cfg(all(target_os = "linux", any(target_arch = "x86", target_arch = "x86_64")))]
+
+                            #[cfg(all(
+                                target_os = "linux",
+                                any(target_arch = "x86", target_arch = "x86_64")
+                            ))]
                             {
                                 let bus = u32::from_str_radix(parts[1], 16).unwrap_or(0);
                                 let device_num = u32::from_str_radix(parts[2], 16).unwrap_or(0);
@@ -779,7 +789,10 @@ pub async fn collect_device_info() -> Result<(DevicesInfo, u32)> {
                                 get_pci_ids(device_index).unwrap_or((0, 0))
                             }
                             #[cfg(not(any(
-                                all(target_os = "linux", any(target_arch = "x86", target_arch = "x86_64")),
+                                all(
+                                    target_os = "linux",
+                                    any(target_arch = "x86", target_arch = "x86_64")
+                                ),
                                 target_os = "windows"
                             )))]
                             {
@@ -827,7 +840,7 @@ pub async fn collect_device_info() -> Result<(DevicesInfo, u32)> {
                         set_u8_to_u64(
                             &mut device_info.power_usage,
                             index as usize,
-                            (power_usage/1024).try_into().unwrap(),
+                            (power_usage / 1024).try_into().unwrap(),
                         );
 
                         set_u8_to_u64(
@@ -840,7 +853,7 @@ pub async fn collect_device_info() -> Result<(DevicesInfo, u32)> {
                         set_u16_to_u128(
                             &mut device_info.memsize_gb,
                             index as usize,
-                            (meminfo.total >>30) as u16,
+                            (meminfo.total >> 30) as u16,
                         );
                         //TODO: power_limit   watts unit
                         //TODO: total_memory  gb unit
@@ -943,9 +956,11 @@ pub async fn collect_device_info() -> Result<(DevicesInfo, u32)> {
     let used_memory = sys.used_memory();
     let power_metrics = read_power_metrics();
     if let Some(metrics) = power_metrics {
-        info!("power metrics cpu {}mw gpu {}mw ane {}mw",metrics.cpu_mw, metrics.gpu_mw, metrics.ane_mw);
+        info!(
+            "power metrics cpu {}mw gpu {}mw ane {}mw",
+            metrics.cpu_mw, metrics.gpu_mw, metrics.ane_mw
+        );
         gpu_power = metrics.total_mw;
-
     }
 
     let device_info = DevicesInfo {
@@ -1006,7 +1021,6 @@ fn map_thermal(level: &str) -> u32 {
         _ => 0,
     }
 }
-
 
 #[cfg(target_os = "macos")]
 pub fn get_apple_gpu_cores() -> Option<usize> {
@@ -1183,7 +1197,6 @@ pub async fn run_model(
     }
 }
 
-
 #[cfg(target_os = "macos")]
 #[test]
 fn test_get_device_id() {
@@ -1221,7 +1234,6 @@ async fn test_run_ollama_model() {
 #[tokio::test]
 #[cfg(target_os = "windows")]
 async fn test_collect_device_info() {
-    
     let device_info = collect_device_info_wmi().await;
     println!("device_info: {:?}", device_info);
     assert!(device_info.is_ok());

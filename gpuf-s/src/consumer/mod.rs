@@ -6,11 +6,10 @@ use rdkafka::config::ClientConfig;
 use rdkafka::consumer::stream_consumer::StreamConsumer;
 use rdkafka::consumer::Consumer;
 use rdkafka::message::OwnedMessage;
+use sqlx::{Pool, Postgres};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::error;
-use sqlx::{Pool, Postgres};
-
 
 #[allow(dead_code)] // Consumer service management
 pub async fn start_consumer_services(
@@ -28,13 +27,13 @@ pub async fn start_consumer_services(
             .set("group.id", group_id)
             .set("enable.partition.eof", "false")
             .set("enable.auto.commit", "false")
-            .set("session.timeout.ms", "30000")  // Increase session timeout
-            .set("max.poll.interval.ms", "300000")  // Increase max poll interval
-            .set("fetch.max.bytes", "1048576")  // Max bytes per fetch
+            .set("session.timeout.ms", "30000") // Increase session timeout
+            .set("max.poll.interval.ms", "300000") // Increase max poll interval
+            .set("fetch.max.bytes", "1048576") // Max bytes per fetch
             .set("max.partition.fetch.bytes", "1048576") // Max bytes per partition fetch
-            .create()?
+            .create()?,
     );
-    
+
     // Subscribe to the topic
     consumer.subscribe(&[topic])?;
 
@@ -51,7 +50,7 @@ pub async fn start_consumer_services(
 
     // Clone the Arc for the consumer task
     let consumer_clone = consumer.clone();
-    
+
     // Start the consumer
     let consumer_handle = tokio::spawn(heartbeat_consumer::start_consumer(
         consumer_clone,

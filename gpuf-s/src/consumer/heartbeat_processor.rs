@@ -4,8 +4,8 @@ use sqlx::{Pool, Postgres};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
 
-use crate::util::{protoc};
 use crate::db::stats::{insert_heartbeat, ClientDailyStats, DeviceDailyStats};
+use crate::util::protoc;
 use common::format_bytes;
 
 #[allow(dead_code)]
@@ -68,12 +68,13 @@ async fn process_batch(messages: Vec<OwnedMessage>, db_pool: Pool<Postgres>) -> 
                     std::str::from_utf8(payload).unwrap_or("[invalid utf8]")
                 );
                 let cfg = bincode::config::standard()
-                .with_fixed_int_encoding()
-                .with_little_endian();
+                    .with_fixed_int_encoding()
+                    .with_little_endian();
                 // Try to deserialize as JSON first
                 let (heartbeat, _): (protoc::HeartbeatMessage, _) =
-                    bincode::decode_from_slice(payload, cfg).map_err(|e| anyhow!("Failed to deserialize heartbeat: {}", e))?;
-                
+                    bincode::decode_from_slice(payload, cfg)
+                        .map_err(|e| anyhow!("Failed to deserialize heartbeat: {}", e))?;
+
                 info!("Heartbeat received from client {} cpu_usage {}% memory_usage {}% disk_usage {}% network_up {} network_down {}", heartbeat.client_id, heartbeat.system_info.cpu_usage, heartbeat.system_info.memory_usage, heartbeat.system_info.disk_usage,  format_bytes!(heartbeat.system_info.network_tx),format_bytes!(heartbeat.system_info.network_rx));
                 // Update last seen timestamp
                 if let Err(e) = insert_heartbeat(
@@ -125,7 +126,7 @@ async fn process_batch(messages: Vec<OwnedMessage>, db_pool: Pool<Postgres>) -> 
                     );
                     continue;
                 }
-                
+
                 debug!(
                     "Successfully processed heartbeat for client: {}",
                     heartbeat.client_id

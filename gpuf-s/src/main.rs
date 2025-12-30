@@ -1,9 +1,9 @@
-mod consumer;
 mod api_server;
+mod consumer;
 mod db;
 mod handle;
-mod util;
 mod inference;
+mod util;
 #[cfg(all(feature = "xdp", target_os = "linux"))]
 mod xdp;
 
@@ -13,7 +13,7 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 #[cfg(target_os = "linux")]
 use tokio::signal::unix::{signal, SignalKind};
-use tracing::{info,error};
+use tracing::{error, info};
 
 #[cfg(debug_assertions)]
 #[global_allocator]
@@ -64,9 +64,11 @@ async fn main() -> Result<()> {
     tokio::spawn(async move {
         #[cfg(target_os = "linux")]
         {
-            let mut sigterm = signal(SignalKind::terminate()).expect("Failed to create SIGTERM listener");
-            let mut sigint = signal(SignalKind::interrupt()).expect("Failed to create SIGINT listener");
-            
+            let mut sigterm =
+                signal(SignalKind::terminate()).expect("Failed to create SIGTERM listener");
+            let mut sigint =
+                signal(SignalKind::interrupt()).expect("Failed to create SIGINT listener");
+
             tokio::select! {
                 _ = sigterm.recv() => {
                     info!("Received SIGTERM, shutting down gracefully...");
@@ -76,13 +78,13 @@ async fn main() -> Result<()> {
                 }
             }
         }
-        
+
         #[cfg(not(target_os = "linux"))]
         {
             // On Windows, we'll use Ctrl-C handling through tokio's default signal handling
             info!("Running on Windows - signal handling through default mechanisms");
         }
-        
+
         // Send shutdown signal
         let _ = shutdown_tx.send(());
     });

@@ -1,12 +1,12 @@
-pub mod handle_api;
-pub mod client;
-pub mod models;
 pub mod apk;
+pub mod client;
+pub mod handle_api;
+pub mod models;
 
-use redis::Client as RedisClient;
-use sqlx::Pool; 
-use sqlx::postgres::Postgres;
 use anyhow::Result;
+use redis::Client as RedisClient;
+use sqlx::postgres::Postgres;
+use sqlx::Pool;
 use std::sync::Arc;
 use tracing::error;
 
@@ -20,7 +20,7 @@ impl ApiServer {
     #[allow(dead_code)] // Public API function, may be used in tests or future
     pub async fn new(db_url: &str, redis_url: &str) -> Result<Self> {
         let db_pool = Pool::connect(db_url).await?;
-    
+
         let redis_client = Arc::new(match RedisClient::open(redis_url) {
             Ok(client) => client,
             Err(e) => {
@@ -35,8 +35,8 @@ impl ApiServer {
     }
 }
 
-use serde::Serialize;
 use chrono::{DateTime, Utc};
+use serde::Serialize;
 #[allow(dead_code)] // API response structures
 #[derive(Serialize)]
 pub struct ClientInfoResponse {
@@ -55,5 +55,3 @@ struct SystemInfoResponse {
     last_heartbeat: DateTime<Utc>,
     heartbeat_seconds_ago: u64,
 }
-
-

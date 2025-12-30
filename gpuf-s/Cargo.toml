@@ -42,6 +42,10 @@ lru = "0.16.0"
 rdkafka = { version = "0.38", features = ["cmake-build"] }
 time = "0.3"
 
+hmac = "0.12"
+sha1 = "0.10"
+base64 = "0.22"
+
 socket2 = { version = "0.6.0", features = ["all"] }
 tokio-util = "0.7.16"
 futures = "0.3.28"

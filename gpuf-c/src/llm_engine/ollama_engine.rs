@@ -80,7 +80,6 @@ impl OllamaEngine {
         let name_flag = format!("--name={}", OLLAMA_CONTAINER_NAME);
         let port_flag = format!("-p{}:11434", OLLAMA_DEFAULT_PORT);
 
-        
         let model_dir = if cfg!(target_os = "windows") {
             // Windows  %USERPROFILE%\.ollama\models
             let home = std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\".to_string());
@@ -112,7 +111,7 @@ impl OllamaEngine {
         if cfg!(target_os = "macos") {
             if cfg!(target_arch = "x86_64") {
                 args.extend_from_slice(&["--platform", "linux/amd64"]);
-            } 
+            }
         } else if cfg!(target_os = "linux") {
             args.extend_from_slice(&[
                 "--platform",
@@ -251,7 +250,6 @@ impl OllamaEngine {
 }
 
 impl Engine for OllamaEngine {
-
     fn init(&mut self) -> impl std::future::Future<Output = Result<()>> + Send {
         async move {
             info!("Initializing Ollama engine...");
@@ -260,7 +258,10 @@ impl Engine for OllamaEngine {
         }
     }
 
-    fn set_models(&mut self, models: Vec<String>) -> impl std::future::Future<Output = Result<()>> + Send {
+    fn set_models(
+        &mut self,
+        models: Vec<String>,
+    ) -> impl std::future::Future<Output = Result<()>> + Send {
         async move {
             if models.is_empty() {
                 return Err(anyhow!("Model list cannot be empty"));
@@ -311,7 +312,7 @@ mod tests {
     #[tokio::test]
     async fn test_pull_model_success() {
         init_logging();
-        
+
         let mut engine = OllamaEngine::new();
         match engine.start_container().await {
             Ok(_) => {}

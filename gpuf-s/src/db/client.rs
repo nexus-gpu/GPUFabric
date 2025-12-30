@@ -1,10 +1,10 @@
 use crate::util::protoc::ClientId;
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
-use sqlx::{postgres::Postgres, FromRow, Pool};
-use tracing::{debug,info,warn};
-use std::time::{SystemTime, UNIX_EPOCH};
 use redis::{AsyncCommands, Client as RedisClient, Commands};
+use sqlx::{postgres::Postgres, FromRow, Pool};
+use std::time::{SystemTime, UNIX_EPOCH};
+use tracing::{debug, info, warn};
 
 #[derive(FromRow)]
 struct ClientRecord {
@@ -502,7 +502,6 @@ pub async fn upsert_client_info(
     Ok(())
 }
 
-
 //@# upsert client info
 pub async fn upsert_client_status(
     pool: &Pool<Postgres>,
@@ -516,7 +515,6 @@ pub async fn upsert_client_status(
     .await?;
     Ok(())
 }
-
 
 // redis
 #[allow(dead_code)] // Redis utility function for heartbeat info
@@ -536,8 +534,8 @@ pub async fn upsert_heartbeat_info_in_redis<F, Fut>(
         let hset_multiple = vec![
             ("status", "online".to_string()),
             ("ts", ts.to_string()),
-            ("client_ts", client_timestamp.to_string()), 
-            ("server_ts", server_timestamp.to_string()), 
+            ("client_ts", client_timestamp.to_string()),
+            ("server_ts", server_timestamp.to_string()),
             ("network_delay_ms", network_delay_ms.to_string()),
         ];
         let _: Result<(), _> = conn.hset_multiple(&key, &hset_multiple).await;
@@ -551,7 +549,6 @@ pub async fn upsert_heartbeat_info_in_redis<F, Fut>(
         }
     }
 }
-
 
 #[allow(dead_code)] // Network delay calculation utility
 fn calculate_network_delay(client_timestamp: u64) -> (u64, u64) {
@@ -611,11 +608,9 @@ pub async fn validate_client(
         .bind(client_id)
         .fetch_optional(pool)
         .await.map_err(|e| anyhow!("Database query failed: {}", e))?;
-    
+
     let is_valid = match row {
-        Some(_row) => {
-            true
-        }
+        Some(_row) => true,
         None => false,
     };
 

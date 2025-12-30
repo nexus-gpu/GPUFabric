@@ -1,33 +1,34 @@
-pub mod handle_connections;
 pub mod handle_agent;
+pub mod handle_connections;
 
-use crate::db::{models::{HotModelClass}, models::ClientModelClass};
-use crate::util::{
-    protoc::{ClientId, ProxyConnId}, cmd, db,
-};
+use crate::db::{models::ClientModelClass, models::HotModelClass};
 use crate::inference::InferenceScheduler;
 use crate::util::pack::BufferPool;
+use crate::util::{
+    cmd, db,
+    protoc::{ClientId, ProxyConnId},
+};
 
+use anyhow::{anyhow, Result};
+use bytes::BytesMut;
+use chrono::{DateTime, Utc};
+use common::{join_streams, read_command, write_command, Command, CommandV1, DevicesInfo, Model};
+use rdkafka::producer::FutureProducer;
+use rdkafka::producer::Producer;
 use redis::Client as RedisClient;
 use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Postgres};
-use chrono::{DateTime, Utc};
-use common::{join_streams, read_command, write_command, Command, CommandV1, DevicesInfo, Model};
 use std::collections::HashMap;
 use std::sync::Arc;
-use rdkafka::producer::FutureProducer;
-use rdkafka::producer::Producer;
-use anyhow::{anyhow, Result};
-use bytes::BytesMut;
-use tokio::net::{TcpStream,tcp::OwnedWriteHalf};
+use tokio::net::{tcp::OwnedWriteHalf, TcpStream};
 use tokio::sync::Mutex;
 use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use tracing::{error,info};
+use tracing::{error, info};
 
 pub type UserDb = Arc<Mutex<HashMap<String, User>>>;
 pub type TokenDb = Arc<Mutex<HashMap<String, String>>>;
 pub type ActiveClients = Arc<Mutex<HashMap<ClientId, ClientInfo>>>;
-pub type PendingConnections = Arc<Mutex<HashMap<ProxyConnId, (TcpStream,BytesMut)>>>;
+pub type PendingConnections = Arc<Mutex<HashMap<ProxyConnId, (TcpStream, BytesMut)>>>;
 
 pub struct ClientInfo {
     pub writer: Arc<Mutex<OwnedWriteHalf>>,
@@ -58,7 +59,6 @@ pub struct SystemInfo {
     pub memsize_gb: u32,
 }
 
-
 #[allow(dead_code)]
 #[derive(Serialize)]
 struct ServerStats {
@@ -75,7 +75,6 @@ pub struct ServerConfig {
     pub public_port: u16,
     pub api_port: u16,
 }
-
 
 #[derive(Clone)]
 pub struct ServerState {
@@ -143,7 +142,11 @@ pub async fn new_server_state(args: &cmd::Args) -> Result<ServerState, anyhow::E
         ));
     }
 
-    let (db_pool, redis_client, producer): (Arc<Pool<Postgres>>, Arc<RedisClient>, Arc<FutureProducer>) = db::init_db(&args.bootstrap_server, &args.database_url, &args.redis_url).await?;
+    let (db_pool, redis_client, producer): (
+        Arc<Pool<Postgres>>,
+        Arc<RedisClient>,
+        Arc<FutureProducer>,
+    ) = db::init_db(&args.bootstrap_server, &args.database_url, &args.redis_url).await?;
 
     let active_clients = Arc::new(Mutex::new(HashMap::new()));
     let pending_connections = Arc::new(Mutex::new(HashMap::new()));
@@ -153,10 +156,10 @@ pub async fn new_server_state(args: &cmd::Args) -> Result<ServerState, anyhow::E
     let server_start_time = Utc::now();
     let cert_chain = crate::util::load_certs(&args.proxy_cert_chain_path)?;
     let priv_key = crate::util::load_private_key(&args.proxy_private_key_path)?;
-    
+
     // Initialize inference scheduler
     let inference_scheduler = Arc::new(InferenceScheduler::new(active_clients.clone()));
-    
+
     let app_state = ServerState {
         active_clients: active_clients.clone(),
         pending_connections: pending_connections.clone(),
@@ -224,9 +227,6 @@ pub async fn print_monitoring_data(active_clients: ActiveClients) {
         }
     }
 }
-
-
-
 
 // Response structure
 #[derive(Debug, Serialize)]

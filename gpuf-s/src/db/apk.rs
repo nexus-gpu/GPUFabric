@@ -34,9 +34,8 @@ pub async fn upsert_apk_version(
     is_active: Option<bool>,
     released_at: Option<DateTime<Utc>>,
 ) -> Result<ApkVersion, sqlx::Error> {
-    sqlx::query_as(
-        &format!(
-            r#"
+    sqlx::query_as(&format!(
+        r#"
             INSERT INTO {table} (
                 package_name,
                 version_name,
@@ -63,9 +62,8 @@ pub async fn upsert_apk_version(
                 updated_at = NOW()
             RETURNING *
             "#,
-            table = APK_VERSIONS_TABLE
-        ),
-    )
+        table = APK_VERSIONS_TABLE
+    ))
     .bind(package_name)
     .bind(version_name)
     .bind(version_code)
@@ -85,12 +83,10 @@ pub async fn get_apk_version(
     package_name: &str,
     version_code: i64,
 ) -> Result<Option<ApkVersion>, sqlx::Error> {
-    sqlx::query_as(
-        &format!(
-            "SELECT * FROM {table} WHERE package_name = $1 AND version_code = $2",
-            table = APK_VERSIONS_TABLE
-        ),
-    )
+    sqlx::query_as(&format!(
+        "SELECT * FROM {table} WHERE package_name = $1 AND version_code = $2",
+        table = APK_VERSIONS_TABLE
+    ))
     .bind(package_name)
     .bind(version_code)
     .fetch_optional(pool)
@@ -118,9 +114,7 @@ pub async fn list_apk_versions(
     }
 
     if let Some(is_active) = is_active {
-        query_builder
-            .push(" AND is_active = ")
-            .push_bind(is_active);
+        query_builder.push(" AND is_active = ").push_bind(is_active);
     }
 
     query_builder.push(" ORDER BY version_code DESC, released_at DESC NULLS LAST, created_at DESC");
@@ -128,5 +122,8 @@ pub async fn list_apk_versions(
     let limit = limit.unwrap_or(50).min(200) as i64;
     query_builder.push(" LIMIT ").push_bind(limit);
 
-    query_builder.build_query_as::<ApkVersion>().fetch_all(pool).await
+    query_builder
+        .build_query_as::<ApkVersion>()
+        .fetch_all(pool)
+        .await
 }

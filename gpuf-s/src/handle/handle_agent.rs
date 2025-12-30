@@ -1,20 +1,15 @@
-
-
-use tracing::{error, info, warn};
-use tokio::net::TcpStream;
-use uuid::Uuid;
 use super::*;
 use std::time::Duration;
+use tokio::net::TcpStream;
+use tracing::{error, info, warn};
+use uuid::Uuid;
 
 use rdkafka::producer::{FutureProducer, FutureRecord};
-
 
 #[cfg(target_os = "linux")]
 use tokio_uring::net::TcpStream as UringTcpStream;
 
-use crate::util::{
-    protoc::{ClientId, ProxyConnId, RequestIDAndClientIDMessage},
-};
+use crate::util::protoc::{ClientId, ProxyConnId, RequestIDAndClientIDMessage};
 use bytes::BytesMut;
 
 use std::collections::HashMap;
@@ -30,24 +25,19 @@ use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 
-use tokio_rustls::{
-    rustls::{server::ServerConfig},
-    TlsAcceptor,
-};
+use tokio_rustls::{rustls::server::ServerConfig, TlsAcceptor};
 
 #[cfg(feature = "aws_lc_rs")]
 use tokio_rustls::rustls::crypto::aws_lc_rs;
 #[cfg(feature = "ring")]
 use tokio_rustls::rustls::crypto::ring;
 
-use tracing::debug;
 use crate::db::client::get_user_client_by_token;
 use crate::util::msg::ApiResponse;
-
+use tracing::debug;
 
 impl ServerState {
-
-   pub async fn handle_proxy_connections(self: Arc<Self>, listener: TcpListener) -> Result<()> {
+    pub async fn handle_proxy_connections(self: Arc<Self>, listener: TcpListener) -> Result<()> {
         let cert_chain = self.cert_chain.clone();
         let priv_key = self.priv_key.clone();
 
@@ -55,7 +45,7 @@ impl ServerState {
         aws_lc_rs::default_provider()
             .install_default()
             .expect("failed to install aws-lc-rs provider");
-        
+
         #[cfg(feature = "ring")]
         ring::default_provider()
             .install_default()
@@ -138,7 +128,7 @@ impl ServerState {
         }
     }
 
-   pub async fn handle_public_connections(self: Arc<Self>, listener: TcpListener) -> Result<()> {
+    pub async fn handle_public_connections(self: Arc<Self>, listener: TcpListener) -> Result<()> {
         loop {
             let (user_stream, addr) = listener.accept().await?;
             info!("New public connection from: {}", addr);
@@ -177,7 +167,7 @@ impl ServerState {
 
     #[cfg(target_os = "linux")]
     #[allow(dead_code)] // Experimental io_uring implementation for performance optimization
-   pub async fn handle_proxy_connections_uring(
+    pub async fn handle_proxy_connections_uring(
         self: Arc<Self>,
         listener: TcpListener,
         api_key: String,
@@ -187,7 +177,7 @@ impl ServerState {
         let db_pool = self.db_pool.clone();
         let redis_client = self.redis_client.clone();
         let producer = self.producer.clone();
-        
+
         tokio_uring::start(async {
             let std_listener = listener.into_std()?;
             let listener = tokio_uring::net::TcpListener::from_std(std_listener);
@@ -228,7 +218,6 @@ impl ServerState {
             }
         })
     }
-
 }
 
 #[cfg(target_os = "linux")]
@@ -260,7 +249,7 @@ async fn parse_request_uring(_user_stream: UringTcpStream) -> Result<()> {
 async fn parse_request(
     user_stream: &TcpStream,
 ) -> Result<(Option<String>, Option<String>, Option<String>)> {
-    let mut buf = [0u8; 2048]; 
+    let mut buf = [0u8; 2048];
     let n = user_stream.peek(&mut buf).await?;
     if n == 0 {
         return Err(anyhow::anyhow!("Connection closed by peer"));
@@ -612,7 +601,6 @@ async fn extract_chat_info<R: AsyncRead + Unpin>(
                 if let Some(model) = try_parse_model_from_slice(&buffer[body_start..]) {
                     Some(model)
                 } else {
-
                     let mut found = false;
                     let mut model = None;
                     let mut buf = [0u8; 1024];
@@ -622,7 +610,7 @@ async fn extract_chat_info<R: AsyncRead + Unpin>(
                             Ok(0) => {
                                 warn!("Connection closed");
                                 break;
-                            } 
+                            }
                             Ok(n) => {
                                 buffer.truncate(body_start + n);
                                 buffer.extend_from_slice(&buf[..n]);
@@ -650,7 +638,7 @@ async fn extract_chat_info<R: AsyncRead + Unpin>(
                         Ok(0) => {
                             warn!("Connection closed");
                             break;
-                        } 
+                        }
                         Ok(n) => {
                             buffer.truncate(body_start + n);
                             buffer.extend_from_slice(&buf[..n]);
@@ -727,7 +715,6 @@ async fn parse_json_body<R: AsyncRead + Unpin>(
 }
 
 fn try_parse_model_from_slice(data: &[u8]) -> Option<String> {
-
     if let Ok(json) = serde_json::from_slice::<serde_json::Value>(data) {
         debug!("json: {:?}", json);
         if let Some(model) = json.get("model").and_then(|m| m.as_str()) {
@@ -770,7 +757,7 @@ pub async fn send_http_error_response(
     error_message: &str,
 ) -> Result<()> {
     let error_response = ApiResponse::<()>::error(error_message.to_string());
-    
+
     let json_body = serde_json::to_string(&error_response)?;
 
     let status_text = match status_code {
@@ -888,7 +875,6 @@ async fn route_public_connection_new(
     }
 }
 
-
 pub async fn connect_client_filter_model_and_client(
     model_name: &str,
     client_ids: Vec<ClientId>,
@@ -940,8 +926,6 @@ pub async fn connect_client_filter_model_and_client(
         }
     }
 }
-
-
 
 async fn request_to_kafka(
     request_id: Option<String>,

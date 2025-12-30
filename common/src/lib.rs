@@ -16,7 +16,7 @@ pub struct Model {
 }
 
 // Device information from client to server
-#[derive( Encode, Decode, Debug, Clone)]
+#[derive(Encode, Decode, Debug, Clone)]
 pub struct DeviceInfo {
     pub index: u8,
     pub usage: u8,
@@ -28,11 +28,11 @@ pub struct DeviceInfo {
 }
 
 // Device information from client to server (max num: 8)
-#[derive( Encode, Decode, Debug, Clone)]
+#[derive(Encode, Decode, Debug, Clone)]
 pub struct DevicesInfo {
     //pod info
     pub num: u16,
-    pub pod_id:u16,
+    pub pod_id: u16,
     pub total_tflops: u16,
     pub memtotal_gb: u16,
     pub port: u16,
@@ -117,7 +117,7 @@ pub fn set_u8_to_u64(value: &mut u64, index: usize, val: u8) {
 }
 
 /// System information from client to server
-#[derive(Serialize, Deserialize, Encode, Decode, Debug, Clone,Default)]
+#[derive(Serialize, Deserialize, Encode, Decode, Debug, Clone, Default)]
 pub struct SystemInfo {
     pub cpu_usage: u8,
     pub memory_usage: u8,
@@ -161,7 +161,6 @@ pub enum CommandV1 {
         error: Option<String>,
     },
 
-
     // System status from client to server 120s
     Heartbeat {
         client_id: [u8; 16],
@@ -172,7 +171,7 @@ pub enum CommandV1 {
         devices_info: Vec<DevicesInfo>,
     },
 
-        // Push model to server
+    // Push model to server
     PullModelResult {
         pods_model: Vec<PodModel>,
         error: Option<String>,
@@ -182,7 +181,7 @@ pub enum CommandV1 {
     ModelStatus {
         client_id: [u8; 16],
         models: Vec<Model>,
-        auto_models_device: Vec<DevicesInfo>,        
+        auto_models_device: Vec<DevicesInfo>,
     },
 
     // Inference task from server to client
@@ -240,28 +239,82 @@ pub enum CommandV1 {
 
 #[derive(Encode, Decode, Debug, Clone)]
 pub enum CommandV2 {
-        /// P2P connection request - gpuf-c request gpuf-s to establish P2P connection with another client
+    /// P2P connection request - gpuf-c request gpuf-s to establish P2P connection with another client
     P2PConnectionRequest {
         source_client_id: [u8; 16],
         target_client_id: [u8; 16],
         connection_id: [u8; 16],
     },
-    
+
+    P2PConnectionConfig {
+        peer_id: [u8; 16],
+        connection_id: [u8; 16],
+        stun_urls: Vec<String>,
+        turn_urls: Vec<String>,
+        turn_username: String,
+        turn_password: String,
+        expires_at: u64,
+        force_tls: bool,
+    },
+
+    P2PCandidates {
+        source_client_id: [u8; 16],
+        target_client_id: [u8; 16],
+        connection_id: [u8; 16],
+        candidates: Vec<P2PCandidate>,
+    },
+
+    P2PInferenceRequest {
+        connection_id: [u8; 16],
+        task_id: String,
+        model: Option<String>,
+        prompt: String,
+        max_tokens: u32,
+        temperature: f32,
+        top_k: u32,
+        top_p: f32,
+        repeat_penalty: f32,
+        repeat_last_n: i32,
+        min_keep: u32,
+    },
+
+    P2PInferenceChunk {
+        connection_id: [u8; 16],
+        task_id: String,
+        seq: u32,
+        delta: String,
+        done: bool,
+        error: Option<String>,
+    },
+
+    P2PInferenceDone {
+        connection_id: [u8; 16],
+        task_id: String,
+        prompt_tokens: u32,
+        completion_tokens: u32,
+        total_tokens: u32,
+    },
+
+    P2PCancelInference {
+        connection_id: [u8; 16],
+        task_id: String,
+    },
+
     /// P2P connection info - gpuf-s send peer info to both ends
     P2PConnectionInfo {
         peer_id: [u8; 16],
-        peer_addrs: Vec<String>,  // multiple candidate addresses (public IP, private IP)
-        stun_result: Option<String>,  // STUN discovered public address
+        peer_addrs: Vec<String>, // multiple candidate addresses (public IP, private IP)
+        stun_result: Option<String>, // STUN discovered public address
         connection_id: [u8; 16],
     },
-    
+
     /// P2P connection established - gpuf-c and gpuf-s establish P2P connection
     P2PConnectionEstablished {
         peer_id: [u8; 16],
         connection_id: [u8; 16],
-        connection_type: P2PConnectionType, 
+        connection_type: P2PConnectionType,
     },
-    
+
     /// P2P connection failed, fallback to relay mode
     P2PConnectionFailed {
         peer_id: [u8; 16],
@@ -271,13 +324,34 @@ pub enum CommandV2 {
 }
 
 #[derive(Encode, Decode, Debug, Clone, PartialEq)]
-pub enum P2PConnectionType {
-    Direct,      // direct P2P connection
-    Relay,       // relay through gpuf-s
-    TURN,        // through TURN server
+pub struct P2PCandidate {
+    pub candidate_type: P2PCandidateType,
+    pub transport: P2PTransport,
+    pub addr: String,
+    pub priority: u32,
 }
 
-#[derive( Encode, Decode, Debug, Clone, PartialEq)]
+#[derive(Encode, Decode, Debug, Clone, PartialEq)]
+pub enum P2PTransport {
+    Tcp,
+    Udp,
+}
+
+#[derive(Encode, Decode, Debug, Clone, PartialEq)]
+pub enum P2PCandidateType {
+    Host,
+    Srflx,
+    Relay,
+}
+
+#[derive(Encode, Decode, Debug, Clone, PartialEq)]
+pub enum P2PConnectionType {
+    Direct, // direct P2P connection
+    Relay,  // relay through gpuf-s
+    TURN,   // through TURN server
+}
+
+#[derive(Encode, Decode, Debug, Clone, PartialEq)]
 pub enum OsType {
     MACOS,
     WINDOWS,
@@ -290,10 +364,10 @@ pub enum OsType {
 #[repr(i16)]
 #[derive(Encode, Decode, Debug, Clone, Copy, PartialEq)]
 pub enum EngineType {
-    Ollama = 1,   
-    Vllm = 2,    
+    Ollama = 1,
+    Vllm = 2,
     TensorRT = 3,
-    ONNX = 4, 
+    ONNX = 4,
     Llama = 6,
     None = 5,
 }
@@ -358,7 +432,7 @@ pub async fn read_command<R: AsyncRead + Unpin>(
     buf.resize(len, 0);
     reader.read_exact(buf).await?;
 
-    let (command, _) = bincode::decode_from_slice(&buf, config)
+    let (command, _) = bincode::decode_from_slice(buf.as_ref(), config)
         .map_err(|e| anyhow!("Failed to deserialize command: {}", e))?;
     Ok(command)
 }
@@ -391,7 +465,7 @@ pub fn read_command_sync<R: std::io::Read>(reader: &mut R) -> Result<Command> {
     let mut len_buf = [0u8; 4];
     reader.read_exact(&mut len_buf)?;
     let len = u32::from_be_bytes(len_buf) as usize;
-    
+
     if len > MAX_MESSAGE_SIZE {
         warn!(
             "read_command_sync: Message too large: {} bytes (max: {} bytes)",
@@ -420,7 +494,7 @@ pub fn write_command_sync<W: std::io::Write>(writer: &mut W, command: &Command) 
         .with_little_endian();
     let buf = bincode::encode_to_vec(command, config)?;
     let len = buf.len() as u32;
-    
+
     if len as usize > MAX_MESSAGE_SIZE {
         warn!(
             "write_command_sync: Message too large: {} bytes (max: {} bytes)",
@@ -599,7 +673,6 @@ fn test_format_bytes() {
 
 #[tokio::test]
 async fn test_command_serialization_roundtrip() {
-
     // Create a Vec<u8> buffer for writing
     let mut buf = Vec::with_capacity(MAX_MESSAGE_SIZE);
     // Create a BufWriter that wraps our Vec<u8>
@@ -620,26 +693,24 @@ async fn test_command_serialization_roundtrip() {
         version: 1,
         device_memtotal_gb: 256,
         device_total_tflops: 0,
-        devices_info: vec![
-            DevicesInfo {
-                num: 0,
-                pod_id: 0,
-                total_tflops: 0,
-                memtotal_gb: 0,
-                port: 0,
-                ip: 0,
-                os_type: OsType::MACOS,
-                engine_type: EngineType::Ollama,
-                memsize_gb: 0,
-                powerlimit_w: 0,
-                vendor_id: 0,
-                device_id: 0,
-                usage: 60,
-                mem_usage: 50,
-                power_usage: 250,
-                temp: 123,
-            }
-        ],
+        devices_info: vec![DevicesInfo {
+            num: 0,
+            pod_id: 0,
+            total_tflops: 0,
+            memtotal_gb: 0,
+            port: 0,
+            ip: 0,
+            os_type: OsType::MACOS,
+            engine_type: EngineType::Ollama,
+            memsize_gb: 0,
+            powerlimit_w: 0,
+            vendor_id: 0,
+            device_id: 0,
+            usage: 60,
+            mem_usage: 50,
+            power_usage: 250,
+            temp: 123,
+        }],
     });
 
     // Serialize and write the command
@@ -657,7 +728,10 @@ async fn test_command_serialization_roundtrip() {
     // Verify the round-trip
     match (&cmd, &deserialized_cmd) {
         (Command::V1(cmd_v1), Command::V1(deser_v1)) => {
-            println!("Command deserialized successfully cmd_v1 {:?}, deser_v1 {:?}",cmd_v1, deser_v1);
+            println!(
+                "Command deserialized successfully cmd_v1 {:?}, deser_v1 {:?}",
+                cmd_v1, deser_v1
+            );
 
             match (cmd_v1, deser_v1) {
                 (
@@ -680,20 +754,36 @@ async fn test_command_serialization_roundtrip() {
                         version: _,
                         device_memtotal_gb: _,
                         device_total_tflops: _,
-                    }
+                    },
                 ) => {
                     assert_eq!(original_id, deserialized_id, "client_id mismatch");
-                    assert_eq!(original_sys.cpu_usage, deserialized_sys.cpu_usage, "cpu_usage mismatch");
-                    assert_eq!(original_sys.memory_usage, deserialized_sys.memory_usage, "memory_usage mismatch");
-                    assert_eq!(original_sys.disk_usage, deserialized_sys.disk_usage, "disk_usage mismatch");
-                    assert_eq!(original_devices.len(), deserialized_devices.len(), "device_info length mismatch");
+                    assert_eq!(
+                        original_sys.cpu_usage, deserialized_sys.cpu_usage,
+                        "cpu_usage mismatch"
+                    );
+                    assert_eq!(
+                        original_sys.memory_usage, deserialized_sys.memory_usage,
+                        "memory_usage mismatch"
+                    );
+                    assert_eq!(
+                        original_sys.disk_usage, deserialized_sys.disk_usage,
+                        "disk_usage mismatch"
+                    );
+                    assert_eq!(
+                        original_devices.len(),
+                        deserialized_devices.len(),
+                        "device_info length mismatch"
+                    );
 
                     for (orig, deser) in original_devices.iter().zip(deserialized_devices) {
                         assert_eq!(orig.vendor_id, deser.vendor_id, "device vendor_id mismatch");
                         assert_eq!(orig.device_id, deser.device_id, "device device_id mismatch");
                         assert_eq!(orig.usage, deser.usage, "device usage mismatch");
                         assert_eq!(orig.mem_usage, deser.mem_usage, "device mem_usage mismatch");
-                        assert_eq!(orig.power_usage, deser.power_usage, "device power_usage mismatch");
+                        assert_eq!(
+                            orig.power_usage, deser.power_usage,
+                            "device power_usage mismatch"
+                        );
                     }
                 }
                 _ => panic!("Unexpected command variant"),

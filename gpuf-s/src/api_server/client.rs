@@ -1,20 +1,23 @@
-use validator::Validate;
-use serde::{Deserialize, Serialize};
 use axum::{
     extract::{Query, State},
     http::StatusCode,
     Json,
 };
+use serde::{Deserialize, Serialize};
+use validator::Validate;
 
-use tracing::{error, info};
-use std::sync::Arc;
 use crate::util::msg::ApiResponse;
 use crate::util::protoc::ClientId;
+use std::sync::Arc;
+use tracing::{error, info};
 
-use crate::api_server::ClientInfoResponse;
 use crate::api_server::ApiServer;
-use crate::db::{client::{self,ClientDeviceInfo,ClientDeviceDetailResponse},stats::{self,EditClientRequest}};
-use crate::db::stats::{ClientHeartbeatInfo,ClientMonitorInfo};
+use crate::api_server::ClientInfoResponse;
+use crate::db::stats::{ClientHeartbeatInfo, ClientMonitorInfo};
+use crate::db::{
+    client::{self, ClientDeviceDetailResponse, ClientDeviceInfo},
+    stats::{self, EditClientRequest},
+};
 
 // Create Client Request
 #[derive(Debug, Validate, Serialize, Deserialize)]
@@ -148,20 +151,16 @@ pub async fn get_client_detail(
         .parse::<ClientId>()
         .map_err(|_| StatusCode::BAD_REQUEST)?;
 
-    let devices = client::get_client_device_detail(
-        &app_state.db_pool,
-        &query.user_id,
-        &client_id_bytes,
-    )
-    .await
-    .map_err(|e| {
-        tracing::error!("/api/user/client_list: {}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    let devices =
+        client::get_client_device_detail(&app_state.db_pool, &query.user_id, &client_id_bytes)
+            .await
+            .map_err(|e| {
+                tracing::error!("/api/user/client_list: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
 
     Ok(Json(ApiResponse::success(devices)))
 }
-
 
 // Edit client info handler
 pub async fn edit_client_info(
@@ -210,20 +209,20 @@ pub async fn get_client_stats(
     Query(query): Query<ClientStatQuery>,
 ) -> Result<Json<ApiResponse<stats::ClientStatResponse>>, StatusCode> {
     // Get database connection
-    let devices = stats::get_client_stats(&app_state.db_pool, 
+    let devices = stats::get_client_stats(
+        &app_state.db_pool,
         &query.user_id,
         Some(time::Duration::minutes(2)),
         Some(time::Duration::hours(48)),
     )
-        .await
-        .map_err(|e| {
-            tracing::error!("Failed to get client stats: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    .await
+    .map_err(|e| {
+        tracing::error!("Failed to get client stats: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     Ok(Json(ApiResponse::success(devices)))
 }
-
 
 // Request query parameters
 #[derive(Debug, Validate, Serialize, Deserialize)]
@@ -237,20 +236,16 @@ pub async fn get_client_monitor(
     State(app_state): State<Arc<ApiServer>>,
     Query(query): Query<ClientMonitorQuery>,
 ) -> Result<Json<ApiResponse<Vec<ClientMonitorInfo>>>, StatusCode> {
-    
-    let devices_info = stats::get_client_monitor(&app_state.db_pool, 
-        &query.user_id,
-        query.client_id,
-    )
-        .await
-        .map_err(|e| {
-            tracing::error!("Failed to get client stats: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    let devices_info =
+        stats::get_client_monitor(&app_state.db_pool, &query.user_id, query.client_id)
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to get client stats: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
 
     Ok(Json(ApiResponse::success(devices_info)))
 }
-
 
 #[derive(Debug, Validate, Serialize, Deserialize)]
 pub struct ClientHealthQuery {
@@ -261,24 +256,22 @@ pub struct ClientHealthQuery {
     pub end_date: Option<String>,
 }
 
-
 pub async fn get_client_health(
     State(app_state): State<Arc<ApiServer>>,
     Query(query): Query<ClientHealthQuery>,
 ) -> Result<Json<ApiResponse<Vec<ClientHeartbeatInfo>>>, StatusCode> {
-    
-    let devices_info = stats::get_client_heartbeats(&app_state.db_pool, 
+    let devices_info = stats::get_client_heartbeats(
+        &app_state.db_pool,
         &query.user_id,
         query.client_id,
         query.start_date,
         query.end_date,
     )
-        .await
-        .map_err(|e| {
-            tracing::error!("Failed to get client stats: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    .await
+    .map_err(|e| {
+        tracing::error!("Failed to get client stats: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     Ok(Json(ApiResponse::success(devices_info)))
 }
-    

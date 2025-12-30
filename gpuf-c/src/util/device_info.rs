@@ -1,10 +1,8 @@
-
 #[cfg(target_os = "macos")]
 use std::{
-    io::{BufRead,BufReader},
+    io::{BufRead, BufReader},
     process::{Command, Stdio},
 };
-
 
 #[cfg(target_os = "macos")]
 #[derive(Debug)]
@@ -17,7 +15,6 @@ pub struct PowerMetrics {
 
 #[cfg(target_os = "macos")]
 pub fn read_power_metrics() -> Option<PowerMetrics> {
-    
     let mut child = Command::new("sudo")
         .arg("powermetrics")
         .arg("--samplers")
@@ -63,10 +60,8 @@ pub fn read_power_metrics() -> Option<PowerMetrics> {
     })
 }
 
-
 #[allow(unused)]
 fn parse_power_line(line: &str) -> Option<(String, f64)> {
-
     let parts: Vec<&str> = line.split(':').collect();
     if parts.len() < 2 {
         return None;
@@ -79,7 +74,6 @@ fn parse_power_line(line: &str) -> Option<(String, f64)> {
     }
     None
 }
-
 
 #[cfg(target_os = "macos")]
 #[test]

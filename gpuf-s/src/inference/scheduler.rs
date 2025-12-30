@@ -1,16 +1,16 @@
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use std::collections::HashMap;
-use tokio::sync::{oneshot, Mutex};
+use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
+use tokio::sync::{oneshot, Mutex};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
-use tracing::{debug,info, warn,error};
 
-use common::{Command, CommandV1};
 use crate::handle::ActiveClients;
 use crate::util::protoc::ClientId;
+use common::{Command, CommandV1};
 
 // Type aliases for easier function signatures
 // Note: Can't create type alias for enum variants in Rust
@@ -147,18 +147,21 @@ impl InferenceScheduler {
         }
 
         let device_id = self.select_best_device(allowed_client_ids).await?;
-        if let Err(e) = self.send_task_to_device(
-            &device_id,
-            task_id.clone(),
-            request.prompt,
-            request.max_tokens.unwrap_or(4090),
-            request.temperature.unwrap_or(0.7),
-            request.top_k.unwrap_or(40),
-            request.top_p.unwrap_or(0.9),
-            request.repeat_penalty.unwrap_or(1.1),
-            request.repeat_last_n.unwrap_or(64),
-            request.min_keep.unwrap_or(1),
-        ).await {
+        if let Err(e) = self
+            .send_task_to_device(
+                &device_id,
+                task_id.clone(),
+                request.prompt,
+                request.max_tokens.unwrap_or(4090),
+                request.temperature.unwrap_or(0.7),
+                request.top_k.unwrap_or(40),
+                request.top_p.unwrap_or(0.9),
+                request.repeat_penalty.unwrap_or(1.1),
+                request.repeat_last_n.unwrap_or(64),
+                request.min_keep.unwrap_or(1),
+            )
+            .await
+        {
             let mut streams = self.pending_streams.lock().await;
             streams.remove(&task_id);
             return Err(e);
@@ -281,7 +284,10 @@ impl InferenceScheduler {
     }
 
     pub async fn cancel_inference(&self, task_id: &str, device_id: &ClientId) -> Result<()> {
-        debug!("Cancelling inference for task {} on device {}", task_id, device_id);
+        debug!(
+            "Cancelling inference for task {} on device {}",
+            task_id, device_id
+        );
         {
             let mut streams = self.pending_streams.lock().await;
             streams.remove(task_id);
@@ -354,7 +360,10 @@ impl InferenceScheduler {
         };
 
         let command = Command::V1(chat_task);
-        info!("sent chat inference task {} to device {:?} :{:?}", task_id, device_id, command);
+        info!(
+            "sent chat inference task {} to device {:?} :{:?}",
+            task_id, device_id, command
+        );
         write_command(&mut *writer, &command).await?;
         writer.flush().await?;
         Ok(())
@@ -417,7 +426,8 @@ impl InferenceScheduler {
         }
 
         if let Some(err) = error {
-            self.handle_inference_result(task_id, false, None, Some(err), 0, 0, 0).await;
+            self.handle_inference_result(task_id, false, None, Some(err), 0, 0, 0)
+                .await;
             return;
         }
 
@@ -446,7 +456,8 @@ impl InferenceScheduler {
     }
 
     /// Handle inference result from device
-    pub async fn handle_inference_result(&self, 
+    pub async fn handle_inference_result(
+        &self,
         task_id: String,
         success: bool,
         result: Option<String>,
@@ -455,13 +466,16 @@ impl InferenceScheduler {
         prompt_tokens: u32,
         completion_tokens: u32,
     ) {
-        info!("Handling inference result for task {} (success: {})", task_id, success);
-        
+        info!(
+            "Handling inference result for task {} (success: {})",
+            task_id, success
+        );
+
         let mut tasks = self.pending_tasks.lock().await;
         let all_tasks_before: Vec<String> = tasks.keys().cloned().collect();
         info!("Current pending tasks count: {}", tasks.len());
         info!("All tasks before removal: {:?}", all_tasks_before);
-        
+
         // Find the sender for this taskretain
         let sender = tasks.remove(&task_id);
         info!("pop sender : {:?}", sender);
@@ -514,31 +528,35 @@ impl InferenceScheduler {
     }
 
     /// Select best Android device for inference
-    async fn select_best_device(&self, allowed_client_ids: Option<&[ClientId]>) -> Result<ClientId> {
+    async fn select_best_device(
+        &self,
+        allowed_client_ids: Option<&[ClientId]>,
+    ) -> Result<ClientId> {
         let clients = self.active_clients.lock().await;
-        
+
         let mut best_device: Option<(ClientId, u16)> = None;
         let mut device_count = 0;
 
-        let mut consider_device = |client_id: &ClientId, client_info: &crate::handle::ClientInfo| {
-            // Only consider authenticated Android devices
-            if !client_info.authed {
-                return;
-            }
+        let mut consider_device =
+            |client_id: &ClientId, client_info: &crate::handle::ClientInfo| {
+                // Only consider authenticated Android devices
+                if !client_info.authed {
+                    return;
+                }
 
-            // Check if device has system info (Android devices should have this)
-            let Some(system_info) = &client_info.system_info else {
-                return;
+                // Check if device has system info (Android devices should have this)
+                let Some(system_info) = &client_info.system_info else {
+                    return;
+                };
+
+                // Simple load balancing: choose device with lowest CPU + Memory usage
+                let total_load: u16 = (system_info.cpu_usage + system_info.memory_usage) as u16;
+                device_count += 1;
+
+                if best_device.is_none() || total_load < best_device.as_ref().unwrap().1 {
+                    best_device = Some((*client_id, total_load));
+                }
             };
-
-            // Simple load balancing: choose device with lowest CPU + Memory usage
-            let total_load: u16 = (system_info.cpu_usage + system_info.memory_usage) as u16;
-            device_count += 1;
-
-            if best_device.is_none() || total_load < best_device.as_ref().unwrap().1 {
-                best_device = Some((*client_id, total_load));
-            }
-        };
 
         match allowed_client_ids {
             Some(allowed) => {
@@ -556,10 +574,12 @@ impl InferenceScheduler {
                 }
             }
         }
-        
+
         if let Some((client_id, _load)) = best_device {
-            info!("Selected device {:?} for inference (load: {}%, available devices: {})", 
-                  client_id, _load, device_count);
+            info!(
+                "Selected device {:?} for inference (load: {}%, available devices: {})",
+                client_id, _load, device_count
+            );
             Ok(client_id)
         } else {
             Err(anyhow!("No available Android devices found"))
@@ -567,24 +587,39 @@ impl InferenceScheduler {
     }
 
     /// Send inference task to device
-    async fn send_task_to_device(&self, device_id: &ClientId, task_id: String, prompt: String, max_tokens: u32, temperature: f32, top_k: u32, top_p: f32, repeat_penalty: f32, repeat_last_n: i32, min_keep: u32) -> Result<()> {
+    async fn send_task_to_device(
+        &self,
+        device_id: &ClientId,
+        task_id: String,
+        prompt: String,
+        max_tokens: u32,
+        temperature: f32,
+        top_k: u32,
+        top_p: f32,
+        repeat_penalty: f32,
+        repeat_last_n: i32,
+        min_keep: u32,
+    ) -> Result<()> {
         use common::write_command;
-        
+
         // Find active client connection
         let mut clients = self.active_clients.lock().await;
-        let client_info = clients.get_mut(device_id)
+        let client_info = clients
+            .get_mut(device_id)
             .ok_or_else(|| anyhow!("Device {:?} not found or not connected", device_id))?;
-        
+
         // Check if client is authenticated and ready
         if !client_info.authed {
             error!("Device {:?} not authenticated", device_id);
             return Err(anyhow!("Device {:?} not authenticated", device_id));
         }
-        
+
         // Try to acquire writer lock (non-blocking to avoid deadlocks)
-        let mut writer = client_info.writer.try_lock()
+        let mut writer = client_info
+            .writer
+            .try_lock()
             .map_err(|_| anyhow!("Device {:?} is busy, please try again", device_id))?;
-        
+
         // Create and send inference task command
         let inference_task = CommandV1::InferenceTask {
             task_id: task_id.clone(),
@@ -597,13 +632,19 @@ impl InferenceScheduler {
             repeat_last_n,
             min_keep,
         };
-        
+
         let command = Command::V1(inference_task);
-        info!("sent inference task {} to device {:?} :{:?}", task_id, device_id, command);
+        info!(
+            "sent inference task {} to device {:?} :{:?}",
+            task_id, device_id, command
+        );
         write_command(&mut *writer, &command).await?;
         writer.flush().await?;
-        
-        info!("Successfully sent inference task {} to device {:?}", task_id, device_id);
+
+        info!(
+            "Successfully sent inference task {} to device {:?}",
+            task_id, device_id
+        );
         Ok(())
     }
 
@@ -614,7 +655,7 @@ impl InferenceScheduler {
         allowed_client_ids: Option<&[ClientId]>,
     ) -> Result<CompletionResponse> {
         let task_id = Uuid::new_v4().to_string();
-        
+
         // Create response channel
         let (sender, receiver) = oneshot::channel();
         {
@@ -623,43 +664,59 @@ impl InferenceScheduler {
             info!("Existing tasks before insert: {:?}", existing_tasks);
             tasks.insert(task_id.clone(), sender);
             let all_tasks: Vec<String> = tasks.keys().cloned().collect();
-            info!("Stored task {} in pending_tasks (total: {})", task_id, tasks.len());
+            info!(
+                "Stored task {} in pending_tasks (total: {})",
+                task_id,
+                tasks.len()
+            );
             info!("All tasks in pending_tasks: {:?}", all_tasks);
         }
 
         // Select best available device
         let device_id = self.select_best_device(allowed_client_ids).await?;
-        
+
         // Send task to device
         info!("About to send task {} to device {:?}", task_id, device_id);
-        if let Err(e) = self.send_task_to_device(
-            &device_id,
-            task_id.clone(),
-            request.prompt,
-            request.max_tokens.unwrap_or(1024),
-            request.temperature.unwrap_or(0.7),
-            request.top_k.unwrap_or(40),
-            request.top_p.unwrap_or(0.9),
-            request.repeat_penalty.unwrap_or(1.1),
-            request.repeat_last_n.unwrap_or(64),
-            request.min_keep.unwrap_or(1),
-        ).await {
+        if let Err(e) = self
+            .send_task_to_device(
+                &device_id,
+                task_id.clone(),
+                request.prompt,
+                request.max_tokens.unwrap_or(1024),
+                request.temperature.unwrap_or(0.7),
+                request.top_k.unwrap_or(40),
+                request.top_p.unwrap_or(0.9),
+                request.repeat_penalty.unwrap_or(1.1),
+                request.repeat_last_n.unwrap_or(64),
+                request.min_keep.unwrap_or(1),
+            )
+            .await
+        {
             // Clean up pending task on failure
             let mut tasks = self.pending_tasks.lock().await;
             tasks.remove(&task_id);
-            error!("Failed to send inference task to device {:?}: {}", device_id, e);
+            error!(
+                "Failed to send inference task to device {:?}: {}",
+                device_id, e
+            );
             return Err(e);
         }
 
-        info!("Task {} sent successfully, now waiting for result...", task_id);
-        
+        info!(
+            "Task {} sent successfully, now waiting for result...",
+            task_id
+        );
+
         // Check if task is still in pending_tasks before waiting
         {
             let tasks = self.pending_tasks.lock().await;
             info!("Pending tasks count before timeout wait: {}", tasks.len());
             if !tasks.contains_key(&task_id) {
                 error!("Task {} missing from pending_tasks before wait!", task_id);
-                return Err(anyhow!("Task {} was removed from pending_tasks unexpectedly", task_id));
+                return Err(anyhow!(
+                    "Task {} was removed from pending_tasks unexpectedly",
+                    task_id
+                ));
             }
         }
 
@@ -674,50 +731,62 @@ impl InferenceScheduler {
             "Waiting for result of task {} with {}s timeout...",
             task_id, timeout_secs
         );
-        match tokio::time::timeout(
-            std::time::Duration::from_secs(timeout_secs),
-            receiver
-        ).await {
+        match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), receiver).await {
             Ok(Ok(response)) => {
                 info!("Task {} completed successfully", task_id);
                 response
-            },
+            }
             Ok(Err(_)) => {
                 warn!("Task {} response channel closed", task_id);
                 Err(anyhow!("Task response channel closed"))
-            },
+            }
             Err(_) => {
                 // Clean up pending task on timeout
                 let mut tasks = self.pending_tasks.lock().await;
                 tasks.remove(&task_id);
                 warn!("Task {} timed out after {} seconds", task_id, timeout_secs);
-                Err(anyhow!("Inference task timed out after {} seconds", timeout_secs))
+                Err(anyhow!(
+                    "Inference task timed out after {} seconds",
+                    timeout_secs
+                ))
             }
         }
     }
 
     /// Get list of available devices
-    pub async fn get_available_devices(&self, allowed_client_ids: Option<&[ClientId]>) -> Vec<DeviceInfo> {
+    pub async fn get_available_devices(
+        &self,
+        allowed_client_ids: Option<&[ClientId]>,
+    ) -> Vec<DeviceInfo> {
         let clients = self.active_clients.lock().await;
         let mut devices = Vec::new();
-        
-        let mut maybe_push_device = |client_id: &ClientId, client_info: &crate::handle::ClientInfo| {
-            if !client_info.authed {
-                return;
-            }
-            let device = DeviceInfo {
-                client_id: hex::encode(&client_id.0),
-                status: if client_info.system_info.is_some() {
-                    "online".to_string()
-                } else {
-                    "initializing".to_string()
-                },
-                cpu_usage: client_info.system_info.as_ref().map(|s| s.cpu_usage).unwrap_or(0),
-                memory_usage: client_info.system_info.as_ref().map(|s| s.memory_usage).unwrap_or(0),
-                device_count: client_info.devices_info.len() as u32,
+
+        let mut maybe_push_device =
+            |client_id: &ClientId, client_info: &crate::handle::ClientInfo| {
+                if !client_info.authed {
+                    return;
+                }
+                let device = DeviceInfo {
+                    client_id: hex::encode(&client_id.0),
+                    status: if client_info.system_info.is_some() {
+                        "online".to_string()
+                    } else {
+                        "initializing".to_string()
+                    },
+                    cpu_usage: client_info
+                        .system_info
+                        .as_ref()
+                        .map(|s| s.cpu_usage)
+                        .unwrap_or(0),
+                    memory_usage: client_info
+                        .system_info
+                        .as_ref()
+                        .map(|s| s.memory_usage)
+                        .unwrap_or(0),
+                    device_count: client_info.devices_info.len() as u32,
+                };
+                devices.push(device);
             };
-            devices.push(device);
-        };
 
         match allowed_client_ids {
             Some(allowed) => {
@@ -733,7 +802,7 @@ impl InferenceScheduler {
                 }
             }
         }
-        
+
         devices
     }
 }

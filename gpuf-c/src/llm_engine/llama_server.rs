@@ -205,7 +205,7 @@ async fn chat_completions(
 
     // Build prompt
     let prompt = build_chat_prompt(&req.messages);
-    
+
     // Generate text
     let engine = state.engine.read().await;
     let max_tokens = req.max_tokens.unwrap_or(100);
@@ -325,7 +325,7 @@ async fn completions(
 /// You can set CHAT_TEMPLATE env var to: chatml, llama3, alpaca, or simple (default)
 fn build_chat_prompt(messages: &[ChatMessage]) -> String {
     let template = std::env::var("CHAT_TEMPLATE").unwrap_or_else(|_| "simple".to_string());
-    
+
     match template.to_lowercase().as_str() {
         "chatml" => build_chatml_prompt(messages),
         "llama3" => build_llama3_prompt(messages),
@@ -338,7 +338,10 @@ fn build_chat_prompt(messages: &[ChatMessage]) -> String {
 fn build_chatml_prompt(messages: &[ChatMessage]) -> String {
     let mut prompt = String::new();
     for msg in messages {
-        prompt.push_str(&format!("<|im_start|>{}\n{}<|im_end|>\n", msg.role, msg.content));
+        prompt.push_str(&format!(
+            "<|im_start|>{}\n{}<|im_end|>\n",
+            msg.role, msg.content
+        ));
     }
     prompt.push_str("<|im_start|>assistant\n");
     prompt
@@ -348,7 +351,10 @@ fn build_chatml_prompt(messages: &[ChatMessage]) -> String {
 fn build_llama3_prompt(messages: &[ChatMessage]) -> String {
     let mut prompt = String::from("<|begin_of_text|>");
     for msg in messages {
-        prompt.push_str(&format!("<|start_header_id|>{}<|end_header_id|>\n\n{}<|eot_id|>", msg.role, msg.content));
+        prompt.push_str(&format!(
+            "<|start_header_id|>{}<|end_header_id|>\n\n{}<|eot_id|>",
+            msg.role, msg.content
+        ));
     }
     prompt.push_str("<|start_header_id|>assistant<|end_header_id|>\n\n");
     prompt
@@ -373,7 +379,8 @@ fn build_alpaca_prompt(messages: &[ChatMessage]) -> String {
 fn build_simple_prompt(messages: &[ChatMessage]) -> String {
     let mut prompt = String::new();
     for msg in messages {
-        prompt.push_str(&format!("{}: {}\n\n", 
+        prompt.push_str(&format!(
+            "{}: {}\n\n",
             match msg.role.as_str() {
                 "user" => "Human",
                 "assistant" => "Assistant",
@@ -393,7 +400,7 @@ struct AppError(anyhow::Error);
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         error!("API error: {}", self.0);
-        
+
         let error_response = ErrorResponse {
             error: ErrorDetail {
                 message: self.0.to_string(),
@@ -415,18 +422,14 @@ where
 }
 
 /// Start HTTP server
-pub async fn start_server(
-    engine: Arc<RwLock<LlamaEngine>>,
-    host: &str,
-    port: u16,
-) -> Result<()> {
+pub async fn start_server(engine: Arc<RwLock<LlamaEngine>>, host: &str, port: u16) -> Result<()> {
     let app = create_router(engine);
     let addr = format!("{}:{}", host, port);
-    
+
     info!("Starting Llama API server on {}", addr);
-    
+
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, app).await?;
-    
+
     Ok(())
 }

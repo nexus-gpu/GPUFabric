@@ -1,14 +1,18 @@
 //! Standalone inference service module
-//! 
+//!
 //! This module provides a standalone LLM inference service, decoupled from gpuf-c client
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
+use axum::{
+    extract::State,
+    routing::{get, post},
+    Json, Router,
+};
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use axum::{Router, routing::{get, post}, Json, extract::State};
-use serde::{Deserialize, Serialize};
-use tracing::{info, error, debug};
+use tracing::{debug, error, info};
 
 /// Inference service configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,7 +32,7 @@ pub struct InferenceServiceConfig {
 impl Default for InferenceServiceConfig {
     fn default() -> Self {
         Self {
-            port: 8082,  // Distinguish from gpuf-c's 8081
+            port: 8082, // Distinguish from gpuf-c's 8081
             model_path: String::new(),
             n_ctx: 4096,
             n_gpu_layers: 999,
@@ -80,7 +84,7 @@ impl InferenceService {
     /// Create new inference service
     pub fn new(config: InferenceServiceConfig) -> Result<Self> {
         info!("Creating inference service with config: {:?}", config);
-        
+
         // Verify model file exists
         if !Path::new(&config.model_path).exists() {
             return Err(anyhow!("Model file not found: {}", config.model_path));
@@ -109,7 +113,10 @@ impl InferenceService {
             .await
             .map_err(|e| anyhow!("Failed to bind to port {}: {}", self.config.port, e))?;
 
-        info!("Inference service started successfully on http://0.0.0.0:{}", self.config.port);
+        info!(
+            "Inference service started successfully on http://0.0.0.0:{}",
+            self.config.port
+        );
 
         axum::serve(listener, app)
             .await
@@ -120,8 +127,11 @@ impl InferenceService {
 
     /// Initialize LLM engine
     async fn init_llm_engine(&self) -> Result<()> {
-        info!("Initializing LLM engine with model: {}", self.config.model_path);
-        
+        info!(
+            "Initializing LLM engine with model: {}",
+            self.config.model_path
+        );
+
         // Simulate engine initialization
         if std::path::Path::new(&self.config.model_path).exists() {
             info!("LLM engine initialized successfully (simulated)");
@@ -145,7 +155,7 @@ impl InferenceService {
     /// Stop service
     pub async fn stop(&self) -> Result<()> {
         info!("Stopping inference service");
-        
+
         // Simulate engine unload
         info!("LLM engine unloaded successfully (simulated)");
         Ok(())
@@ -181,7 +191,11 @@ async fn completions(
     let max_tokens = request.max_tokens.unwrap_or(1024);
 
     // Simulate text generation
-    let text = format!("Generated response for: {} (simulated, max_tokens: {})", &request.prompt[..request.prompt.len().min(50)], max_tokens);
+    let text = format!(
+        "Generated response for: {} (simulated, max_tokens: {})",
+        &request.prompt[..request.prompt.len().min(50)],
+        max_tokens
+    );
 
     let generation_time = start_time.elapsed().as_millis() as u64;
     let tokens_used = estimate_tokens(&text);
@@ -207,16 +221,25 @@ async fn chat_completions(
 ) -> Result<Json<serde_json::Value>, axum::http::StatusCode> {
     // Simplified implementation, convert chat messages to single prompt
     let prompt = extract_chat_prompt(&request)?;
-    
+
     let inference_request = InferenceRequest {
         prompt,
-        max_tokens: request.get("max_tokens").and_then(|v| v.as_u64()).map(|v| v as usize),
-        temperature: request.get("temperature").and_then(|v| v.as_f64()).map(|v| v as f32),
-        top_p: request.get("top_p").and_then(|v| v.as_f64()).map(|v| v as f32),
+        max_tokens: request
+            .get("max_tokens")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize),
+        temperature: request
+            .get("temperature")
+            .and_then(|v| v.as_f64())
+            .map(|v| v as f32),
+        top_p: request
+            .get("top_p")
+            .and_then(|v| v.as_f64())
+            .map(|v| v as f32),
     };
 
     let response = completions(State(state), Json(inference_request)).await?;
-    
+
     // Convert to OpenAI format
     let openai_response = serde_json::json!({
         "id": format!("chatcmpl-{}", uuid::Uuid::new_v4()),
@@ -260,7 +283,7 @@ async fn list_models(State(_state): State<InferenceServiceState>) -> Json<serde_
 /// Get service statistics
 async fn get_stats(State(state): State<InferenceServiceState>) -> Json<serde_json::Value> {
     let request_count = *state.request_count.read().await;
-    
+
     Json(serde_json::json!({
         "request_count": request_count,
         "engine_initialized": !state.config.model_path.is_empty(),
@@ -281,23 +304,26 @@ fn estimate_tokens(text: &str) -> usize {
 
 /// Extract prompt from chat request
 fn extract_chat_prompt(request: &serde_json::Value) -> Result<String, axum::http::StatusCode> {
-    let messages = request.get("messages")
+    let messages = request
+        .get("messages")
         .and_then(|v| v.as_array())
         .ok_or(axum::http::StatusCode::BAD_REQUEST)?;
 
     let mut prompt = String::new();
-    
+
     for message in messages {
-        let role = message.get("role")
+        let role = message
+            .get("role")
             .and_then(|v| v.as_str())
             .unwrap_or("user");
-        let content = message.get("content")
+        let content = message
+            .get("content")
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
         prompt.push_str(&format!("{}: {}\n", role, content));
     }
-    
+
     prompt.push_str("assistant: ");
     Ok(prompt)
 }
@@ -320,7 +346,7 @@ mod tests {
             model_path: "test.gguf".to_string(),
             ..Default::default()
         };
-        
+
         // This test will fail because file doesn't exist, but can test creation logic
         let result = InferenceService::new(config);
         assert!(result.is_err());

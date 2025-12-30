@@ -1,17 +1,13 @@
-pub mod db;
 pub mod cmd;
+pub mod db;
+pub mod msg;
 pub mod pack;
 pub mod protoc;
-pub mod msg;
-use tracing::{debug,info, Level};
 use anyhow::Result;
-use tokio_rustls::{
-    rustls::{
-        pki_types::{CertificateDer, PrivateKeyDer},
-    },
-};
 use std::fs::File;
-use std::io::BufReader; 
+use std::io::BufReader;
+use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use tracing::{debug, info, Level};
 
 pub fn load_certs(path: &str) -> Result<Vec<CertificateDer<'static>>> {
     let f = File::open(path)?;
@@ -47,7 +43,6 @@ pub fn load_private_key(path: &str) -> Result<PrivateKeyDer<'static>> {
     anyhow::bail!("no private keys found in {}", path);
 }
 
-
 pub fn init_logging() {
     // Use DEBUG level for debug builds, INFO for release builds
 
@@ -74,6 +69,6 @@ pub fn init_logging() {
         .with_line_number(true)
         .compact()
         .init();
-    
+
     debug!("Logging initialized");
 }

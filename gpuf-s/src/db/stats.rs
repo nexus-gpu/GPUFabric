@@ -44,7 +44,6 @@ pub struct DeviceDailyStats {
 }
 
 impl ClientDailyStats {
-
     pub async fn upsert(
         tx: &mut Transaction<'_, Postgres>,
         client_id: &ClientId,
@@ -173,7 +172,7 @@ impl DeviceDailyStats {
                     .push_bind(Some(device.temp as f64))
                     .push_bind(Some(device.power_usage as f64))
                     .push_bind(Some(device.mem_usage as f64))
-                    .push_bind(1); 
+                    .push_bind(1);
             }
         });
 
@@ -411,10 +410,9 @@ pub struct ClientStatsDb {
 pub async fn get_client_stats(
     pool: &sqlx::PgPool,
     user_id: &str,
-    recent_interval: Option<time::Duration>, 
-    _analysis_window: Option<time::Duration>, 
+    recent_interval: Option<time::Duration>,
+    _analysis_window: Option<time::Duration>,
 ) -> Result<ClientStatResponse> {
-
     let recent_interval = recent_interval.unwrap_or_else(|| time::Duration::minutes(5));
     //let analysis_window = analysis_window.unwrap_or_else(|| time::Duration::hours(24));
 
@@ -784,11 +782,11 @@ pub async fn get_client_heartbeats(
         );
         param_count += 1;
     }
-    
+
     let start_datetime = start_date.as_ref().and_then(|d| {
         NaiveDateTime::parse_from_str(d, "%Y-%m-%dT%H:%M:%S")
             .ok()
-            .map(|ndt| ndt.and_utc().naive_utc()) 
+            .map(|ndt| ndt.and_utc().naive_utc())
     });
     let end_datetime = end_date.as_ref().and_then(|d| {
         NaiveDateTime::parse_from_str(d, "%Y-%m-%dT%H:%M:%S")

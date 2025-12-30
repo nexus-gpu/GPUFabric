@@ -7,9 +7,12 @@ use tokio::process::Command;
 use tokio::sync::RwLock;
 use tokio::time::sleep;
 use tokio::time::Duration;
-use tracing::{error, info, warn, debug};
+use tracing::{debug, error, info, warn};
 
-use super::{Engine, VLLMEngine, VLLM_CONTAINER_NAME, VLLM_DEFAULT_PORT, DEFAULT_CHAT_TEMPLATE,VLLM_CONTAINER_PATH};
+use super::{
+    Engine, VLLMEngine, DEFAULT_CHAT_TEMPLATE, VLLM_CONTAINER_NAME, VLLM_CONTAINER_PATH,
+    VLLM_DEFAULT_PORT,
+};
 
 macro_rules! setup_tensor_parallel {
     ($args:expr, $gpu_count:expr) => {{
@@ -128,17 +131,11 @@ impl VLLMEngine {
         let port = VLLM_DEFAULT_PORT.to_string();
         let volume_flag = format!("{}:/root/.cache/huggingface/hub", model_dir);
 
-        let mut args = vec![
-            "run",
-            "-d",
-            "--rm",
-            &name_flag,
-
-        ];
+        let mut args = vec!["run", "-d", "--rm", &name_flag];
         #[cfg(not(target_os = "macos"))]
         {
-            args.extend(["--network","host","--ipc", "host"]);
-        }   
+            args.extend(["--network", "host", "--ipc", "host"]);
+        }
 
         // Port mapping for macOS and Windows (host network not supported)
         #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -153,18 +150,16 @@ impl VLLMEngine {
                 format!("{}:{}", path, DEFAULT_CHAT_TEMPLATE)
             }
             None => {
-                let temp_dir = std::env::var("TEMP_DIR")
-                    .unwrap_or_else(|_| "/tmp".to_string());
+                let temp_dir = std::env::var("TEMP_DIR").unwrap_or_else(|_| "/tmp".to_string());
                 let temp_dir = std::path::Path::new(&temp_dir);
                 let template_path = temp_dir.join("vllm_default_template.jinja");
                 std::fs::write(&template_path, DEFAULT_CHAT_TEMPLATE)?;
                 format!("{}:{}", template_path.display(), VLLM_CONTAINER_PATH)
-            
             }
         };
         args.push("-v");
         args.push(template_path.as_str());
-   
+
         let tensor_parallel = setup_tensor_parallel!(args, self.gpu_count);
         if let Some(hugging_face_hub_token) = &self.hugging_face_hub_token {
             args.push("-e");
@@ -178,7 +173,7 @@ impl VLLMEngine {
         args.push(&port);
         args.push("--chat-template");
         args.push(VLLM_CONTAINER_PATH);
-        
+
         // args.push("--api-key");
         // args.push("dummy");
         args.push("--tensor-parallel-size");
@@ -192,7 +187,6 @@ impl VLLMEngine {
             args.push("--model");
             args.push(model);
         }
-        
 
         debug!("VLLM args: {:?}", args);
         let output = Command::new("docker")
@@ -262,12 +256,11 @@ impl VLLMEngine {
                 }
                 Err(e) => {
                     info!(
-                        "⌛ Waiting for VLLM service... (attempt {}, elapsed: {:.2?}, error: {})", 
+                        "⌛ Waiting for VLLM service... (attempt {}, elapsed: {:.2?}, error: {})",
                         attempt,
                         start.elapsed(),
                         e
                     );
-                    
                 }
             }
             attempt += 2;
@@ -322,7 +315,10 @@ impl Engine for VLLMEngine {
         }
     }
 
-    fn set_models(&mut self, models: Vec<String>) -> impl std::future::Future<Output = Result<()>> + Send {
+    fn set_models(
+        &mut self,
+        models: Vec<String>,
+    ) -> impl std::future::Future<Output = Result<()>> + Send {
         async move {
             if models.is_empty() {
                 return Err(anyhow!("Model list cannot be empty"));

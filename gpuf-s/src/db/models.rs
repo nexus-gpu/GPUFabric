@@ -1,14 +1,14 @@
+use crate::db::GPU_ASSETS_TABLE;
 use crate::util::protoc::ClientId;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use common::{DevicesInfo, EngineType, OsType, PodModel};
 use lru::LruCache;
 use sqlx::{Pool, Postgres};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
-use crate::db::GPU_ASSETS_TABLE;
-use common::{DevicesInfo,PodModel,EngineType,OsType};
 
 #[derive(Clone)]
 pub struct HotModelClass {
@@ -32,7 +32,7 @@ impl HotModelClass {
         (mem_mb / GB50_IN_MB) * GB50_IN_MB
     }
     pub async fn get_hot_model(&self, mem_total_gb: u32, engine_type: i16) -> Result<String> {
-        // TODO: 
+        // TODO:
         // let aligned_mem = Self::align_gpu_memory(mem_total_mb);
         // {
         //     let cache = self.cache.read().await;
@@ -61,7 +61,7 @@ impl HotModelClass {
             return Ok("".to_string());
         }
 
-        // TODO: 
+        // TODO:
         // let mut cache = self.cache.write().await;
         // cache.put(aligned_mem, format!("{}:{}", model[0].name, model[0].version));
 
@@ -83,9 +83,7 @@ impl ClientModelClass {
     pub fn new(pool: Arc<Pool<Postgres>>) -> Self {
         Self {
             pool,
-            cache: Arc::new(RwLock::new(LruCache::new(
-                NonZeroUsize::new(1000).unwrap(), 
-            ))),
+            cache: Arc::new(RwLock::new(LruCache::new(NonZeroUsize::new(1000).unwrap()))),
         }
     }
 
@@ -125,17 +123,16 @@ struct ClientModel {
 // Get client model
 #[allow(dead_code)] // Database query implementation for client model retrieval
 async fn get_client_model_impl(pool: &Pool<Postgres>, client_id: &ClientId) -> Result<String> {
-
-    let client = sqlx::query_as::<_, ClientModel>(
-        &format!("
+    let client = sqlx::query_as::<_, ClientModel>(&format!(
+        "
              SELECT 
             model,
             model_version
             FROM {} 
             WHERE client_id = $1 AND outo_set_model = $2
             ",
-            GPU_ASSETS_TABLE)
-    )
+        GPU_ASSETS_TABLE
+    ))
     .bind(client_id)
     .bind(false)
     .fetch_optional(pool)
@@ -239,19 +236,16 @@ pub async fn get_models_list(
     Ok(models)
 }
 
-
-
 pub async fn get_models_batch(
     hot_models: &Arc<HotModelClass>,
     devices_info: &Vec<DevicesInfo>,
 ) -> Result<Vec<PodModel>> {
-
     let mut pod_model = Vec::new();
-    
+
     for device_info in devices_info {
-        if device_info.engine_type == EngineType::None || 
-        device_info.os_type == OsType::NONE||
-        device_info.memtotal_gb == 0
+        if device_info.engine_type == EngineType::None
+            || device_info.os_type == OsType::NONE
+            || device_info.memtotal_gb == 0
         {
             pod_model.push(PodModel {
                 pod_id: device_info.pod_id,
@@ -290,5 +284,3 @@ pub async fn get_models_batch(
     }
     Ok(pod_model)
 }
-
-

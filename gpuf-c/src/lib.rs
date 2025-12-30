@@ -16,14 +16,14 @@ use jni::objects::{JClass, JObject, JString};
 use jni::sys::{jboolean, jbyteArray, jfloat, jint, jlong, jstring};
 #[cfg(target_os = "android")]
 use jni::JNIEnv;
+use libc::size_t;
 use once_cell::sync::Lazy;
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
+use std::io::Write;
 #[cfg(target_os = "android")]
 use std::os::raw::c_ulonglong;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::{Arc, Mutex};
-use std::io::Write;
-use libc::size_t;
 struct Utf8EmitBuffer {
     buf: Vec<u8>,
 }
@@ -93,9 +93,9 @@ pub mod util;
 
 // JNI wrapper modules
 #[cfg(target_os = "android")]
-pub mod jni_remote_worker;
-#[cfg(target_os = "android")]
 pub mod jni_llama;
+#[cfg(target_os = "android")]
+pub mod jni_remote_worker;
 
 // Simulate llama.cpp structs (avoid C++ symbol dependencies)
 #[repr(C)]
@@ -482,7 +482,7 @@ extern "C" {
         pos_0: LlamaPos,
         seq_id: c_int,
     ) -> llama_batch;
-    
+
     // Memory/KV cache management (llama.rn style)
     fn llama_get_memory(ctx: *mut llama_context) -> *mut c_void;
     fn llama_memory_seq_rm(mem: *mut c_void, seq_id: c_int, p0: LlamaPos, p1: LlamaPos) -> bool;
@@ -603,7 +603,6 @@ fn safe_llama_tokenize_with_pool(
     // Temporarily disabled - use safe_tokenize instead
     0
 }
-
 
 #[cfg(target_os = "android")]
 // llama-cpp-rs
@@ -732,7 +731,6 @@ fn simple_char_tokenize(
         token_count
     }
 }
-
 
 // Safe test function to check if llama_token_to_piece works
 #[cfg(target_os = "android")]
@@ -925,7 +923,7 @@ pub fn manual_llama_completion(
         }
 
         println!("🔍 Creating initial batch with {} tokens", token_count);
-        
+
         let initial_batch = llama_batch {
             n_tokens: token_count,
             token: tokens.as_ptr(),
@@ -938,7 +936,7 @@ pub fn manual_llama_completion(
             all_pos_1: current_pos + token_count - 1,
             all_seq_id: 0,
         };
-        
+
         println!("🔍 Initial batch created, about to decode...");
 
         println!(
@@ -979,8 +977,10 @@ pub fn manual_llama_completion(
         );
 
         // PROPER SAMPLER: Use actual sampling parameters
-        println!(" Creating sampler with params: temp={}, top_k={}, top_p={}, repeat_penalty={}", 
-                 temperature, top_k, top_p, repeat_penalty);
+        println!(
+            " Creating sampler with params: temp={}, top_k={}, top_p={}, repeat_penalty={}",
+            temperature, top_k, top_p, repeat_penalty
+        );
 
         // Create sampler chain
         let chain_params = llama_sampler_chain_params { no_perf_fac: false };
@@ -992,16 +992,20 @@ pub fn manual_llama_completion(
         }
 
         // Add samplers in proper order (like llama.cpp examples)
-        
+
         // 1. Repeat penalty sampler
         if repeat_penalty != 1.0 {
-            let repeat_sampler = unsafe { llama_sampler_init_penalties(-1, repeat_penalty, 0.0, 0.0) };
+            let repeat_sampler =
+                unsafe { llama_sampler_init_penalties(-1, repeat_penalty, 0.0, 0.0) };
             if !repeat_sampler.is_null() {
                 unsafe { llama_sampler_chain_add(persistent_sampler, repeat_sampler) };
-                println!(" Added Repeat penalty sampler (penalty: {})", repeat_penalty);
+                println!(
+                    " Added Repeat penalty sampler (penalty: {})",
+                    repeat_penalty
+                );
             }
         }
-        
+
         // 2. Top-K sampler
         if top_k > 0 {
             let top_k_sampler = unsafe { llama_sampler_init_top_k(top_k) };
@@ -1010,7 +1014,7 @@ pub fn manual_llama_completion(
                 println!(" Added Top-K sampler (k: {})", top_k);
             }
         }
-        
+
         // 3. Top-P sampler
         if top_p < 1.0 {
             let top_p_sampler = unsafe { llama_sampler_init_top_p(top_p, 1) };
@@ -1019,7 +1023,7 @@ pub fn manual_llama_completion(
                 println!(" Added Top-P sampler (p: {})", top_p);
             }
         }
-        
+
         // 4. Temperature sampler
         if temperature > 0.0 {
             let temp_sampler = unsafe { llama_sampler_init_temp(temperature) };
@@ -1028,7 +1032,7 @@ pub fn manual_llama_completion(
                 println!(" Added Temperature sampler (temp: {})", temperature);
             }
         }
-        
+
         // 5. Distribution sampler (for actual sampling)
         let dist_sampler = unsafe { llama_sampler_init_dist(1234) };
         if !dist_sampler.is_null() {
@@ -1046,11 +1050,11 @@ pub fn manual_llama_completion(
             // After decode, logits are available at index (n_tokens - 1) for single token batches
             // For initial batch, logits are at the last token position
             let sampling_index = if i == 0 {
-                token_count - 1  // First iteration: sample from initial batch's last token
+                token_count - 1 // First iteration: sample from initial batch's last token
             } else {
-                0  // Subsequent iterations: single token batch, logits at index 0
+                0 // Subsequent iterations: single token batch, logits at index 0
             };
-            
+
             println!(
                 " Sampling iteration {}: from logits index {} (batch_size: {})",
                 i, sampling_index, current_batch_size
@@ -1059,7 +1063,7 @@ pub fn manual_llama_completion(
             // Use persistent sampler
             let sampled_token =
                 unsafe { llama_sampler_sample(persistent_sampler, ctx, sampling_index) };
-            
+
             println!(" Sampled token: {} at position {}", sampled_token, next_pos);
 
             // Check for EOS
@@ -1150,7 +1154,7 @@ pub fn manual_llama_completion(
                 " No tokens generated - continuous context ready from pos {} (next: {})",
                 current_pos, GLOBAL_CONTEXT_POSITION
             );
-            String::new()  // Return empty string if no tokens generated
+            String::new() // Return empty string if no tokens generated
         };
 
         let text_bytes = final_text.as_bytes();
@@ -1422,11 +1426,11 @@ pub extern "C" fn gpuf_create_context(model: *mut llama_model) -> *mut llama_con
 
     let mut params = unsafe { llama_context_default_params() };
     params.n_ctx = 4096;
-    params.n_batch = 128; 
-    params.n_threads = 4; 
-    params.n_threads_batch = 4; 
-    params.embeddings = false; 
-    params.offload_kqv = false; 
+    params.n_batch = 128;
+    params.n_threads = 4;
+    params.n_threads_batch = 4;
+    params.embeddings = false;
+    params.offload_kqv = false;
 
     println!("📍 About to call real_llama_init_from_model...");
     let result = real_llama_init_from_model(model, params);
@@ -1727,16 +1731,16 @@ impl ProjectorType {
                 VisionTokens {
                     start: "<|vision_start|>",
                     end: "<|vision_end|>",
-                    media: "<__media__>",  // Use standard media marker for libmtmd positioning
+                    media: "<__media__>", // Use standard media marker for libmtmd positioning
                 }
-            },
+            }
             ProjectorType::LLaVA | _ => {
                 VisionTokens {
                     start: "", // LLaVA and others use media marker
                     end: "",
                     media: "<__media__>",
                 }
-            },
+            }
         }
     }
 }
@@ -1747,7 +1751,7 @@ pub struct gpuf_multimodal_model {
     pub text_model: *mut llama_model,
     pub mtmd_context: *mut MtmdContext,
     pub projector_type: ProjectorType, // Cache model type
-    pub vocab: *const llama_vocab,  // Store vocab pointer like official
+    pub vocab: *const llama_vocab,     // Store vocab pointer like official
     pub is_multimodal: bool,
     // 🆕 Keep CString alive for media_marker
     _media_marker: CString,
@@ -1757,7 +1761,7 @@ pub struct MultimodalModel {
     pub llama_model: *mut llama_model,
     pub llama_context: *mut llama_context,
     pub mtmd_context: *mut MtmdContext,
-    pub vocab: *const llama_vocab,  // Store vocab pointer like official
+    pub vocab: *const llama_vocab, // Store vocab pointer like official
     pub model_path: String,
     pub mmproj_path: String,
 }
@@ -1850,21 +1854,21 @@ pub extern "C" fn gpuf_load_multimodal_model(
         // Override only necessary fields
         ctx_params.use_gpu = true;
         ctx_params.n_threads = 4;
-        
+
         // 🆕 Set proper media marker based on model type
         let projector_type = detect_model_type_from_path(text_path);
         let media_marker = match projector_type {
             ProjectorType::Qwen2VL | ProjectorType::Qwen25VL | ProjectorType::Qwen3VL => {
                 // Qwen2-VL uses standard media marker for positioning, libmtmd handles vision tokens
                 CString::new("<__media__>").unwrap_or_default()
-            },
+            }
             _ => {
                 // SmolVLM and others use <__media__>
                 CString::new("<__media__>").unwrap_or_default()
             }
         };
         ctx_params.media_marker = media_marker.as_ptr();
-        
+
         let mtmd_ctx = mtmd_init_from_file(mmproj_cstr.as_ptr(), text_model, ctx_params);
         if mtmd_ctx.is_null() {
             eprintln!("❌ Failed to initialize libmtmd context");
@@ -1875,24 +1879,27 @@ pub extern "C" fn gpuf_load_multimodal_model(
         // 🆕 Detect model type from filename
         let projector_type = detect_model_type_from_path(text_path);
         println!("🎯 Detected model type: {:?}", projector_type);
-        
+
         let vision_tokens = projector_type.get_vision_tokens();
         if !vision_tokens.media.is_empty() {
             println!("  Using media marker: {}", vision_tokens.media);
         }
         if !vision_tokens.start.is_empty() {
-            println!("  Using vision tokens: {} ... {}", vision_tokens.start, vision_tokens.end);
+            println!(
+                "  Using vision tokens: {} ... {}",
+                vision_tokens.start, vision_tokens.end
+            );
         }
 
         // Get vocab pointer like official (before creating the structure)
         let vocab = llama_model_get_vocab(text_model);
-        
+
         // Create multimodal model structure with cached type
         let multimodal_model = Box::new(gpuf_multimodal_model {
             text_model,
             mtmd_context: mtmd_ctx,
             projector_type, // 🆕 Cache model type
-            vocab,  // Store vocab pointer like official
+            vocab,          // Store vocab pointer like official
             is_multimodal: true,
             _media_marker: media_marker, // 🆕 Keep CString alive
         });
@@ -1972,7 +1979,7 @@ pub extern "C" fn gpuf_generate_multimodal(
             println!("⚠️ Using provided context: {:p} (may fail on reuse)", ctx);
             ctx
         };
-        
+
         if ctx.is_null() {
             println!("❌ Failed to create/get context");
             return -1;
@@ -2024,46 +2031,55 @@ pub extern "C" fn gpuf_generate_multimodal(
                     let mut encode_result = 0;
                     let mut chunk_count = 0;
                     let mut current_pos: MtmdLlamaPos = 0;
-                    
+
                     // 🆕 Define new_n_past at higher scope to fix variable access issue
                     let mut new_n_past: MtmdLlamaPos = 0;
-                    
+
                     // For multimodal models, the tokenization should have already prepared the context
                     // Let's check if we can proceed directly to generation
                     // Always use mtmd_helper_eval_chunks to encode and get correct n_past position
                     println!("🔍 Encoding multimodal input with mtmd_helper_eval_chunks...");
                     println!("🔍 Before encoding - current_pos: {}", current_pos);
-                    
+
                     unsafe {
                         // Check context state before encoding
                         let pre_encode_n_ctx = llama_n_ctx(ctx);
                         let pre_encode_vocab = llama_n_vocab(ctx);
-                        println!("🔍 Pre-encode: n_ctx={}, vocab_size={}", pre_encode_n_ctx, pre_encode_vocab);
-                        
+                        println!(
+                            "🔍 Pre-encode: n_ctx={}, vocab_size={}",
+                            pre_encode_n_ctx, pre_encode_vocab
+                        );
+
                         encode_result = mtmd_helper_eval_chunks(
                             mtmd_ctx,
                             ctx,
                             chunks as *mut c_void,
                             current_pos,
-                            0, // seq_id
-                            128, // n_batch
+                            0,    // seq_id
+                            128,  // n_batch
                             true, // logits_last
                             &mut new_n_past,
                         );
-                        
+
                         println!("🔍 mtmd_helper_eval_chunks result: {}", encode_result);
                         println!("🔍 New n_past: {} (was: {})", new_n_past, current_pos);
-                        
+
                         // Check context state after encoding
                         let post_encode_n_ctx = llama_n_ctx(ctx);
                         let post_encode_vocab = llama_n_vocab(ctx);
-                        println!("🔍 Post-encode: n_ctx={}, vocab_size={}", post_encode_n_ctx, post_encode_vocab);
-                        
+                        println!(
+                            "🔍 Post-encode: n_ctx={}, vocab_size={}",
+                            post_encode_n_ctx, post_encode_vocab
+                        );
+
                         if post_encode_vocab == 0 && pre_encode_vocab > 0 {
-                            println!("⚠️ WARNING: vocab_size changed from {} to 0 after encoding!", pre_encode_vocab);
+                            println!(
+                                "⚠️ WARNING: vocab_size changed from {} to 0 after encoding!",
+                                pre_encode_vocab
+                            );
                             println!("⚠️ This is expected - will use direct vocab pointer for generation");
                         }
-                        
+
                         if encode_result == 0 {
                             println!("✅ Multimodal evaluation successful!");
                             // Update position for generation
@@ -2072,19 +2088,33 @@ pub extern "C" fn gpuf_generate_multimodal(
                             println!("❌ Multimodal evaluation failed: {}", encode_result);
                         }
                     }
-                    
-                    println!("🔢 Encoded {} chunks, result: {}", chunk_count, encode_result);
-                    println!("🔍 Encode result check: {}", if encode_result == 0 { "SUCCESS" } else { "FAILED" });
-                    
+
+                    println!(
+                        "🔢 Encoded {} chunks, result: {}",
+                        chunk_count, encode_result
+                    );
+                    println!(
+                        "🔍 Encode result check: {}",
+                        if encode_result == 0 {
+                            "SUCCESS"
+                        } else {
+                            "FAILED"
+                        }
+                    );
+
                     if encode_result == 0 {
                         println!("✅ Multimodal encoding successful - proceeding with generation");
-                        println!("🔍 Using position {} from mtmd_helper_eval_chunks", new_n_past);
-                        
+                        println!(
+                            "🔍 Using position {} from mtmd_helper_eval_chunks",
+                            new_n_past
+                        );
+
                         // Always use direct vocab pointer approach for consistency
                         // This avoids issues with llama_n_vocab(ctx) returning 0 after multimodal encoding
                         let model_ptr = unsafe { llama_get_model(ctx) };
                         if model_ptr.is_null() {
-                            let error_msg = CString::new("❌ Failed to get model pointer").unwrap_or_default();
+                            let error_msg =
+                                CString::new("❌ Failed to get model pointer").unwrap_or_default();
                             let error_bytes = error_msg.as_bytes_with_nul();
                             let copy_len = std::cmp::min(error_bytes.len(), output_len as usize);
                             std::ptr::copy_nonoverlapping(
@@ -2094,10 +2124,11 @@ pub extern "C" fn gpuf_generate_multimodal(
                             );
                             return copy_len as c_int;
                         }
-                        
+
                         let vocab = unsafe { llama_model_get_vocab(model_ptr) };
                         if vocab.is_null() {
-                            let error_msg = CString::new("❌ Failed to get vocab pointer").unwrap_or_default();
+                            let error_msg =
+                                CString::new("❌ Failed to get vocab pointer").unwrap_or_default();
                             let error_bytes = error_msg.as_bytes_with_nul();
                             let copy_len = std::cmp::min(error_bytes.len(), output_len as usize);
                             std::ptr::copy_nonoverlapping(
@@ -2107,9 +2138,12 @@ pub extern "C" fn gpuf_generate_multimodal(
                             );
                             return copy_len as c_int;
                         }
-                        
-                        println!("✅ Got vocab pointer {:p}, starting generation from position {}", vocab, new_n_past);
-                        
+
+                        println!(
+                            "✅ Got vocab pointer {:p}, starting generation from position {}",
+                            vocab, new_n_past
+                        );
+
                         // Call generation with direct vocab pointer and correct position
                         let generated_text = generate_multimodal_response_with_vocab(
                             ctx,
@@ -2138,7 +2172,8 @@ pub extern "C" fn gpuf_generate_multimodal(
                         }
                     } else {
                         println!("❌ Multimodal encoding failed: {}", encode_result);
-                        let error_msg = CString::new("❌ Multimodal encoding failed").unwrap_or_default();
+                        let error_msg =
+                            CString::new("❌ Multimodal encoding failed").unwrap_or_default();
                         let error_bytes = error_msg.as_bytes_with_nul();
                         let copy_len = std::cmp::min(error_bytes.len(), output_len as usize);
                         std::ptr::copy_nonoverlapping(
@@ -2218,7 +2253,7 @@ pub extern "C" fn gpuf_generate_multimodal_stream(
     user_data: *mut c_void,
 ) -> c_int {
     println!("🔍 Starting streaming multimodal generation...");
-    
+
     if multimodal_model.is_null() || text_prompt.is_null() {
         return -1;
     }
@@ -2242,7 +2277,7 @@ pub extern "C" fn gpuf_generate_multimodal_stream(
             println!("⚠️ Using provided context: {:p}", ctx);
             ctx
         };
-        
+
         if ctx.is_null() {
             println!("❌ Failed to create/get context");
             return -1;
@@ -2253,8 +2288,10 @@ pub extern "C" fn gpuf_generate_multimodal_stream(
             Err(_) => return -1,
         };
 
-        println!("🔥 GPUFabric: Streaming multimodal generation - temp:{}, top_k:{}, top_p:{}", 
-                 temperature, top_k, top_p);
+        println!(
+            "🔥 GPUFabric: Streaming multimodal generation - temp:{}, top_k:{}, top_p:{}",
+            temperature, top_k, top_p
+        );
 
         // Create input text structure
         let prompt_cstr = CString::new(prompt_str).unwrap_or_default();
@@ -2276,13 +2313,13 @@ pub extern "C" fn gpuf_generate_multimodal_stream(
 
         // Prepare for tokenization
         let mut bitmaps: Vec<*mut MtmdBitmap> = Vec::new();
-        
+
         // Add image if provided
         if !image_data.is_null() && image_size > 0 {
             println!("🔍 DEBUG: Image data found - {} bytes", image_size);
-            
+
             let bitmap = mtmd_bitmap_init(224, 224, image_data);
-            
+
             if !bitmap.is_null() {
                 bitmaps.push(bitmap);
             }
@@ -2296,7 +2333,7 @@ pub extern "C" fn gpuf_generate_multimodal_stream(
             bitmaps.as_ptr(),
             bitmaps.len(),
         );
-        
+
         // Cleanup bitmaps
         for bitmap in bitmaps {
             mtmd_bitmap_free(bitmap);
@@ -2328,8 +2365,6 @@ pub extern "C" fn gpuf_generate_multimodal_stream(
             mtmd_input_chunks_free(chunks);
             if ctx_was_null {
                 llama_free(ctx);
-
-                
             }
             return -1;
         }
@@ -2357,7 +2392,7 @@ pub extern "C" fn gpuf_generate_multimodal_stream(
 
         // 🔑 Inline streaming generation (avoid function call issues)
         println!("🔍 Starting inline streaming generation...");
-        
+
         let generated_text = {
             // Initialize samplers
             let temp_sampler = llama_sampler_init_temp(temperature);
@@ -2367,11 +2402,9 @@ pub extern "C" fn gpuf_generate_multimodal_stream(
             let dist_sampler = llama_sampler_init_dist(1234);
 
             // Chain samplers
-            let chain_params = llama_sampler_chain_params {
-                no_perf_fac: false,
-            };
+            let chain_params = llama_sampler_chain_params { no_perf_fac: false };
             let sampler = llama_sampler_chain_init(chain_params);
-            
+
             llama_sampler_chain_add(sampler, temp_sampler);
             llama_sampler_chain_add(sampler, top_k_sampler);
             llama_sampler_chain_add(sampler, top_p_sampler);
@@ -2439,15 +2472,15 @@ pub extern "C" fn gpuf_generate_multimodal_stream(
 
             llama_sampler_free(sampler);
             println!("✅ Generated {} tokens", generated_count);
-            
+
             generated_text
         };
 
         // Cleanup
         mtmd_input_chunks_free(chunks);
-        
+
         let token_count = generated_text.split_whitespace().count() as c_int;
-        
+
         // 🔑 Call completion callback with safety checks
         if let Some(callback) = on_complete {
             match CString::new(generated_text.clone()) {
@@ -2548,7 +2581,7 @@ pub extern "C" fn gpuf_get_vision_tokens(
     unsafe {
         let model_ref = &*multimodal_model;
         let vision_tokens = model_ref.projector_type.get_vision_tokens();
-        
+
         // Convert Rust strings to C strings and copy to output buffers
         if let Ok(start_cstr) = CString::new(vision_tokens.start) {
             if !start_token.is_null() {
@@ -2557,7 +2590,7 @@ pub extern "C" fn gpuf_get_vision_tokens(
                 std::ptr::copy_nonoverlapping(start_cstr.as_ptr(), start_token, copy_len);
             }
         }
-        
+
         if let Ok(end_cstr) = CString::new(vision_tokens.end) {
             if !end_token.is_null() {
                 let end_len = end_cstr.to_bytes_with_nul().len();
@@ -2565,7 +2598,7 @@ pub extern "C" fn gpuf_get_vision_tokens(
                 std::ptr::copy_nonoverlapping(end_cstr.as_ptr(), end_token, copy_len);
             }
         }
-        
+
         if let Ok(media_cstr) = CString::new(vision_tokens.media) {
             if !media_token.is_null() {
                 let media_len = media_cstr.to_bytes_with_nul().len();
@@ -2573,7 +2606,7 @@ pub extern "C" fn gpuf_get_vision_tokens(
                 std::ptr::copy_nonoverlapping(media_cstr.as_ptr(), media_token, copy_len);
             }
         }
-        
+
         // Return model type as integer for debugging
         model_ref.projector_type as c_int
     }
@@ -2596,8 +2629,17 @@ fn generate_multimodal_response(
             return "❌ Context initialization failed - vocab size is 0".to_string();
         }
     }
-    
-    generate_multimodal_response_with_vocab(ctx, std::ptr::null(), max_tokens, temperature, top_k, top_p, repeat_penalty, 0) // 🆕 Start from position 0 for text-only generation
+
+    generate_multimodal_response_with_vocab(
+        ctx,
+        std::ptr::null(),
+        max_tokens,
+        temperature,
+        top_k,
+        top_p,
+        repeat_penalty,
+        0,
+    ) // 🆕 Start from position 0 for text-only generation
 }
 
 #[cfg(target_os = "android")]
@@ -2614,7 +2656,7 @@ fn generate_multimodal_response_with_vocab(
     if ctx.is_null() {
         return "❌ Invalid context".to_string();
     }
-    
+
     // Create samplers for generation
     let temp_sampler = unsafe { llama_sampler_init_temp(temperature) };
     let top_k_sampler = unsafe { llama_sampler_init_top_k(top_k) };
@@ -2623,11 +2665,9 @@ fn generate_multimodal_response_with_vocab(
     let dist_sampler = unsafe { llama_sampler_init_dist(1234) }; // Fixed seed for reproducibility
 
     // Chain samplers together
-    let chain_params = llama_sampler_chain_params {
-        no_perf_fac: false,
-    };
+    let chain_params = llama_sampler_chain_params { no_perf_fac: false };
     let sampler = unsafe { llama_sampler_chain_init(chain_params) };
-    
+
     unsafe {
         llama_sampler_chain_add(sampler, temp_sampler);
         llama_sampler_chain_add(sampler, top_k_sampler);
@@ -2642,22 +2682,27 @@ fn generate_multimodal_response_with_vocab(
         unsafe { llama_sampler_free(sampler) };
         return "❌ Model is null".to_string();
     }
-    
+
     let vocab = if direct_vocab.is_null() {
         unsafe { llama_model_get_vocab(model) }
     } else {
         direct_vocab
     };
-    
+
     if vocab.is_null() {
         unsafe { llama_sampler_free(sampler) };
         return "❌ Vocab is null".to_string();
     }
-    
+
     let vocab_size = unsafe { llama_vocab_n_tokens(vocab) };
     let n_ctx = unsafe { llama_n_ctx(ctx as *const llama_context) };
-    
-    println!("🔢 Context size: {}, Vocab size: {}, Using direct vocab: {}", n_ctx, vocab_size, !direct_vocab.is_null());
+
+    println!(
+        "🔢 Context size: {}, Vocab size: {}, Using direct vocab: {}",
+        n_ctx,
+        vocab_size,
+        !direct_vocab.is_null()
+    );
 
     // Validate vocab
     if vocab_size == 0 {
@@ -2665,27 +2710,33 @@ fn generate_multimodal_response_with_vocab(
         unsafe { llama_sampler_free(sampler) };
         return "❌ Vocab initialization failed - vocab size is 0".to_string();
     }
-    
-    println!("🔍 Starting multimodal inference with vocab size: {}", vocab_size);
-    
+
+    println!(
+        "🔍 Starting multimodal inference with vocab size: {}",
+        vocab_size
+    );
+
     // 🆕 Follow llama.rn pattern: sample immediately after mtmd_helper_eval_chunks
     println!("🔧 Following llama.rn pattern - sampling immediately after encoding");
-    
+
     // 🆕 Declare n_past in outer scope to fix variable access issue
     let mut n_past = initial_n_past;
-    
+
     // Generate tokens one by one
     let mut generated_text = String::new();
     let mut generated_count = 0;
-    
+
     // 🔍 Debug: Check context state before generation loop
     println!("🔍 === Generation Loop Starting ===");
     println!("🔍 Initial n_past: {}", n_past);
     println!("🔍 Context size: {}", n_ctx);
     println!("🔍 Vocab size: {}", vocab_size);
     println!("🔍 Max tokens: {}", max_tokens);
-    println!("🔍 Temperature: {}, Top-K: {}, Top-P: {}", temperature, top_k, top_p);
-    
+    println!(
+        "🔍 Temperature: {}, Top-K: {}, Top-P: {}",
+        temperature, top_k, top_p
+    );
+
     // 🔍 Try to get logits to verify context is ready
     unsafe {
         let logits_ptr = llama_get_logits(ctx);
@@ -2696,39 +2747,43 @@ fn generate_multimodal_response_with_vocab(
             // Sample first few logits for debugging
             let first_logit = *logits_ptr;
             let second_logit = *logits_ptr.add(1);
-            println!("🔍 First logits: [{:.4}, {:.4}, ...]", first_logit, second_logit);
+            println!(
+                "🔍 First logits: [{:.4}, {:.4}, ...]",
+                first_logit, second_logit
+            );
         }
     }
-    
+
     for i in 0..max_tokens {
         println!("🔍 === Token {} === (n_past: {})", i, n_past);
-        
+
         // Check sampler validity before sampling
         if sampler.is_null() {
             println!("❌ Sampler is null!");
             break;
         }
-        
+
         // 🆕 Follow llama.cpp official pattern: use llama_sampler_sample with index -1 (last position)
         let token = unsafe { llama_sampler_sample(sampler, ctx, -1) }; // 🆕 Use -1 for last position logits like llama.cpp
         println!("🔍 Sampled token: {} (0x{:x})", token, token);
-        
+
         // Check token validity
         println!("🔍 Token in range: {}", token < vocab_size);
-        
+
         // Use official llama.cpp EOS check method
         if unsafe { llama_vocab_is_eog(vocab, token) } {
             println!("✅ EOS token detected: {} (0x{:x})", token, token);
             break;
         }
-        
+
         // Check if this is a control token (like llama.rn does)
         if unsafe { llama_vocab_is_control(vocab, token) } {
-            println!("⚠️ Control token detected: {} (0x{:x}), skipping...", token, token);
+            println!(
+                "⚠️ Control token detected: {} (0x{:x}), skipping...",
+                token, token
+            );
             // Still need to accept the token into context but don't add to output
-            let accept_batch = unsafe { 
-                llama_batch_get_one(&token, 1, n_past as LlamaPos, 0)
-            };
+            let accept_batch = unsafe { llama_batch_get_one(&token, 1, n_past as LlamaPos, 0) };
             n_past += 1;
             let accept_result = unsafe { llama_decode(ctx, &accept_batch) };
             if accept_result != 0 {
@@ -2737,12 +2792,12 @@ fn generate_multimodal_response_with_vocab(
             }
             continue; // Skip to next token
         }
-        
+
         // Convert token to string (use vocab from function start)
         let mut token_str = [0u8; 64];
-        let token_len = unsafe { 
+        let token_len = unsafe {
             llama_token_to_piece(
-                vocab,  // Use vocab obtained at function start
+                vocab, // Use vocab obtained at function start
                 token,
                 token_str.as_mut_ptr(),
                 token_str.len() as c_int,
@@ -2750,48 +2805,40 @@ fn generate_multimodal_response_with_vocab(
                 false,
             )
         };
-        
+
         if token_len > 0 {
-            let token_text = unsafe { 
-                std::str::from_utf8_unchecked(&token_str[..token_len as usize])
-            };
+            let token_text =
+                unsafe { std::str::from_utf8_unchecked(&token_str[..token_len as usize]) };
             generated_text.push_str(token_text);
             generated_count += 1;
             print!("{}", token_text);
             std::io::stdout().flush().ok();
         }
-        
+
         // Accept the token into context
-        let accept_batch = unsafe { 
-            llama_batch_get_one(
-                &token,
-                1,
-                n_past as LlamaPos,
-                0,
-            )
-        };
+        let accept_batch = unsafe { llama_batch_get_one(&token, 1, n_past as LlamaPos, 0) };
         n_past += 1;
-        
+
         let accept_result = unsafe { llama_decode(ctx, &accept_batch) };
         if accept_result != 0 {
             println!("❌ Failed to accept token {}: {}", i, accept_result);
             break;
         }
-        
+
         // Safety limit
         if generated_count >= max_tokens || generated_text.len() > 1000 {
             println!("🛑 Generation limit reached");
             break;
         }
     }
-    
+
     // Clean up
-    unsafe { 
+    unsafe {
         llama_sampler_free(sampler);
     };
-    
+
     println!("\n✅ Real generation completed: {} tokens", generated_count);
-    
+
     if generated_text.is_empty() {
         "❌ No text generated - model may need proper prompt formatting".to_string()
     } else {
@@ -2809,42 +2856,40 @@ fn generate_multimodal_response_with_callbacks(
     top_k: c_int,
     top_p: f32,
     repeat_penalty: f32,
-    initial_n_past: c_int,  // 🆕 Use c_int for ABI consistency
+    initial_n_past: c_int, // 🆕 Use c_int for ABI consistency
     on_token: TokenCallback,
     user_data: *mut c_void,
 ) -> String {
     println!("🔍 generate_multimodal_response_with_callbacks: ENTRY");
-    
+
     unsafe {
         println!("🔍 Initializing samplers...");
-        
+
         // Initialize samplers (same as original function)
         let temp_sampler = llama_sampler_init_temp(temperature);
         println!("🔍 temp_sampler: {:p}", temp_sampler);
-        
+
         let top_k_sampler = llama_sampler_init_top_k(top_k);
         println!("🔍 top_k_sampler: {:p}", top_k_sampler);
-        
+
         let top_p_sampler = llama_sampler_init_top_p(top_p, 1);
         println!("🔍 top_p_sampler: {:p}", top_p_sampler);
-        
+
         let repeat_sampler = llama_sampler_init_penalties(-1, repeat_penalty, 0.0, 0.0);
         println!("🔍 repeat_sampler: {:p}", repeat_sampler);
-        
+
         let dist_sampler = llama_sampler_init_dist(1234);
         println!("🔍 dist_sampler: {:p}", dist_sampler);
 
         // Chain samplers together
-        let chain_params = llama_sampler_chain_params {
-            no_perf_fac: false,
-        };
+        let chain_params = llama_sampler_chain_params { no_perf_fac: false };
         let sampler = llama_sampler_chain_init(chain_params);
         println!("🔍 sampler chain: {:p}", sampler);
-        
+
         if sampler.is_null() {
             return "❌ Failed to create sampler chain".to_string();
         }
-        
+
         llama_sampler_chain_add(sampler, temp_sampler);
         llama_sampler_chain_add(sampler, top_k_sampler);
         llama_sampler_chain_add(sampler, top_p_sampler);
@@ -2860,7 +2905,10 @@ fn generate_multimodal_response_with_callbacks(
             return "❌ Vocab initialization failed".to_string();
         }
 
-        println!("🔍 Starting streaming generation with vocab size: {}", vocab_size);
+        println!(
+            "🔍 Starting streaming generation with vocab size: {}",
+            vocab_size
+        );
 
         let mut n_past = initial_n_past;
         let mut generated_text = String::new();
@@ -2929,7 +2977,10 @@ fn generate_multimodal_response_with_callbacks(
         }
 
         llama_sampler_free(sampler);
-        println!("✅ Streaming generation completed: {} tokens", generated_count);
+        println!(
+            "✅ Streaming generation completed: {} tokens",
+            generated_count
+        );
 
         let tail = utf8_buf.flush_lossy();
         if !tail.is_empty() {
@@ -3247,9 +3298,6 @@ pub fn cleanup_memory_pool() {
     }
 }
 
-
-
-
 // ============================================================================
 // Async Generation Control Functions
 // ============================================================================
@@ -3300,7 +3348,7 @@ pub extern "C" fn gpuf_start_generation_async(
 
         // Reset memory pool
         reset_pool();
-        
+
         // Clear KV cache for sequence 0 (remove all positions)
         let kv = llama_get_memory(ctx);
         let clear_result = llama_memory_seq_rm(kv, 0, -1, -1);
@@ -3357,10 +3405,17 @@ pub extern "C" fn gpuf_start_generation_async(
         // Prefill prompt in chunks to respect ctx n_batch (llama.cpp asserts otherwise)
         let n_batch = {
             let nb = llama_n_batch(ctx);
-            if nb > 0 { nb } else { 128 }
+            if nb > 0 {
+                nb
+            } else {
+                128
+            }
         };
 
-        println!("🔍 Prefill: token_count={}, n_batch={}", token_count, n_batch);
+        println!(
+            "🔍 Prefill: token_count={}, n_batch={}",
+            token_count, n_batch
+        );
 
         let mut batch_pos_array = [0i32; 512];
         let mut logits_array = [0i8; 512];
@@ -3374,7 +3429,11 @@ pub extern "C" fn gpuf_start_generation_async(
             for i in 0..n {
                 batch_pos_array[i as usize] = n_past + i;
                 // Request logits only for the last token of the final chunk
-                logits_array[i as usize] = if end == token_count && i == n - 1 { 1 } else { 0 };
+                logits_array[i as usize] = if end == token_count && i == n - 1 {
+                    1
+                } else {
+                    0
+                };
             }
 
             let batch = llama_batch {
@@ -3390,7 +3449,10 @@ pub extern "C" fn gpuf_start_generation_async(
                 all_seq_id: 0,
             };
 
-            println!("🔍 Prefill llama_decode: start={}, end={}, n_tokens={}, n_past={}", start, end, n, n_past);
+            println!(
+                "🔍 Prefill llama_decode: start={}, end={}, n_tokens={}, n_past={}",
+                start, end, n, n_past
+            );
             let decode_result = llama_decode(ctx, &batch);
             if decode_result != 0 {
                 println!("🔍 Early return due to decode failure: {}", decode_result);
@@ -3410,11 +3472,9 @@ pub extern "C" fn gpuf_start_generation_async(
         let repeat_sampler = llama_sampler_init_penalties(-1, repeat_penalty, 0.0, 0.0);
         let dist_sampler = llama_sampler_init_dist(1234);
 
-        let chain_params = llama_sampler_chain_params {
-            no_perf_fac: false,
-        };
+        let chain_params = llama_sampler_chain_params { no_perf_fac: false };
         let sampler = llama_sampler_chain_init(chain_params);
-        
+
         llama_sampler_chain_add(sampler, temp_sampler);
         llama_sampler_chain_add(sampler, top_k_sampler);
         llama_sampler_chain_add(sampler, top_p_sampler);
@@ -3438,9 +3498,13 @@ pub extern "C" fn gpuf_start_generation_async(
 
             // Sample next token using llama.cpp sampler
             let sampled_token = llama_sampler_sample(sampler, ctx, -1);
-            
-            println!("🔍 Sampled token: {} (EOS: {})", sampled_token, llama_vocab_is_eog(vocab, sampled_token));
-            
+
+            println!(
+                "🔍 Sampled token: {} (EOS: {})",
+                sampled_token,
+                llama_vocab_is_eog(vocab, sampled_token)
+            );
+
             // Check EOS
             if llama_vocab_is_eog(vocab, sampled_token) {
                 println!("🔍 EOS token detected, stopping generation");
@@ -3460,8 +3524,11 @@ pub extern "C" fn gpuf_start_generation_async(
                 false,
             );
 
-            println!("🔍 Token debug: sampled_token={}, token_len={}", sampled_token, token_len);
-            
+            println!(
+                "🔍 Token debug: sampled_token={}, token_len={}",
+                sampled_token, token_len
+            );
+
             if token_len > 0 {
                 let emitted = utf8_buf.push_and_take_valid(&token_buf[..token_len as usize]);
                 println!(
@@ -3469,7 +3536,7 @@ pub extern "C" fn gpuf_start_generation_async(
                     emitted,
                     &token_buf[..token_len as usize]
                 );
-                
+
                 // Call callback only if it's not None
                 if !emitted.is_empty() {
                     if let Some(callback) = on_token_callback {
@@ -3533,11 +3600,13 @@ pub extern "C" fn gpuf_start_generation_async(
 
         // Cleanup
         cleanup_generation_control();
-        println!("✅ Streaming generation completed (generated {} tokens)", completion_tokens);
+        println!(
+            "✅ Streaming generation completed (generated {} tokens)",
+            completion_tokens
+        );
         completion_tokens
     }
 }
-
 
 /// Simple single token generation for testing
 #[no_mangle]
@@ -3634,7 +3703,6 @@ pub extern "C" fn gpuf_generate_single_token(
     }
 }
 
-
 // ============================================================================
 // C FFI - Remote Worker Management and Monitoring
 // ============================================================================
@@ -3650,10 +3718,10 @@ pub extern "C" fn start_remote_worker(
     client_id: *const c_char,
 ) -> c_int {
     use crate::handle::android_sdk::init_global_worker;
-    use crate::util::cmd::{Args, WorkerType, EngineType};
-    
+    use crate::util::cmd::{Args, EngineType, WorkerType};
+
     println!("🔥 GPUFabric C API: Starting remote worker");
-    
+
     // Convert C strings to Rust strings
     let server_addr_str = if server_addr.is_null() {
         eprintln!("❌ Error: server_addr is null");
@@ -3667,7 +3735,7 @@ pub extern "C" fn start_remote_worker(
             }
         }
     };
-    
+
     let worker_type_str = if worker_type.is_null() {
         eprintln!("❌ Error: worker_type is null");
         return -1;
@@ -3680,7 +3748,7 @@ pub extern "C" fn start_remote_worker(
             }
         }
     };
-    
+
     let client_id_str = if client_id.is_null() {
         eprintln!("❌ Error: client_id is null");
         return -1;
@@ -3693,9 +3761,11 @@ pub extern "C" fn start_remote_worker(
             }
         }
     };
-    
-    println!("📡 C API: Server: {}, Port: {}/{}, Type: {}, Client: {}", 
-             server_addr_str, control_port, proxy_port, worker_type_str, client_id_str);
+
+    println!(
+        "📡 C API: Server: {}, Port: {}/{}, Type: {}, Client: {}",
+        server_addr_str, control_port, proxy_port, worker_type_str, client_id_str
+    );
 
     // Parse worker type
     let worker_type = match worker_type_str {
@@ -3714,7 +3784,12 @@ pub extern "C" fn start_remote_worker(
         proxy_port: proxy_port as u16,
         worker_type,
         engine_type: EngineType::LLAMA,
-        client_id: Some(hex::decode(client_id_str).unwrap_or_default().try_into().unwrap_or_default()),
+        client_id: Some(
+            hex::decode(client_id_str)
+                .unwrap_or_default()
+                .try_into()
+                .unwrap_or_default(),
+        ),
         config: None,
         local_addr: "0.0.0.0".to_string(),
         local_port: 0,
@@ -3734,58 +3809,59 @@ pub extern "C" fn start_remote_worker(
         // Initialize global worker using Android-native login
         println!("🚀 C API: Initializing global worker with Android-native login...");
         std::io::stdout().flush().unwrap();
-        
+
         // Use the dedicated Android login module with a simple runtime
         let local_runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("Failed to create local tokio runtime");
-        
+
         match local_runtime.block_on(async {
             crate::handle::android_sdk::perform_android_login(
                 server_addr_str,
                 control_port as u16,
                 client_id_str,
                 false, // auto_models from args
-            ).await
+            )
+            .await
         }) {
             Ok(_) => {
                 println!("✅ C API: Android worker started and logged in successfully");
                 0
-            },
+            }
             Err(e) => {
                 eprintln!("❌ C API: Failed to start and login Android worker: {}", e);
                 -1
             }
         }
     }
-    
+
     #[cfg(not(target_os = "android"))]
     {
         // Initialize global worker in Tokio runtime for other platforms
         println!("🚀 C API: Initializing global worker...");
         println!("📍 DEBUG: About to access TOKIO_RUNTIME and call block_on...");
         std::io::stdout().flush().unwrap();
-        
+
         // Bypass global runtime - create local runtime to avoid Lazy initialization issues
         println!("🔧 DEBUG: Creating local current_thread runtime...");
         std::io::stdout().flush().unwrap();
-        
+
         let local_runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("Failed to create local tokio runtime");
-        
+
         println!("✅ DEBUG: Local runtime created, calling block_on...");
         std::io::stdout().flush().unwrap();
-        
-        match local_runtime.block_on(async {
-            crate::handle::android_sdk::init_global_worker(args).await
-        }) {
+
+        match local_runtime
+            .block_on(async { crate::handle::android_sdk::init_global_worker(args).await })
+        {
             Ok(_) => {
                 println!("✅ C API: Remote worker started successfully");
                 0
-            },
+            }
             Err(e) => {
                 eprintln!("❌ C API: Failed to start remote worker: {}", e);
                 -1
@@ -3794,9 +3870,9 @@ pub extern "C" fn start_remote_worker(
     }
 }
 
-
 // Global backend initialization flag
-static BACKEND_INITIALIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static BACKEND_INITIALIZED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 // Coordination mutex for safe hot swapping
 static MODEL_SWAP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -3804,60 +3880,58 @@ static MODEL_SWAP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// Initialize backend (thread-safe, idempotent)
 fn ensure_backend_initialized() -> c_int {
     use std::sync::atomic::Ordering;
-    
+
     // Check if already initialized (fast path)
     if BACKEND_INITIALIZED.load(Ordering::SeqCst) {
         return 0;
     }
-    
+
     // Try to initialize
     if real_llama_backend_init() != 0 {
         return -1;
     }
-    
+
     // Mark as initialized
     BACKEND_INITIALIZED.store(true, Ordering::SeqCst);
     0
 }
 
 /// Set remote worker model (C API) - Safe Hot Swapping Version
-/// 
+///
 /// This function supports safe hot swapping without stopping the worker.
 /// Uses coordination mutex to ensure no inference requests access freed memory.
-/// 
+///
 /// # Parameters
 /// - `model_path`: Path to the model file (.gguf)
-/// 
+///
 /// # Returns
 /// - `0`: Success (model loaded and context created)
 /// - `-1`: Backend initialization failed
 /// - `-2`: Path conversion failed
 /// - `-3`: Model loading failed
 /// - `-4`: Context creation failed
-/// 
+///
 /// # Safety
 /// Caller must ensure `model_path` is a valid null-terminated C string
-/// 
+///
 /// # Hot Swapping
 /// This function can be called multiple times without stopping the worker.
 /// Inference requests will be briefly paused during the swap but the worker
 /// remains connected and continues processing afterward.
 #[cfg(target_os = "android")]
 #[no_mangle]
-pub extern "C" fn set_remote_worker_model(
-    model_path: *const c_char,
-) -> c_int {
+pub extern "C" fn set_remote_worker_model(model_path: *const c_char) -> c_int {
     use std::sync::atomic::Ordering;
-    
+
     println!("🔥 GPUFabric C API: Setting remote worker model (hot swap enabled)");
-    
+
     // 1. Ensure backend is initialized (only once per process)
     if ensure_backend_initialized() != 0 {
         eprintln!("❌ C API: Backend initialization failed");
         return -1;
     }
     println!("✅ C API: Backend ready");
-    
+
     // 2. Convert C string to Rust string
     let path_str = if model_path.is_null() {
         eprintln!("❌ C API: Model path is null");
@@ -3873,13 +3947,13 @@ pub extern "C" fn set_remote_worker_model(
             }
         }
     };
-    
+
     // 3. Update model status to loading
     {
         let mut status = MODEL_STATUS.lock().unwrap();
         status.set_loading(path_str);
     }
-    
+
     // 4. Load new model and context
     let model_ptr = gpuf_load_model(model_path);
     if model_ptr.is_null() {
@@ -3889,7 +3963,7 @@ pub extern "C" fn set_remote_worker_model(
         return -3;
     }
     println!("✅ C API: Model loaded: {}", path_str);
-    
+
     let context_ptr = gpuf_create_context(model_ptr);
     if context_ptr.is_null() {
         eprintln!("❌ C API: Failed to create context");
@@ -3899,28 +3973,28 @@ pub extern "C" fn set_remote_worker_model(
         return -4;
     }
     println!("✅ C API: Context created");
-    
+
     // 5. Atomically swap model/context using inference mutex
     // This blocks both other swaps AND inference requests briefly
     println!("🔄 C API: Swapping model (blocking inference briefly)...");
     {
         let _swap_lock = MODEL_SWAP_LOCK.lock().unwrap();
         let _inference_lock = GLOBAL_INFERENCE_MUTEX.lock().unwrap();
-        
+
         // Get old model/context for cleanup
         let old_model = GLOBAL_MODEL_PTR.load(Ordering::SeqCst);
         let old_context = GLOBAL_CONTEXT_PTR.load(Ordering::SeqCst);
-        
+
         // Update to new model/context atomically
         GLOBAL_MODEL_PTR.store(model_ptr, Ordering::SeqCst);
         GLOBAL_CONTEXT_PTR.store(context_ptr, Ordering::SeqCst);
-        
+
         println!("✅ C API: Global pointers updated");
-        
+
         // Clean up old resources AFTER updating pointers
         if !old_model.is_null() || !old_context.is_null() {
             println!("🧹 C API: Cleaning up previous model/context");
-            
+
             if !old_context.is_null() {
                 unsafe { llama_free(old_context) };
                 println!("✅ C API: Old context freed");
@@ -3931,17 +4005,17 @@ pub extern "C" fn set_remote_worker_model(
             }
         }
     }
-    
+
     println!("✅ C API: Model swap completed");
-    
+
     // 6. Update status to loaded
     {
         let mut status = MODEL_STATUS.lock().unwrap();
         status.set_loaded(path_str);
     }
-    
+
     println!("🎉 C API: Remote worker model set successfully (hot swap)");
-    0  // Success
+    0 // Success
 }
 
 /// Start remote worker background tasks (C API)
@@ -3949,16 +4023,14 @@ pub extern "C" fn set_remote_worker_model(
 #[no_mangle]
 pub extern "C" fn start_remote_worker_tasks() -> c_int {
     use crate::handle::android_sdk::start_worker_tasks;
-    
+
     println!("🔥 GPUFabric C API: Starting remote worker background tasks");
-    
-    match TOKIO_RUNTIME.block_on(async {
-        crate::handle::android_sdk::start_worker_tasks().await
-    }) {
+
+    match TOKIO_RUNTIME.block_on(async { crate::handle::android_sdk::start_worker_tasks().await }) {
         Ok(_) => {
             println!("✅ C API: Background tasks started successfully");
             0 as c_int
-        },
+        }
         Err(e) => {
             eprintln!("❌ C API: Failed to start background tasks: {}", e);
             -1 as c_int
@@ -3973,18 +4045,21 @@ pub extern "C" fn start_remote_worker_tasks_with_callback_ptr(
     callback: Option<extern "C" fn(*const c_char, *mut c_void)>,
 ) -> c_int {
     use crate::handle::android_sdk::start_worker_tasks_with_callback_ptr;
-    
+
     println!("🔥 GPUFabric C API: Starting remote worker background tasks with callback");
-    
+
     match TOKIO_RUNTIME.block_on(async {
         crate::handle::android_sdk::start_worker_tasks_with_callback_ptr(callback).await
     }) {
         Ok(_) => {
             println!("✅ C API: Background tasks with callback started successfully");
             0 as c_int
-        },
+        }
         Err(e) => {
-            eprintln!("❌ C API: Failed to start background tasks with callback: {}", e);
+            eprintln!(
+                "❌ C API: Failed to start background tasks with callback: {}",
+                e
+            );
             -1 as c_int
         }
     }
@@ -3995,56 +4070,53 @@ pub extern "C" fn start_remote_worker_tasks_with_callback_ptr(
 #[no_mangle]
 pub extern "C" fn stop_remote_worker() -> c_int {
     use crate::handle::android_sdk::stop_global_worker;
-    
+
     println!("🔥 GPUFabric C API: Stopping remote worker");
-    
-    TOKIO_RUNTIME.block_on(async {
-        crate::handle::android_sdk::stop_global_worker().await
-    });
-    
+
+    TOKIO_RUNTIME.block_on(async { crate::handle::android_sdk::stop_global_worker().await });
+
     println!("✅ C API: Remote worker stopped");
     0
 }
 
 /// Get remote worker status (C API)
-/// 
+///
 /// # Parameters
 /// - `buffer`: Output buffer to write status string
 /// - `buffer_size`: Size of the output buffer
-/// 
+///
 /// # Returns
 /// - `0`: Success (status written to buffer)
 /// - `-1`: Error (buffer too small or other error)
-/// 
+///
 /// # Safety
 /// Caller must ensure `buffer` is valid and can hold `buffer_size` bytes
 #[cfg(target_os = "android")]
 #[no_mangle]
-pub extern "C" fn get_remote_worker_status(
-    buffer: *mut c_char,
-    buffer_size: size_t,
-) -> c_int {
+pub extern "C" fn get_remote_worker_status(buffer: *mut c_char, buffer_size: size_t) -> c_int {
     use crate::handle::android_sdk::get_worker_status;
-    
+
     println!("🔥 GPUFabric C API: Getting remote worker status");
-    
+
     if buffer.is_null() {
         eprintln!("❌ C API: Buffer is null");
         return -1;
     }
-    
+
     if buffer_size == 0 {
         eprintln!("❌ C API: Buffer size is zero");
         return -1;
     }
-    
+
     // Get status from async function
     let status = TOKIO_RUNTIME.block_on(async {
-        crate::handle::android_sdk::get_worker_status().await.unwrap_or_else(|_| "Error".to_string())
+        crate::handle::android_sdk::get_worker_status()
+            .await
+            .unwrap_or_else(|_| "Error".to_string())
     });
-    
+
     println!("📊 C API: Status: {}", status);
-    
+
     // Convert to C string and copy to buffer
     let status_c = match std::ffi::CString::new(status) {
         Ok(s) => s,
@@ -4053,23 +4125,22 @@ pub extern "C" fn get_remote_worker_status(
             return -1;
         }
     };
-    
+
     let status_bytes = status_c.as_bytes_with_nul();
-    
+
     if status_bytes.len() > buffer_size {
-        eprintln!("❌ C API: Buffer too small (need {}, have {})", 
-                 status_bytes.len(), buffer_size);
+        eprintln!(
+            "❌ C API: Buffer too small (need {}, have {})",
+            status_bytes.len(),
+            buffer_size
+        );
         return -1;
     }
-    
+
     unsafe {
-        std::ptr::copy_nonoverlapping(
-            status_bytes.as_ptr(),
-            buffer as *mut u8,
-            status_bytes.len()
-        );
+        std::ptr::copy_nonoverlapping(status_bytes.as_ptr(), buffer as *mut u8, status_bytes.len());
     }
-    
+
     println!("✅ C API: Status written to buffer");
     0 as c_int
 }

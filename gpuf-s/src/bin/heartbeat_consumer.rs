@@ -1,8 +1,8 @@
 use anyhow::Result;
-use gpuf_s::consumer;
 use clap::Parser;
+use gpuf_s::consumer;
+use tracing::error;
 use tracing_subscriber::{fmt, EnvFilter};
-use tracing::{error};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -13,7 +13,10 @@ pub struct Args {
     #[arg(long, default_value = "5")]
     pub batch_timeout: u64,
 
-    #[arg(long, default_value = "postgres://username:password@localhost/database")]
+    #[arg(
+        long,
+        default_value = "postgres://username:password@localhost/database"
+    )]
     pub database_url: String,
 
     #[arg(long, default_value = "localhost:9092")]
@@ -31,9 +34,9 @@ async fn main() -> Result<()> {
 
     // Initialize database connection pool
     let db_pool = match sqlx::postgres::PgPoolOptions::new()
-    .max_connections(10)
-    .connect(&args.database_url)
-    .await
+        .max_connections(10)
+        .connect(&args.database_url)
+        .await
     {
         Ok(pool) => pool,
         Err(e) => {
@@ -41,7 +44,7 @@ async fn main() -> Result<()> {
             return Err(anyhow::anyhow!("Database connection failed"));
         }
     };
-    
+
     // Start the consumer service
     consumer::start_consumer_services(
         &args.bootstrap_server, // From your command line args
@@ -49,7 +52,7 @@ async fn main() -> Result<()> {
         "client-heartbeats",
         db_pool,
         args.batch_size,    // Batch size
-        args.batch_timeout,      // Batch timeout in seconds
+        args.batch_timeout, // Batch timeout in seconds
     )
     .await?;
 

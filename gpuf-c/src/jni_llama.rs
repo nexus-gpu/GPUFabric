@@ -22,10 +22,10 @@ use crate::{
     gpuf_cleanup, gpuf_create_context, gpuf_create_multimodal_context, gpuf_free_multimodal_model,
     gpuf_generate_final_solution_text, gpuf_generate_multimodal, gpuf_get_model_status, gpuf_init,
     gpuf_is_context_ready, gpuf_is_model_loaded, gpuf_load_model, gpuf_load_model_async,
-    gpuf_load_multimodal_model, gpuf_multimodal_supports_vision, gpuf_multimodal_model,
-    gpuf_start_generation_async, gpuf_stop_generation, gpuf_system_info, gpuf_version, llama_context,
-    llama_model, manual_llama_completion, should_stop_generation, GLOBAL_CONTEXT_PTR,
-    GLOBAL_MODEL_PTR, MODEL_STATUS,
+    gpuf_load_multimodal_model, gpuf_multimodal_model, gpuf_multimodal_supports_vision,
+    gpuf_start_generation_async, gpuf_stop_generation, gpuf_system_info, gpuf_version,
+    llama_context, llama_model, manual_llama_completion, should_stop_generation,
+    GLOBAL_CONTEXT_PTR, GLOBAL_MODEL_PTR, MODEL_STATUS,
 };
 
 // ============================================================================
@@ -1000,7 +1000,8 @@ pub extern "C" fn Java_com_gpuf_c_GPUEngine_loadMultimodalModel(
         Err(_) => return 0,
     };
 
-    let multimodal_model = gpuf_load_multimodal_model(text_path_cstr.as_ptr(), mmproj_cstr.as_ptr());
+    let multimodal_model =
+        gpuf_load_multimodal_model(text_path_cstr.as_ptr(), mmproj_cstr.as_ptr());
 
     if multimodal_model.is_null() {
         println!("❌ Failed to load multimodal model");

@@ -1,20 +1,24 @@
 use axum::{
-    extract::{State, Path, Extension},
-    http::{StatusCode, HeaderMap},
-    Json,
+    extract::{Extension, Path, State},
+    http::{HeaderMap, StatusCode},
     response::{sse::Event, sse::Sse, IntoResponse, Response},
+    Json,
 };
 use futures_util::StreamExt;
-use tokio_stream::wrappers::ReceiverStream;
 use serde_json::{json, Value};
-use std::sync::Arc;
+use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tokio::sync::Mutex;
-use tracing::{error, info, debug};
+use tokio_stream::wrappers::ReceiverStream;
+use tracing::{debug, error, info};
 
 use crate::inference::{
-    gateway::{InferenceGateway, AuthContext},
-    scheduler::{CompletionRequest, ChatCompletionRequest, ChatCompletionResponse, ModelInfo, DeviceInfo, StreamEvent},
+    gateway::{AuthContext, InferenceGateway},
+    scheduler::{
+        ChatCompletionRequest, ChatCompletionResponse, CompletionRequest, DeviceInfo, ModelInfo,
+        StreamEvent,
+    },
 };
 use crate::util::protoc::ClientId;
 
@@ -30,7 +34,8 @@ fn detect_model_family(model_name: &str) -> ModelFamily {
     if m.contains("llama3") || m.contains("llama-3") || m.contains("llama_3") {
         return ModelFamily::Llama3Instruct;
     }
-    if m.contains("deepseek") || m.contains("gpt") || m.contains("chatgpt") || m.contains("openai") {
+    if m.contains("deepseek") || m.contains("gpt") || m.contains("chatgpt") || m.contains("openai")
+    {
         return ModelFamily::ChatMLLike;
     }
     ModelFamily::LegacyHashPrompt
@@ -38,10 +43,7 @@ fn detect_model_family(model_name: &str) -> ModelFamily {
 
 fn stop_markers_for_family(family: ModelFamily) -> &'static [&'static str] {
     match family {
-        ModelFamily::Llama3Instruct => &[
-            "<|eot_id|>",
-            "\n\n###",
-        ],
+        ModelFamily::Llama3Instruct => &["<|eot_id|>", "\n\n###"],
         ModelFamily::ChatMLLike => &[
             "<|end|>",
             "<|start|>",
@@ -174,15 +176,64 @@ pub async fn handle_completion(
     headers: HeaderMap,
     Json(request): Json<CompletionRequest>,
 ) -> Response {
-    info!("Received completion request: {} chars", request.prompt.len());
-    
+    info!(
+        "Received completion request: {} chars",
+        request.prompt.len()
+    );
+
     // Extract Request-ID header
     let request_id = headers
         .get("request-id")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
-    
+
     debug!("Request-ID: {:?}", request_id);
+
+    let target_client_id = match headers
+        .get("x-target-client-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        None => None,
+        Some(raw) => match crate::util::protoc::ClientId::from_str(raw) {
+            Ok(id) => Some(id),
+            Err(e) => {
+                let error_response = json!({
+                    "error": {
+                        "message": format!("Invalid x-target-client-id: {}", e),
+                        "type": "invalid_request_error",
+                        "code": 400
+                    }
+                });
+                return (StatusCode::BAD_REQUEST, Json(error_response)).into_response();
+            }
+        },
+    };
+
+    if let Some(target) = target_client_id {
+        if auth.access_level == -1 {
+            let error_response = json!({
+                "error": {
+                    "message": "x-target-client-id is not allowed for metered tokens",
+                    "type": "forbidden",
+                    "code": 403
+                }
+            });
+            return (StatusCode::FORBIDDEN, Json(error_response)).into_response();
+        }
+
+        if !auth.client_ids.contains(&target) {
+            let error_response = json!({
+                "error": {
+                    "message": "x-target-client-id is not in the allowed client_ids for this token",
+                    "type": "forbidden",
+                    "code": 403
+                }
+            });
+            return (StatusCode::FORBIDDEN, Json(error_response)).into_response();
+        }
+    }
 
     if request.stream.unwrap_or(false) {
         let max_tokens_effective: u32 = request.max_tokens.unwrap_or(4090);
@@ -192,9 +243,14 @@ pub async fn handle_completion(
             .unwrap()
             .as_secs();
 
+        let allowed_ids = target_client_id
+            .as_ref()
+            .map(std::slice::from_ref)
+            .unwrap_or(auth.client_ids.as_slice());
+
         let stream_res = gateway
             .scheduler
-            .execute_inference_stream(request, Some(auth.client_ids.as_slice()))
+            .execute_inference_stream(request, Some(allowed_ids))
             .await;
 
         match stream_res {
@@ -296,7 +352,9 @@ pub async fn handle_completion(
                                     "[DONE]".to_string()
                                 }
                             };
-                            Some(Ok::<Event, std::convert::Infallible>(Event::default().data(data)))
+                            Some(Ok::<Event, std::convert::Infallible>(
+                                Event::default().data(data),
+                            ))
                         }
                     })
                     .filter_map(|ev| async move { ev });
@@ -314,28 +372,31 @@ pub async fn handle_completion(
     }
 
     let max_tokens_effective: u32 = request.max_tokens.unwrap_or(1024);
-    
+
+    let allowed_ids = target_client_id
+        .as_ref()
+        .map(std::slice::from_ref)
+        .unwrap_or(auth.client_ids.as_slice());
+
     match gateway
         .scheduler
-        .execute_inference(request, Some(auth.client_ids.as_slice()))
+        .execute_inference(request, Some(allowed_ids))
         .await
     {
         Ok(response) => {
             // Send metrics to Kafka if needed
             if auth.access_level == -1 {
-                if  let Some(chosen_client_id) = auth.client_ids.first() {
-                if let Err(e) = gateway.send_request_metrics(
-                    request_id,
-                    *chosen_client_id,
-                    auth.access_level,
-                ).await {
-                    error!("Failed to send request metrics: {}", e);
-                    // Don't fail the request, just log the error
+                if let Some(chosen_client_id) = auth.client_ids.first() {
+                    if let Err(e) = gateway
+                        .send_request_metrics(request_id, *chosen_client_id, auth.access_level)
+                        .await
+                    {
+                        error!("Failed to send request metrics: {}", e);
+                        // Don't fail the request, just log the error
+                    }
                 }
             }
-            }
-       
-            
+
             let mut response = response;
             let finish_reason = if response.usage.completion_tokens >= max_tokens_effective {
                 "length"
@@ -349,11 +410,14 @@ pub async fn handle_completion(
 
             info!("Completion request completed successfully");
             Json(response).into_response()
-        },
+        }
         Err(e) => {
             error!("Completion request failed: {}", e);
             // Return appropriate HTTP status code with JSON error message
-            let (status, error_message) = if e.to_string().contains("No available Android devices found") {
+            let (status, error_message) = if e
+                .to_string()
+                .contains("No available Android devices found")
+            {
                 (
                     StatusCode::SERVICE_UNAVAILABLE, // 503 - No devices available
                     "No available Android devices found. Please ensure at least one device is online and valid."
@@ -361,10 +425,10 @@ pub async fn handle_completion(
             } else {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR, // 500 - Other errors
-                    "Internal server error occurred while processing the request."
+                    "Internal server error occurred while processing the request.",
                 )
             };
-            
+
             let error_response = json!({
                 "error": {
                     "message": error_message,
@@ -372,7 +436,7 @@ pub async fn handle_completion(
                     "code": status.as_u16()
                 }
             });
-            
+
             (status, Json(error_response)).into_response()
         }
     }
@@ -385,16 +449,65 @@ pub async fn handle_chat_completion(
     headers: HeaderMap,
     Json(request): Json<ChatCompletionRequest>,
 ) -> Response {
-    info!("Received chat completion request with {} messages", request.messages.len());
-    
+    info!(
+        "Received chat completion request with {} messages",
+        request.messages.len()
+    );
+
     // Extract Request-ID header
     let request_id = headers
         .get("request-id")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
-    
+
     debug!("Request-ID: {:?}", request_id);
-    
+
+    let target_client_id = match headers
+        .get("x-target-client-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        None => None,
+        Some(raw) => match crate::util::protoc::ClientId::from_str(raw) {
+            Ok(id) => Some(id),
+            Err(e) => {
+                let error_response = json!({
+                    "error": {
+                        "message": format!("Invalid x-target-client-id: {}", e),
+                        "type": "invalid_request_error",
+                        "code": 400
+                    }
+                });
+                return (StatusCode::BAD_REQUEST, Json(error_response)).into_response();
+            }
+        },
+    };
+
+    if let Some(target) = target_client_id {
+        if auth.access_level == -1 {
+            let error_response = json!({
+                "error": {
+                    "message": "x-target-client-id is not allowed for metered tokens",
+                    "type": "forbidden",
+                    "code": 403
+                }
+            });
+            return (StatusCode::FORBIDDEN, Json(error_response)).into_response();
+        }
+
+        if !auth.client_ids.contains(&target) {
+            let error_response = json!({
+                "error": {
+                    "message": "x-target-client-id is not in the allowed client_ids for this token",
+                    "type": "forbidden",
+                    "code": 403
+                }
+            });
+            return (StatusCode::FORBIDDEN, Json(error_response)).into_response();
+        }
+    }
+
     if request.stream.unwrap_or(false) {
         let max_tokens_effective: u32 = request.max_tokens.unwrap_or(4090);
         let model_name = request.model.clone().unwrap_or_else(|| "gpuf".to_string());
@@ -402,6 +515,11 @@ pub async fn handle_chat_completion(
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
+
+        let allowed_ids = target_client_id
+            .as_ref()
+            .map(std::slice::from_ref)
+            .unwrap_or(auth.client_ids.as_slice());
 
         let stream_res = gateway
             .scheduler
@@ -415,7 +533,7 @@ pub async fn handle_chat_completion(
                 request.repeat_penalty.unwrap_or(1.1),
                 request.repeat_last_n.unwrap_or(64),
                 request.min_keep.unwrap_or(1),
-                Some(auth.client_ids.as_slice()),
+                Some(allowed_ids),
             )
             .await;
 
@@ -526,7 +644,9 @@ pub async fn handle_chat_completion(
                                     "[DONE]".to_string()
                                 }
                             };
-                            Some(Ok::<Event, std::convert::Infallible>(Event::default().data(data)))
+                            Some(Ok::<Event, std::convert::Infallible>(
+                                Event::default().data(data),
+                            ))
                         }
                     })
                     .filter_map(|ev| async move { ev });
@@ -549,6 +669,11 @@ pub async fn handle_chat_completion(
         .unwrap()
         .as_secs();
 
+    let allowed_ids = target_client_id
+        .as_ref()
+        .map(std::slice::from_ref)
+        .unwrap_or(auth.client_ids.as_slice());
+
     let stream_res = gateway
         .scheduler
         .execute_chat_inference_stream(
@@ -561,7 +686,7 @@ pub async fn handle_chat_completion(
             request.repeat_penalty.unwrap_or(1.1),
             request.repeat_last_n.unwrap_or(64),
             request.min_keep.unwrap_or(1),
-            Some(auth.client_ids.as_slice()),
+            Some(allowed_ids),
         )
         .await;
 
@@ -596,7 +721,8 @@ pub async fn handle_chat_completion(
                         let error_response = json!({
                             "error": {"message": msg, "type": "api_error", "code": 500}
                         });
-                        return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response)).into_response();
+                        return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response))
+                            .into_response();
                     }
                     StreamEvent::Done => {
                         break;
@@ -604,7 +730,7 @@ pub async fn handle_chat_completion(
                 }
             }
 
-            let usage = usage_final.unwrap_or_else(|| crate::inference::scheduler::CompletionUsage {
+            let usage = usage_final.unwrap_or(crate::inference::scheduler::CompletionUsage {
                 prompt_tokens: 0,
                 completion_tokens: 0,
                 total_tokens: 0,
@@ -646,18 +772,16 @@ pub async fn handle_chat_completion(
 
 /// List available models
 pub async fn list_models() -> Json<Vec<ModelInfo>> {
-    let models = vec![
-        ModelInfo {
-            id: "gpuf-android".to_string(),
-            object: "model".to_string(),
-            created: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
-            owned_by: "gpuf".to_string(),
-        }
-    ];
-    
+    let models = vec![ModelInfo {
+        id: "gpuf-android".to_string(),
+        object: "model".to_string(),
+        created: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+        owned_by: "gpuf".to_string(),
+    }];
+
     Json(models)
 }
 
@@ -685,7 +809,7 @@ pub async fn get_device_status(
         .scheduler
         .get_available_devices(Some(auth.client_ids.as_slice()))
         .await;
-    
+
     if let Some(device) = devices.into_iter().find(|d| d.client_id == device_id) {
         let status = serde_json::json!({
             "client_id": device.client_id,

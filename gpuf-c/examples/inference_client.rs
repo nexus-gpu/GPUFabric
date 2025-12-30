@@ -1,5 +1,5 @@
 //! Inference service client example
-//! 
+//!
 //! Show how to communicate with standalone inference service
 
 use anyhow::Result;
@@ -71,10 +71,7 @@ async fn main() -> Result<()> {
 
     // 3. Get service statistics
     println!("📊 Getting service statistics...");
-    let stats_response = client
-        .get(&format!("{}/stats", service_url))
-        .send()
-        .await?;
+    let stats_response = client.get(&format!("{}/stats", service_url)).send().await?;
 
     if stats_response.status().is_success() {
         let stats: serde_json::Value = stats_response.json().await?;

@@ -1,16 +1,16 @@
-use serde::{Deserialize, Serialize};
-use validator::Validate;
-use std::sync::Arc;
-use tracing::error;
-use crate::util::msg::ApiResponse;
 use crate::api_server::ApiServer;
 use crate::db::models;
+use crate::util::msg::ApiResponse;
 use axum::{
     extract::{Query, State},
     http::StatusCode,
     Json,
 };
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
+use tracing::error;
+use validator::Validate;
 
 // Request/Response types for model management
 #[derive(Debug, Deserialize, Validate)]
@@ -37,7 +37,7 @@ pub struct ModelResponse {
 }
 
 // Create or update a model
-pub  async fn create_or_update_model(
+pub async fn create_or_update_model(
     State(app_state): State<Arc<ApiServer>>,
     Json(payload): Json<CreateOrUpdateModelRequest>,
 ) -> Result<Json<ApiResponse<()>>, StatusCode> {
@@ -75,7 +75,7 @@ pub async fn get_models(
         .get("min_gpu_memory_gb")
         .and_then(|s| s.parse::<i32>().ok());
 
-    match models::get_models_list(&app_state.db_pool, is_active, None, min_gpu_memory_gb, ).await {
+    match models::get_models_list(&app_state.db_pool, is_active, None, min_gpu_memory_gb).await {
         Ok(models) => {
             let models = models
                 .into_iter()

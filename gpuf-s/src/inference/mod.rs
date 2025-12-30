@@ -1,6 +1,6 @@
 pub mod gateway;
-pub mod scheduler;
 pub mod handlers;
+pub mod scheduler;
 
 // Re-export main components
 pub use gateway::InferenceGateway;

@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
 
-use crate::util::config::{ Config};
+use crate::util::config::Config;
 use tracing::info;
 
 #[derive(Parser, Debug, Clone)]
@@ -33,6 +33,15 @@ pub struct Args {
     /// Port of the local service to expose.
     #[arg(long, default_value_t = 11434)]
     pub local_port: u16,
+
+    /// IP address to advertise to peers for P2P direct connections (host candidate).
+    /// If not set, gpuf-c will try to auto-detect an outbound IP.
+    #[arg(long, default_value = None)]
+    pub p2p_advertise_ip: Option<String>,
+
+    /// UDP port used for P2P data-plane when running in UDP mode.
+    #[arg(long, default_value_t = 40000)]
+    pub p2p_udp_port: u16,
 
     /// Certificate chain for TLS
     #[arg(long, default_value = "ca-cert.pem")]
@@ -70,14 +79,22 @@ pub struct Args {
     pub llama_model_path: Option<String>,
 
     /// Number of GPU layers to offload (default: 99 for large models)
-    #[arg(long, default_value_t = 99, help = "Number of model layers to offload to GPU")]
+    #[arg(
+        long,
+        default_value_t = 99,
+        help = "Number of model layers to offload to GPU"
+    )]
     pub n_gpu_layers: u32,
 
     /// Context size for model inference (default: 8192)
     #[arg(long, default_value_t = 8192, help = "Context window size in tokens")]
     pub n_ctx: u32,
 
-    #[arg(long, default_value_t = 1, help = "Max bytes per streamed delta chunk sent to server")]
+    #[arg(
+        long,
+        default_value_t = 1,
+        help = "Max bytes per streamed delta chunk sent to server"
+    )]
     pub stream_chunk_bytes: usize,
 }
 
@@ -113,9 +130,9 @@ impl Args {
             // Parse client_id from string to [u8; 16]
             let client_id = parse_client_id(&config_data.client.client_id)
                 .map_err(|e| anyhow::anyhow!("Invalid client_id format in config: {}", e))?;
-            
+
             info!("client_id: {:?}", client_id);
-            
+
             Ok(Args {
                 config: Some(config_path.clone()),
                 client_id: Some(client_id),
@@ -124,19 +141,20 @@ impl Args {
                 proxy_port: config_data.server.proxy_port,
                 local_addr: config_data.client.local_addr,
                 local_port: config_data.client.local_port,
+                p2p_advertise_ip: self.p2p_advertise_ip.clone(),
+                p2p_udp_port: self.p2p_udp_port,
                 cert_chain_path: config_data.client.cert_chain_path,
                 worker_type: worker_type,
                 engine_type: engine_type,
                 auto_models: config_data.client.auto_models,
                 hugging_face_hub_token: config_data.client.hugging_face_hub_token,
                 chat_template_path: config_data.client.chat_template_path,
-                standalone_llama: false,  // Config file doesn't support standalone mode
+                standalone_llama: false, // Config file doesn't support standalone mode
                 llama_model_path: None,
                 n_ctx: config_data.client.n_ctx,
                 n_gpu_layers: config_data.client.n_gpu_layers,
                 stream_chunk_bytes: self.stream_chunk_bytes,
             })
-            
         } else {
             // In standalone_llama mode, client_id is optional
             if self.client_id.is_none() && !self.standalone_llama {

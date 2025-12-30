@@ -1,5 +1,5 @@
 //! Model downloader with parallel downloading and resume support
-//! 
+//!
 //! This module provides functionality to download large model files with:
 //! - Parallel chunk downloading for faster speeds
 //! - Resume capability for interrupted downloads
@@ -8,14 +8,14 @@
 
 use anyhow::{anyhow, Result};
 use reqwest::Client;
-use std::path::{Path, PathBuf};
 use std::fs::OpenOptions;
 use std::io::{Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::sync::{Semaphore, Mutex};
-use tokio::task::JoinSet;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tracing::{info, warn, error, debug};
+use tokio::sync::{Mutex, Semaphore};
+use tokio::task::JoinSet;
+use tracing::{debug, error, info, warn};
 
 /// Configuration for model downloading
 #[derive(Debug, Clone)]
@@ -116,7 +116,10 @@ impl ModelDownloader {
 
         if let Some(expected) = self.config.expected_size {
             if expected != file_size {
-                warn!("Server file size ({}) differs from expected ({})", file_size, expected);
+                warn!(
+                    "Server file size ({}) differs from expected ({})",
+                    file_size, expected
+                );
             }
         }
 
@@ -128,7 +131,10 @@ impl ModelDownloader {
         };
 
         if downloaded_size > 0 {
-            info!("Resuming download: {} bytes already downloaded", downloaded_size);
+            info!(
+                "Resuming download: {} bytes already downloaded",
+                downloaded_size
+            );
         }
 
         // Create output directory
@@ -138,8 +144,11 @@ impl ModelDownloader {
 
         // Download remaining bytes
         let remaining_bytes = file_size - downloaded_size;
-        info!("Downloaded size: {}, File size: {}, Remaining: {}", downloaded_size, file_size, remaining_bytes);
-        
+        info!(
+            "Downloaded size: {}, File size: {}, Remaining: {}",
+            downloaded_size, file_size, remaining_bytes
+        );
+
         if remaining_bytes == 0 {
             info!("File already completely downloaded");
             return Ok(());
@@ -148,7 +157,7 @@ impl ModelDownloader {
         // Calculate chunks
         let chunks = self.calculate_chunks(downloaded_size, remaining_bytes, file_size);
         info!("Downloading {} chunks in parallel", chunks.len());
-        
+
         // Debug: print chunk info
         for (i, chunk) in chunks.iter().enumerate() {
             info!("Chunk {}: bytes {}-{}", i, chunk.start, chunk.end);
@@ -184,7 +193,8 @@ impl ModelDownloader {
         }
 
         // Fallback to GET request with range=0-0 to get just the content length
-        let response = self.client
+        let response = self
+            .client
             .get(&self.config.url)
             .header("Range", "bytes=0-0")
             .send()
@@ -206,10 +216,15 @@ impl ModelDownloader {
     }
 
     /// Calculate download chunks for parallel downloading
-    fn calculate_chunks(&self, start_pos: u64, remaining: u64, total_size: u64) -> Vec<DownloadChunk> {
+    fn calculate_chunks(
+        &self,
+        start_pos: u64,
+        remaining: u64,
+        total_size: u64,
+    ) -> Vec<DownloadChunk> {
         let mut chunks = Vec::new();
         let chunk_size = self.config.chunk_size as u64;
-        
+
         // If file is small, use single chunk
         if remaining <= chunk_size || self.config.parallel_chunks == 1 {
             chunks.push(DownloadChunk {
@@ -261,7 +276,7 @@ impl ModelDownloader {
 
             set.spawn(async move {
                 let _permit = semaphore.acquire().await?;
-                
+
                 let result = Self::download_chunk(
                     client,
                     &url,
@@ -271,7 +286,8 @@ impl ModelDownloader {
                     total_size,
                     progress_callback,
                     start_time,
-                ).await;
+                )
+                .await;
 
                 // Return the chunk index for error reporting
                 match result {
@@ -290,7 +306,10 @@ impl ModelDownloader {
             match result {
                 Ok(Ok(chunk_index)) => {
                     completed += 1;
-                    debug!("Chunk {} completed ({} / {})", chunk_index, completed, total_chunks);
+                    debug!(
+                        "Chunk {} completed ({} / {})",
+                        chunk_index, completed, total_chunks
+                    );
                 }
                 Ok(Err(e)) => {
                     return Err(anyhow!("Chunk download failed: {}", e));
@@ -316,19 +335,15 @@ impl ModelDownloader {
         start_time: std::time::Instant,
     ) -> Result<()> {
         let range_header = format!("bytes={}-{}", chunk.start, chunk.end);
-        
-        let response = client
-            .get(url)
-            .header("Range", range_header)
-            .send()
-            .await?;
+
+        let response = client.get(url).header("Range", range_header).send().await?;
 
         if !response.status().is_success() {
             return Err(anyhow!("Chunk download failed: {}", response.status()));
         }
 
         let chunk_data = response.bytes().await?;
-        
+
         // Write chunk to file at correct position
         let mut file = OpenOptions::new()
             .write(true)
@@ -343,7 +358,7 @@ impl ModelDownloader {
         {
             let mut downloaded = downloaded_bytes.lock().await;
             *downloaded += chunk_data.len() as u64;
-            
+
             if let Some(callback) = progress_callback {
                 let progress = DownloadProgress {
                     downloaded_bytes: *downloaded,
@@ -365,7 +380,7 @@ impl ModelDownloader {
                         None
                     },
                 };
-                
+
                 callback(progress);
             }
         }
@@ -375,10 +390,10 @@ impl ModelDownloader {
 
     /// Verify file integrity using SHA256 checksum
     async fn verify_checksum(&self, expected_checksum: &str) -> Result<()> {
-        use sha2::{Sha256, Digest};
-        
+        use sha2::{Digest, Sha256};
+
         info!("Verifying file integrity...");
-        
+
         let mut file = tokio::fs::File::open(&self.config.output_path).await?;
         let mut hasher = Sha256::new();
         let mut buffer = vec![0u8; 8192];
@@ -392,7 +407,7 @@ impl ModelDownloader {
         }
 
         let actual_checksum = format!("{:x}", hasher.finalize());
-        
+
         if actual_checksum.to_lowercase() != expected_checksum.to_lowercase() {
             return Err(anyhow!(
                 "Checksum verification failed. Expected: {}, Actual: {}",
@@ -408,9 +423,9 @@ impl ModelDownloader {
     /// Simple download for servers that don't provide Content-Length
     async fn simple_download(&self) -> Result<()> {
         info!("Starting simple download (no Content-Length)");
-        
+
         let response = self.client.get(&self.config.url).send().await?;
-        
+
         if !response.status().is_success() {
             return Err(anyhow!("Download failed: {}", response.status()));
         }
@@ -430,7 +445,7 @@ impl ModelDownloader {
         // Use streaming download
         let mut stream = response.bytes_stream();
         use futures_util::StreamExt;
-        
+
         while let Some(chunk_result) = stream.next().await {
             let chunk = chunk_result?;
             file.write_all(&chunk).await?;
@@ -440,7 +455,11 @@ impl ModelDownloader {
             if let Some(callback) = &self.progress_callback {
                 let progress = DownloadProgress {
                     downloaded_bytes,
-                    total_bytes: if total_size > 0 { total_size } else { downloaded_bytes },
+                    total_bytes: if total_size > 0 {
+                        total_size
+                    } else {
+                        downloaded_bytes
+                    },
                     percentage: if total_size > 0 {
                         (downloaded_bytes as f64) / (total_size as f64)
                     } else {
@@ -462,14 +481,14 @@ impl ModelDownloader {
                         None
                     },
                 };
-                
+
                 callback(progress);
             }
         }
 
         file.sync_all().await?;
         info!("Simple download completed: {} bytes", downloaded_bytes);
-        
+
         // Verify integrity if checksum provided
         if let Some(checksum) = &self.config.checksum {
             self.verify_checksum(checksum).await?;

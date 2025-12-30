@@ -6,15 +6,15 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use std::sync::Arc;
-use sqlx::{Pool, Postgres};
-use tower_http::cors::CorsLayer;
-use tracing::{info,debug,error};
 use rdkafka::producer::FutureProducer;
+use sqlx::{Pool, Postgres};
+use std::sync::Arc;
+use tower_http::cors::CorsLayer;
+use tracing::{debug, error, info};
 
 use crate::db::client::get_user_client_by_token;
-use crate::inference::{InferenceScheduler, handlers};
-use crate::handle::{ActiveClients};
+use crate::handle::ActiveClients;
+use crate::inference::{handlers, InferenceScheduler};
 use crate::util::protoc::{ClientId, RequestIDAndClientIDMessage};
 use anyhow::anyhow;
 use rdkafka::producer::FutureRecord;
@@ -35,13 +35,29 @@ pub struct InferenceGateway {
 }
 
 impl InferenceGateway {
-    pub fn new(scheduler: Arc<InferenceScheduler>, db_pool: Arc<Pool<Postgres>>, producer: Arc<FutureProducer>) -> Self {
-        Self { scheduler, db_pool, producer }
+    pub fn new(
+        scheduler: Arc<InferenceScheduler>,
+        db_pool: Arc<Pool<Postgres>>,
+        producer: Arc<FutureProducer>,
+    ) -> Self {
+        Self {
+            scheduler,
+            db_pool,
+            producer,
+        }
     }
     #[allow(dead_code)]
-    pub fn with_active_clients(active_clients: ActiveClients, db_pool: Arc<Pool<Postgres>>, producer: Arc<FutureProducer>) -> Self {
+    pub fn with_active_clients(
+        active_clients: ActiveClients,
+        db_pool: Arc<Pool<Postgres>>,
+        producer: Arc<FutureProducer>,
+    ) -> Self {
         let scheduler = Arc::new(InferenceScheduler::new(active_clients));
-        Self { scheduler, db_pool, producer }
+        Self {
+            scheduler,
+            db_pool,
+            producer,
+        }
     }
 
     async fn auth_middleware(
@@ -91,7 +107,10 @@ impl InferenceGateway {
             return Ok(());
         }
 
-        debug!("Send kafka key-value ({:?}, {chosen_client_id}) pair", request_id);
+        debug!(
+            "Send kafka key-value ({:?}, {chosen_client_id}) pair",
+            request_id
+        );
 
         // Share API: Send kafka key-value (request_id, client_id) pair
         if let Some(request_id_str) = request_id {
@@ -133,12 +152,21 @@ impl InferenceGateway {
         Router::new()
             // OpenAI Compatible Inference APIs
             .route("/v1/completions", post(handlers::handle_completion))
-            .route("/v1/chat/completions", post(handlers::handle_chat_completion))
+            .route(
+                "/v1/chat/completions",
+                post(handlers::handle_chat_completion),
+            )
             .route("/v1/models", get(handlers::list_models))
             // Device Management APIs
             .route("/api/v1/devices", get(handlers::list_devices))
-            .route("/api/v1/devices/:id/status", get(handlers::get_device_status))
-            .route_layer(middleware::from_fn_with_state(self.db_pool.clone(), Self::auth_middleware))
+            .route(
+                "/api/v1/devices/:id/status",
+                get(handlers::get_device_status),
+            )
+            .route_layer(middleware::from_fn_with_state(
+                self.db_pool.clone(),
+                Self::auth_middleware,
+            ))
             .layer(CorsLayer::permissive())
             .with_state(state)
     }

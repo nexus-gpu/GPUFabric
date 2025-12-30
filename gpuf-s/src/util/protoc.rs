@@ -1,11 +1,11 @@
-use std::fmt::Display;
-use std::str::FromStr;
-use std::error::Error;
 use anyhow::{anyhow, Result};
 use rdkafka::message::ToBytes;
+use std::error::Error;
+use std::fmt::Display;
+use std::str::FromStr;
 
-use serde::{Serialize, Deserialize,Serializer, Deserializer, de,ser::SerializeTuple};
-use common::{SystemInfo, DevicesInfo};
+use common::{DevicesInfo, SystemInfo};
+use serde::{de, ser::SerializeTuple, Deserialize, Deserializer, Serialize, Serializer};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, bincode::Encode, bincode::Decode)]
 pub struct ClientId(pub [u8; 16]);
@@ -33,7 +33,10 @@ impl Display for ClientId {
     }
 }
 
-use sqlx::{Encode, Type, postgres::{PgArgumentBuffer, PgTypeInfo, PgHasArrayType}};
+use sqlx::{
+    postgres::{PgArgumentBuffer, PgHasArrayType, PgTypeInfo},
+    Encode, Type,
+};
 
 impl Type<sqlx::Postgres> for ClientId {
     fn type_info() -> PgTypeInfo {
@@ -45,9 +48,11 @@ impl Type<sqlx::Postgres> for ClientId {
     }
 }
 
-
 impl Encode<'_, sqlx::Postgres> for ClientId {
-    fn encode_by_ref(&self, buf: &mut PgArgumentBuffer) -> Result<sqlx::encode::IsNull, Box<dyn Error + Send + Sync>> {
+    fn encode_by_ref(
+        &self,
+        buf: &mut PgArgumentBuffer,
+    ) -> Result<sqlx::encode::IsNull, Box<dyn Error + Send + Sync>> {
         //TODO: use ? operator to propagate possible errors
         Ok(<[u8; 16] as Encode<sqlx::Postgres>>::encode(self.0, buf)?)
     }
@@ -63,7 +68,6 @@ impl PgHasArrayType for ClientId {
         <[u8; 16] as PgHasArrayType>::array_type_info()
     }
 }
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ProxyConnId(pub [u8; 16]);
@@ -83,8 +87,6 @@ impl Display for ProxyConnId {
         write!(f, "{}", hex::encode(self.0))
     }
 }
-
-
 
 impl serde::Serialize for ClientId {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -136,7 +138,9 @@ impl<'de> serde::Deserialize<'de> for ClientId {
                 {
                     let mut bytes = [0u8; 16];
                     for i in 0..16 {
-                        bytes[i] = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(i, &self))?;
+                        bytes[i] = seq
+                            .next_element()?
+                            .ok_or_else(|| de::Error::invalid_length(i, &self))?;
                     }
                     Ok(bytes)
                 }
@@ -148,7 +152,6 @@ impl<'de> serde::Deserialize<'de> for ClientId {
     }
 }
 
-
 #[derive(Debug, bincode::Encode, bincode::Decode)]
 pub struct HeartbeatMessage {
     // #[serde(deserialize_with = "deserialize_client_id")]
@@ -158,7 +161,6 @@ pub struct HeartbeatMessage {
     pub device_count: u32,
     pub total_tflops: u32,
     pub devices_info: Vec<DevicesInfo>,
-
 }
 
 #[allow(dead_code)]
@@ -194,7 +196,10 @@ fn test_edit_client() {
     assert_eq!(client_id, client_id3);
 
     //is bad  memory size client_id3_bytes
-    let client_id3_bytes: [u8; 32] = "1234567890abcdef1234567890abcdef".as_bytes().try_into().unwrap();
+    let client_id3_bytes: [u8; 32] = "1234567890abcdef1234567890abcdef"
+        .as_bytes()
+        .try_into()
+        .unwrap();
     println!("client_id3_bytes: {:?}", client_id3_bytes);
     assert!(client_id3_bytes.len() > client_id3.0.len());
 }

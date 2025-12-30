@@ -1,13 +1,12 @@
+use crate::util::cmd::EngineType;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::collections::HashMap;
-use crate::util::cmd::EngineType;
 
 const DOCKER_COMPOSE_FILENAME: &str = "docker-compose.yml";
 const CONFIG_DIR: &str = ".gpuf";
-
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Config {
@@ -18,7 +17,7 @@ pub struct Config {
 #[derive(Debug, Deserialize, Clone)]
 pub struct ServerConfig {
     pub addr: String,
-  #[serde(rename = "control_port")]
+    #[serde(rename = "control_port")]
     pub control_port: u16,
     #[serde(rename = "proxy_port")]
     pub proxy_port: u16,
@@ -54,9 +53,8 @@ impl Config {
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         let config_str = fs::read_to_string(&path)
             .with_context(|| format!("Failed to read config file: {:?}", path.as_ref()))?;
-        
-        toml::from_str(&config_str)
-            .with_context(|| "Failed to parse config file")
+
+        toml::from_str(&config_str).with_context(|| "Failed to parse config file")
     }
 }
 
@@ -128,9 +126,10 @@ impl DockerConfig {
                     "~/.vllm/models:/root/.cache/huggingface/hub".to_string(),
                     "${PWD}/configs:/app/configs".to_string(),
                 ],
-                environment: Some(HashMap::from([
-                    ("MODEL".to_string(), "facebook/opt-125m".to_string()),
-                ])),
+                environment: Some(HashMap::from([(
+                    "MODEL".to_string(),
+                    "facebook/opt-125m".to_string(),
+                )])),
                 shm_size: Some("2g".to_string()),
                 runtime: None,
                 devices: None,
@@ -139,11 +138,12 @@ impl DockerConfig {
                 image: "ghcr.io/ggerganov/llama.cpp:server".to_string(),
                 container_name: "llama_engine_container".to_string(),
                 ports: vec!["8080:8080".to_string()],
-                volumes: vec![
-                    "~/.llama/models:/models".to_string(),
-                ],
+                volumes: vec!["~/.llama/models:/models".to_string()],
                 environment: Some(HashMap::from([
-                    ("LLAMA_ARG_MODEL".to_string(), "/models/model.gguf".to_string()),
+                    (
+                        "LLAMA_ARG_MODEL".to_string(),
+                        "/models/model.gguf".to_string(),
+                    ),
                     ("LLAMA_ARG_CTX_SIZE".to_string(), "2048".to_string()),
                     ("LLAMA_ARG_N_GPU_LAYERS".to_string(), "99".to_string()),
                 ])),
@@ -156,28 +156,26 @@ impl DockerConfig {
                 image: "ollama/ollama:latest".to_string(),
                 container_name: "ollama_engine_container".to_string(),
                 ports: vec!["11434:11434".to_string()],
-                volumes: vec![
-                    "~/.ollama/models:/root/.ollama/models".to_string(),
-                ],
+                volumes: vec!["~/.ollama/models:/root/.ollama/models".to_string()],
                 environment: Some(HashMap::from([
                     ("OLLAMA_HOST".to_string(), "0.0.0.0".to_string()),
                     ("OLLAMA_GPU_LAYERS".to_string(), "all".to_string()),
                 ])),
                 shm_size: Some("2g".to_string()),
                 runtime: Some("nvidia".to_string()),
-                devices: Some(vec![
-                    "/dev/kfd".to_string(),
-                    "/dev/dri".to_string(),
-                ]),
+                devices: Some(vec!["/dev/kfd".to_string(), "/dev/dri".to_string()]),
             },
         };
 
         services.insert(service_name.to_string(), service);
 
         let mut volumes = HashMap::new();
-        volumes.insert("model_data".to_string(), Volume {
-            driver: "local".to_string(),
-        });
+        volumes.insert(
+            "model_data".to_string(),
+            Volume {
+                driver: "local".to_string(),
+            },
+        );
 
         DockerConfig {
             version: "3.8".to_string(),
@@ -212,7 +210,7 @@ pub fn get_config_path() -> PathBuf {
 #[allow(dead_code)]
 pub fn ensure_config(engine_type: EngineType) -> Result<DockerConfig> {
     let config_path = get_config_path();
-    
+
     if config_path.exists() {
         DockerConfig::load_from_file(&config_path)
     } else {
@@ -242,13 +240,13 @@ mod tests {
     fn test_save_and_load_config() -> Result<()> {
         let temp_dir = tempdir()?;
         let config_path = temp_dir.path().join("docker-compose.yml");
-        
+
         let config = DockerConfig::new(EngineType::VLLM);
         config.save_to_file(&config_path)?;
-        
+
         let loaded_config = DockerConfig::load_from_file(&config_path)?;
         assert_eq!(config.version, loaded_config.version);
-        
+
         Ok(())
     }
 }

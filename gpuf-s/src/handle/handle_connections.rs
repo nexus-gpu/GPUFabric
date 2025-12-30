@@ -1,33 +1,37 @@
 use super::*;
 
-use crate::db::{models::{HotModelClass,self},client};
-use crate::util::{
-    protoc::{ClientId, HeartbeatMessage},
+use crate::db::{
+    client,
+    models::{self, HotModelClass},
 };
+use crate::util::protoc::{ClientId, HeartbeatMessage};
 use bytes::BytesMut;
 use std::collections::HashMap;
 
 use anyhow::{anyhow, Result};
-use common::{os_type_str, Model, PodModel, OsType};
+use common::{os_type_str, CommandV2, Model, OsType, PodModel};
 use redis::Client as RedisClient;
 use sqlx::{Pool, Postgres};
 use std::sync::Arc;
 
 use tokio::net::{tcp::OwnedWriteHalf, TcpListener};
 
-
 use bincode::config;
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use std::time::Duration;
 use tracing::{debug, error, warn};
 
-#[cfg(unix)]
-use std::os::fd::FromRawFd;
+use base64::Engine;
+use hmac::{Hmac, Mac};
+use sha1::Sha1;
+
 #[cfg(unix)]
 use socket2::{Socket, TcpKeepalive};
-use tokio::net::TcpStream;
 #[cfg(unix)]
 use std::mem;
+#[cfg(unix)]
+use std::os::fd::FromRawFd;
+use tokio::net::TcpStream;
 
 impl ServerState {
     pub async fn handle_client_connections(self: Arc<Self>, listener: TcpListener) -> Result<()> {
@@ -64,7 +68,7 @@ impl ServerState {
 #[cfg(unix)]
 fn set_keepalive(stream: &TcpStream) -> std::io::Result<()> {
     use std::os::unix::io::AsRawFd;
-    
+
     let fd = stream.as_raw_fd();
     let socket = unsafe { Socket::from_raw_fd(fd) };
 
@@ -235,17 +239,24 @@ async fn handle_single_client(
                 prompt_tokens,
                 completion_tokens,
             })) => {
-                info!("Received inference result for task {} from device {}", task_id, hex::encode(&session_client_id.0));
-                // Route result to inference scheduler to complete HTTP response
-                server_state.inference_scheduler.handle_inference_result(
+                info!(
+                    "Received inference result for task {} from device {}",
                     task_id,
-                    success,
-                    result,
-                    error,
-                    execution_time_ms,
-                    prompt_tokens,
-                    completion_tokens,
-                ).await;
+                    hex::encode(&session_client_id.0)
+                );
+                // Route result to inference scheduler to complete HTTP response
+                server_state
+                    .inference_scheduler
+                    .handle_inference_result(
+                        task_id,
+                        success,
+                        result,
+                        error,
+                        execution_time_ms,
+                        prompt_tokens,
+                        completion_tokens,
+                    )
+                    .await;
             }
             Ok(Command::V1(CommandV1::InferenceResultChunk {
                 task_id,
@@ -269,6 +280,155 @@ async fn handle_single_client(
                     )
                     .await;
             }
+
+            Ok(Command::V2(CommandV2::P2PConnectionRequest {
+                source_client_id,
+                target_client_id,
+                connection_id,
+            })) => {
+                if !authed {
+                    return Err(anyhow!("P2PConnectionRequest before login"));
+                }
+
+                if session_client_id.0 != source_client_id {
+                    return Err(anyhow!(
+                        "P2PConnectionRequest source_client_id mismatch with session"
+                    ));
+                }
+
+                let source_id = ClientId(source_client_id);
+                let target_id = ClientId(target_client_id);
+
+                let (source_writer, target_writer) = {
+                    let clients = active_clients.lock().await;
+                    let source = clients
+                        .get(&source_id)
+                        .map(|c| c.writer.clone())
+                        .ok_or_else(|| anyhow!("Source client not online"))?;
+                    let target = clients
+                        .get(&target_id)
+                        .map(|c| c.writer.clone())
+                        .ok_or_else(|| anyhow!("Target client not online"))?;
+                    (source, target)
+                };
+
+                let turn_host =
+                    std::env::var("TURN_HOST").map_err(|_| anyhow!("TURN_HOST env is required"))?;
+                let turn_port: u16 = std::env::var("TURN_TURNS_PORT")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(5349);
+                let turn_udp_port: u16 = std::env::var("TURN_TURN_UDP_PORT")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(3478);
+                let stun_port: u16 = std::env::var("TURN_STUN_PORT")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(3478);
+                let ttl_seconds: u64 = std::env::var("TURN_TTL_SECONDS")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(300);
+                let secret = std::env::var("TURN_REST_SECRET")
+                    .map_err(|_| anyhow!("TURN_REST_SECRET env is required"))?;
+
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_err(|e| anyhow!("System time error: {e}"))?
+                    .as_secs();
+                let expires_at = now.saturating_add(ttl_seconds);
+                let username = format!("{}:{}", expires_at, hex::encode(source_client_id));
+                let mut mac = Hmac::<Sha1>::new_from_slice(secret.as_bytes())
+                    .map_err(|e| anyhow!("Invalid TURN_REST_SECRET: {e}"))?;
+                mac.update(username.as_bytes());
+                let password =
+                    base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes());
+
+                let stun_urls = vec![format!("stun:{}:{}", turn_host, stun_port)];
+                let turn_urls = vec![format!(
+                    "turn:{}:{}?transport=udp",
+                    turn_host, turn_udp_port
+                )];
+
+                let to_source = Command::V2(CommandV2::P2PConnectionConfig {
+                    peer_id: target_client_id,
+                    connection_id,
+                    stun_urls: stun_urls.clone(),
+                    turn_urls: turn_urls.clone(),
+                    turn_username: username.clone(),
+                    turn_password: password.clone(),
+                    expires_at,
+                    force_tls: false,
+                });
+
+                let to_target = Command::V2(CommandV2::P2PConnectionConfig {
+                    peer_id: source_client_id,
+                    connection_id,
+                    stun_urls,
+                    turn_urls,
+                    turn_username: username,
+                    turn_password: password,
+                    expires_at,
+                    force_tls: false,
+                });
+
+                write_command(&mut *source_writer.lock().await, &to_source).await?;
+                write_command(&mut *target_writer.lock().await, &to_target).await?;
+
+                // Notify target about the request (optional but useful)
+                let forward = Command::V2(CommandV2::P2PConnectionRequest {
+                    source_client_id,
+                    target_client_id,
+                    connection_id,
+                });
+                write_command(&mut *target_writer.lock().await, &forward).await?;
+            }
+
+            Ok(Command::V2(CommandV2::P2PCandidates {
+                source_client_id,
+                target_client_id,
+                connection_id,
+                candidates,
+            })) => {
+                if !authed {
+                    return Err(anyhow!("P2PCandidates before login"));
+                }
+
+                let src = ClientId(source_client_id);
+                let dst = ClientId(target_client_id);
+
+                // Require that the sender matches the current session.
+                if session_client_id != src {
+                    return Err(anyhow!("P2PCandidates source mismatch with session"));
+                }
+
+                // Minimal validation to avoid abusive payloads.
+                if candidates.len() > 64 {
+                    return Err(anyhow!("Too many candidates"));
+                }
+                for c in &candidates {
+                    if c.addr.len() > 128 {
+                        return Err(anyhow!("Candidate addr too long"));
+                    }
+                }
+
+                let target_writer = {
+                    let clients = active_clients.lock().await;
+                    clients
+                        .get(&dst)
+                        .map(|c| c.writer.clone())
+                        .ok_or_else(|| anyhow!("Target client not online"))?
+                };
+
+                let forward = Command::V2(CommandV2::P2PCandidates {
+                    source_client_id,
+                    target_client_id,
+                    connection_id,
+                    candidates,
+                });
+                write_command(&mut *target_writer.lock().await, &forward).await?;
+            }
             _ => {
                 warn!("Received unexpected command from client addr {}", addr);
             }
@@ -291,8 +451,7 @@ async fn handle_login(
     writer: &Arc<Mutex<OwnedWriteHalf>>,
     authed: &mut bool,
 ) -> Result<CommandV1> {
-
-    info!("Registration attempt for client_id: {:?}", client_id);
+    info!("Registration attempt for client_id: {}", client_id);
     let mut clients = active_clients.lock().await;
     if clients.contains_key(&client_id) {
         warn!("Client ID {:?} already registered.", client_id);

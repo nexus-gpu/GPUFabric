@@ -38,6 +38,6 @@ pub fn init_logging() {
         .with_line_number(true)
         .compact()
         .init();
-    
+
     debug!("Logging initialized");
 }

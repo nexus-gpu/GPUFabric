@@ -10,17 +10,17 @@
 
 #[cfg(target_os = "android")]
 use jni::objects::{GlobalRef, JClass, JObject, JString, JValue};
+use jni::sys::{jboolean, jbyteArray, jfloat, jint, jlong, jstring};
 #[cfg(target_os = "android")]
 use jni::{JNIEnv, JavaVM};
-use jni::sys::{jint, jlong, jstring, jboolean, jbyteArray, jfloat};
 use std::ffi::{c_char, c_void};
 use std::ptr;
-use std::sync::OnceLock;
 use std::sync::Mutex;
+use std::sync::OnceLock;
 
 use crate::{
     get_remote_worker_status, set_remote_worker_model, start_remote_worker,
-    start_remote_worker_tasks_with_callback_ptr, stop_remote_worker, 
+    start_remote_worker_tasks_with_callback_ptr, stop_remote_worker,
 };
 
 #[cfg(target_os = "android")]
@@ -67,7 +67,12 @@ fn rn_emit_status(message: &str) {
     };
 
     let obj = emitter.as_obj();
-    if let Err(e) = env.call_method(obj, "emit", "(Ljava/lang/String;)V", &[JValue::Object(&jmsg)]) {
+    if let Err(e) = env.call_method(
+        obj,
+        "emit",
+        "(Ljava/lang/String;)V",
+        &[JValue::Object(&jmsg)],
+    ) {
         eprintln!("❌ JNI: Failed to call emitter.emit(String): {:?}", e);
     }
 }
@@ -283,7 +288,10 @@ pub extern "C" fn Java_com_gpuf_c_RemoteWorker_startRemoteWorker(
     let server_addr_c = match std::ffi::CString::new(server_addr_rust) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("❌ JNI: Failed to create C string for server address: {}", e);
+            eprintln!(
+                "❌ JNI: Failed to create C string for server address: {}",
+                e
+            );
             return -1;
         }
     };
@@ -358,7 +366,10 @@ pub extern "C" fn Java_com_gpuf_c_RemoteWorker_startRemoteWorkerTasks(
     if result == 0 {
         println!("✅ JNI: Remote worker tasks started successfully");
     } else {
-        eprintln!("❌ JNI: Failed to start remote worker tasks (error: {})", result);
+        eprintln!(
+            "❌ JNI: Failed to start remote worker tasks (error: {})",
+            result
+        );
     }
 
     result
@@ -385,10 +396,16 @@ pub extern "C" fn Java_com_gpuf_c_RemoteWorker_getRemoteWorkerStatus(
     let mut buffer = vec![0u8; 1024];
 
     // Call C API
-    let result = get_remote_worker_status(buffer.as_mut_ptr() as *mut std::os::raw::c_char, buffer.len());
+    let result = get_remote_worker_status(
+        buffer.as_mut_ptr() as *mut std::os::raw::c_char,
+        buffer.len(),
+    );
 
     if result != 0 {
-        eprintln!("❌ JNI: Failed to get remote worker status (error: {})", result);
+        eprintln!(
+            "❌ JNI: Failed to get remote worker status (error: {})",
+            result
+        );
         return std::ptr::null_mut();
     }
 

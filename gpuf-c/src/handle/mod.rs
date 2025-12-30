@@ -1,25 +1,25 @@
+pub mod android_sdk;
 pub mod handle_tcp;
 pub mod handle_ws;
-pub mod android_sdk;
-use crate::util::cmd::{Args, WorkerType,EngineType};
+use crate::util::cmd::{Args, EngineType, WorkerType};
 use crate::util::network_info::SessionNetworkMonitor;
 // LLM engine is not available in lightweight Android version
 #[cfg(not(target_os = "android"))]
 use crate::llm_engine::Engine;
-use common::{OsType,DevicesInfo, SystemInfo, EngineType as ClientEngineType};
-use tracing::{info,error};
+use common::{DevicesInfo, EngineType as ClientEngineType, OsType, SystemInfo};
+use tracing::{error, info};
 
 use anyhow::{anyhow, Result};
 use tokio::sync::Mutex;
 
-use tokio_tungstenite::{WebSocketStream, tungstenite::Message};
-use futures_util::stream::{SplitStream, SplitSink};
-use std::sync::Arc;
+use futures_util::stream::{SplitSink, SplitStream};
 use std::future::Future;
 #[allow(unused_imports)]
 use std::marker::PhantomData;
+use std::sync::Arc;
 use tokio::io::{ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
+use tokio_tungstenite::{tungstenite::Message, WebSocketStream};
 // LLM engine is not available in lightweight Android version
 #[cfg(not(target_os = "android"))]
 use crate::llm_engine::AnyEngine;
@@ -34,7 +34,7 @@ pub trait WorkerHandle: Send + Sync {
     fn heartbeat_task(&self) -> impl Future<Output = Result<()>> + Send;
 }
 
-pub struct TCPWorker {
+pub struct ClientWorker {
     addr: std::net::IpAddr,
     reader: Arc<Mutex<ReadHalf<TcpStream>>>,
     writer: Arc<Mutex<WriteHalf<TcpStream>>>,
@@ -54,6 +54,8 @@ pub struct TCPWorker {
     _engine: PhantomData<()>,
 }
 
+pub type TCPWorker = ClientWorker;
+
 pub struct CancelState {
     pub cancelled: Mutex<HashSet<String>>,
     pub notify: Notify,
@@ -63,8 +65,19 @@ pub struct CancelState {
 #[allow(dead_code)]
 
 pub struct WSWorker {
-    reader: Arc<Mutex<SplitStream<WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>>>>,
-    writer: Arc<Mutex<SplitSink<WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, Message>>>,
+    reader: Arc<
+        Mutex<
+            SplitStream<WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>>,
+        >,
+    >,
+    writer: Arc<
+        Mutex<
+            SplitSink<
+                WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+                Message,
+            >,
+        >,
+    >,
     args: Args,
 }
 
@@ -107,7 +120,10 @@ pub async fn new_worker(args: Args) -> AutoWorker {
     info!("🔧 new_worker: Starting worker creation...");
     // TODO: IPC shared memory should be selected
     loop {
-        info!("🔄 new_worker: Loop iteration for worker type: {:?}", args.worker_type);
+        info!(
+            "🔄 new_worker: Loop iteration for worker type: {:?}",
+            args.worker_type
+        );
         match args.worker_type {
             WorkerType::TCP => {
                 info!("📡 new_worker: Creating TCP worker...");
@@ -115,9 +131,12 @@ pub async fn new_worker(args: Args) -> AutoWorker {
                     Ok(worker) => {
                         info!("✅ new_worker: TCP worker created successfully");
                         return AutoWorker::TCP(worker);
-                    },
+                    }
                     Err(e) => {
-                        error!("Failed to create TCP worker: {}. Retrying in 5 seconds...", e);
+                        error!(
+                            "Failed to create TCP worker: {}. Retrying in 5 seconds...",
+                            e
+                        );
                     }
                 }
             }
@@ -127,16 +146,18 @@ pub async fn new_worker(args: Args) -> AutoWorker {
                     Ok(worker) => {
                         info!("✅ new_worker: WS worker created successfully");
                         return AutoWorker::WS(worker);
-                    },
+                    }
                     Err(e) => {
-                        error!("Failed to create WS worker: {}. Retrying in 5 seconds...", e);
+                        error!(
+                            "Failed to create WS worker: {}. Retrying in 5 seconds...",
+                            e
+                        );
                     }
                 }
             }
         }
-        
+
         info!("⏳ new_worker: Waiting 5 seconds before retry...");
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
     }
 }
-

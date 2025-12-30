@@ -1,7 +1,7 @@
 use anyhow::Result;
 use rdkafka::config::ClientConfig;
 use rdkafka::producer::FutureProducer;
-use redis::{Client};
+use redis::Client;
 use sqlx::{Pool, Postgres};
 use std::sync::Arc;
 use tracing::{error, info};
@@ -43,5 +43,3 @@ pub async fn init_db(
 
     Ok((Arc::new(db_pool), redis_client, Arc::new(producer)))
 }
-
-

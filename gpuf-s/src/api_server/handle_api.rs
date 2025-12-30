@@ -6,10 +6,10 @@ use axum::{
     Router,
 };
 
-use std::sync::{Arc};
+use crate::api_server::{apk, client, models};
+use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 use tracing::info;
-use crate::api_server::{apk, client, models};
 
 #[allow(dead_code)] // API server utility methods
 impl ApiServer {

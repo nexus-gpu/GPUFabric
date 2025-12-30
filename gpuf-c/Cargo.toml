@@ -11,22 +11,6 @@ crate-type = ["rlib"]
 name = "gpuf-c"
 path = "src/main.rs"
 
-[[example]]
-name = "test_vulkan_device"
-path = "examples/test_vulkan_device.rs"
-
-[[example]]
-name = "test_cross_platform_vulkan"
-path = "examples/test_cross_platform_vulkan.rs"
-
-[[example]]
-name = "test_android_device_info"
-path = "examples/test_android_device_info.rs"
-
-[[example]]
-name = "test_client_sdk"
-path = "examples/rust/test_client_sdk.rs"
-
 [dependencies]
 # Core dependencies
 common = { path = "../common" }
@@ -56,6 +40,10 @@ rustls-pemfile = { workspace = true }
 tokio-tungstenite = { version = "0.28.0", default-features = false, features = ["native-tls-vendored", "connect", "stream"] }
 url = "2.5.0"
 tokio-stream = { version = "0.1", default-features = false }
+hmac = "0.12"
+sha1 = "0.10"
+md5 = "0.7"
+crc32fast = "1.4"
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 reqwest = { version = "0.12.5", default-features = false, features = ["json", "native-tls-vendored", "stream"] }

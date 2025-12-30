@@ -137,18 +137,13 @@ pub async fn list_apk(
     let is_active = params.get("is_active").and_then(|s| s.parse::<bool>().ok());
     let limit = params.get("limit").and_then(|s| s.parse::<u32>().ok());
 
-    let records = apk::list_apk_versions(
-        &app_state.db_pool,
-        package_name,
-        channel,
-        is_active,
-        limit,
-    )
-    .await
-    .map_err(|e| {
-        error!("Failed to list apk: {}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    let records =
+        apk::list_apk_versions(&app_state.db_pool, package_name, channel, is_active, limit)
+            .await
+            .map_err(|e| {
+                error!("Failed to list apk: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
 
     Ok(Json(ApiResponse::success(
         records.into_iter().map(Into::into).collect(),

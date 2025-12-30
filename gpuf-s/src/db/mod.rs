@@ -1,7 +1,7 @@
+pub mod apk;
+pub mod client;
 pub mod models;
 pub mod stats;
-pub mod client;
-pub mod apk;
 
 const GPU_ASSETS_TABLE: &str = "gpu_assets";
 const HEARTBEAT_TABLE: &str = "heartbeat";

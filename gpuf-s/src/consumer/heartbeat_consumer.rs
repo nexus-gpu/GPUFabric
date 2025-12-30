@@ -39,7 +39,7 @@ pub async fn start_consumer(
                 error!("Error receiving message: {}", e);
                 continue;
             }
-        
+
             Err(_) => {
                 debug!("Heartbeat consumer timeout");
                 if !message_buffer.is_empty() && last_flush.elapsed() >= flush_interval {
@@ -52,7 +52,7 @@ pub async fn start_consumer(
             }
         }
     }
-    
+
     if !message_buffer.is_empty() {
         if let Err(e) = tx.send(message_buffer).await {
             error!("Failed to send final batch to processor: {}", e);
