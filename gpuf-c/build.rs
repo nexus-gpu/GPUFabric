@@ -19,6 +19,7 @@ fn main() {
     if target_os == "windows" && cfg!(feature = "cuda") {
         println!("cargo:rerun-if-env-changed=CUDA_PATH");
         println!("cargo:rerun-if-env-changed=GPUF_BUNDLE_CUDA_DLLS");
+        println!("cargo:rerun-if-env-changed=GPUF_BUNDLE_TAR");
 
         let bundle_enabled = env::var("GPUF_BUNDLE_CUDA_DLLS")
             .ok()
@@ -39,6 +40,19 @@ fn main() {
         }
     }
 
+    if target_os == "windows" && cfg!(feature = "cuda") {
+        let bundle_tar_enabled = env::var("GPUF_BUNDLE_TAR")
+            .ok()
+            .map(|v| v != "0" && v.to_lowercase() != "false")
+            .unwrap_or(true);
+
+        if bundle_tar_enabled {
+            if let Err(e) = bundle_windows_tar() {
+                println!("cargo:warning=Tar bundling failed: {}", e);
+            }
+        }
+    }
+
     // Configure NVML library path for Windows target
     if target_os == "windows" {
         // Common NVIDIA NVML library locations on Windows
@@ -48,6 +62,7 @@ fn main() {
             r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.0\lib\x64",
             r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.8\lib\x64",
             r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.7\lib\x64",
+             r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0\lib\x64",
         ];
 
         // Check if NVML_LIB_PATH environment variable is set
@@ -340,19 +355,19 @@ fn bundle_cuda_dlls_windows() -> Result<(), Box<dyn std::error::Error>> {
     // Candidate CUDA bin directories
     let mut cuda_bin_dirs: Vec<PathBuf> = Vec::new();
     if let Ok(cuda_path) = env::var("CUDA_PATH") {
-        cuda_bin_dirs.push(PathBuf::from(cuda_path).join("bin"));
+        cuda_bin_dirs.push(PathBuf::from(cuda_path).join("bin\\x64"));
     }
 
     // Common install locations (best-effort)
-    cuda_bin_dirs.push(PathBuf::from(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0\bin"));
-    cuda_bin_dirs.push(PathBuf::from(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6\bin"));
-    cuda_bin_dirs.push(PathBuf::from(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.5\bin"));
-    cuda_bin_dirs.push(PathBuf::from(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\bin"));
-    cuda_bin_dirs.push(PathBuf::from(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.3\bin"));
-    cuda_bin_dirs.push(PathBuf::from(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.2\bin"));
-    cuda_bin_dirs.push(PathBuf::from(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.1\bin"));
-    cuda_bin_dirs.push(PathBuf::from(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.0\bin"));
-    cuda_bin_dirs.push(PathBuf::from(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.8\bin"));
+    cuda_bin_dirs.push(PathBuf::from(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0\bin\x64"));
+    cuda_bin_dirs.push(PathBuf::from(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6\bin\x64"));
+    cuda_bin_dirs.push(PathBuf::from(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.5\bin\x64"));
+    cuda_bin_dirs.push(PathBuf::from(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\bin\x64"));
+    cuda_bin_dirs.push(PathBuf::from(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.3\bin\x64"));
+    cuda_bin_dirs.push(PathBuf::from(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.2\bin\x64"));
+    cuda_bin_dirs.push(PathBuf::from(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.1\bin\x64"));
+    cuda_bin_dirs.push(PathBuf::from(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.0\bin\x64"));
+    cuda_bin_dirs.push(PathBuf::from(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.8\bin\x64"));
 
     // Find a bin dir that actually exists
     let cuda_bin = cuda_bin_dirs.into_iter().find(|p| p.exists());
@@ -395,6 +410,78 @@ fn bundle_cuda_dlls_windows() -> Result<(), Box<dyn std::error::Error>> {
             output_dir.display()
         );
     }
+
+    Ok(())
+}
+
+fn bundle_windows_tar() -> Result<(), Box<dyn std::error::Error>> {
+    use std::ffi::OsStr;
+    use std::fs::File;
+    use std::path::{Path, PathBuf};
+
+    fn is_runtime_dll(name: &OsStr) -> bool {
+        let s = name.to_string_lossy().to_ascii_lowercase();
+        s.ends_with(".dll")
+            && (s == "nvml.dll"
+                || s.starts_with("cublas64_")
+                || s.starts_with("cublaslt64_")
+                || s.starts_with("cudart64_")
+                || s.starts_with("curand64_")
+                || s.starts_with("cufft64_")
+                || s.starts_with("cusolver64_")
+                || s.starts_with("cusparse64_"))
+    }
+
+    let out_dir = PathBuf::from(env::var("OUT_DIR")?);
+    let profile = env::var("PROFILE")?;
+
+    let mut p: &Path = out_dir.as_path();
+    let mut output_dir: Option<PathBuf> = None;
+    while let Some(parent) = p.parent() {
+        if p.file_name().and_then(|s| s.to_str()) == Some(profile.as_str()) {
+            output_dir = Some(p.to_path_buf());
+            break;
+        }
+        p = parent;
+    }
+
+    let output_dir = output_dir.ok_or("Failed to detect target output directory from OUT_DIR")?;
+
+    let exe_path = output_dir.join("gpuf-c.exe");
+    if !exe_path.is_file() {
+        println!(
+            "cargo:warning=Skipping tar bundling because {} is not present yet (build scripts run before final link). Re-run cargo build to generate the tar.",
+            exe_path.display()
+        );
+        return Ok(());
+    }
+
+    let tar_path = output_dir.join("gpuf-c-bundle.tar");
+    let file = File::create(&tar_path)?;
+    let mut builder = tar::Builder::new(file);
+
+    builder.append_path_with_name(&exe_path, "gpuf-c.exe")?;
+
+    for entry in std::fs::read_dir(&output_dir)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if !is_runtime_dll(name.as_os_str()) {
+            continue;
+        }
+        let src = entry.path();
+        if !src.is_file() {
+            continue;
+        }
+        let dst_name = name.to_string_lossy();
+        builder.append_path_with_name(&src, dst_name.as_ref())?;
+    }
+
+    builder.finish()?;
+
+    println!(
+        "cargo:warning=Created bundle tar at {}",
+        tar_path.display()
+    );
 
     Ok(())
 }

@@ -118,3 +118,4 @@ tempfile = "3.3"
 [build-dependencies]
 cbindgen = "0.26"
 embed-resource = "2.4"
+tar = "0.4"
