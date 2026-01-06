@@ -106,7 +106,7 @@ pub async fn get_user_clients(
         .unwrap_or_default();
     for d in &mut devices {
         if let Some(models) = models_map.get(&d.client_id) {
-            d.loaded_models = Some(models.clone());
+            d.loaded_models = models.clone();
         }
     }
     let response = ClientListResponse {
@@ -140,7 +140,7 @@ pub async fn get_user_client_status_list(
         .unwrap_or_default();
     for d in &mut devices {
         if let Some(models) = models_map.get(&d.client_id) {
-            d.loaded_models = Some(models.clone());
+            d.loaded_models = models.clone();
         }
     }
     let response = ClientListResponse {

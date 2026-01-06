@@ -135,9 +135,7 @@ pub struct ClientDeviceInfo {
     pub last_online: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
     pub uptime_days: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub loaded_models: Option<Vec<Model>>,
-    //pub os_type: Option<String>,
+    pub loaded_models: Vec<Model>,
 }
 
 pub async fn get_loaded_models_batch_from_redis(
@@ -316,7 +314,7 @@ pub async fn get_user_client_status_list(
                 last_online: row.last_online,
                 created_at: row.created_at,
                 uptime_days: row.uptime_days.unwrap_or(0) as u32,
-                loaded_models: None,
+                loaded_models: vec![],
             }
         })
         .collect();
