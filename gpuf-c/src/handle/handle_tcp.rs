@@ -9,8 +9,8 @@ use crate::util::system_info::{
 use anyhow::Result;
 use common::{
     format_bytes, format_duration, join_streams, read_command, write_command, Command, CommandV1,
-    CommandV2, EngineType as ClientEngineType, Model, OsType, P2PCandidate, P2PCandidateType,
-    P2PConnectionType, P2PTransport, SystemInfo, MAX_MESSAGE_SIZE,
+    CommandV2, EngineType as ClientEngineType, Model, OsType, OutputPhase, P2PCandidate,
+    P2PCandidateType, P2PConnectionType, P2PTransport, SystemInfo, MAX_MESSAGE_SIZE,
 };
 use tokio::io::AsyncWriteExt;
 
@@ -46,21 +46,6 @@ use url::Url;
 
 // Filter internal GGUF control tokens from streaming output
 fn filter_control_tokens(text: &str) -> String {
-    // Skip everything that looks like internal thinking process
-    if text.contains("analysis")
-        || text.contains("The user is speaking")
-        || text.contains("Means \"")
-        || text.contains("The assistant should")
-        || text.contains("We need to")
-        || text.contains("Thus produce")
-        || text.contains("Ok produce answer")
-        || text.contains("<assistant")
-        || text.contains("<|channel|>")
-        || text.contains("<|start|>")
-    {
-        return String::new();
-    }
-
     let mut result = String::new();
     let mut chars = text.chars().peekable();
     let mut buffer = String::new();
@@ -117,6 +102,199 @@ fn filter_control_tokens(text: &str) -> String {
         .replace("<|start|>", "")
         .replace("<|channel|>", "")
         .replace("<|message|>", "")
+}
+
+#[derive(Debug, Clone)]
+struct PhaseSplitter {
+    phase: OutputPhase,
+    carry: String,
+}
+
+impl Default for PhaseSplitter {
+    fn default() -> Self {
+        Self {
+            phase: OutputPhase::Final,
+            carry: String::new(),
+        }
+    }
+}
+
+impl PhaseSplitter {
+    fn next_marker(rest: &str) -> Option<(usize, OutputPhase, usize)> {
+        let mut best: Option<(usize, OutputPhase, usize)> = None;
+
+        // Tag markers (explicit and cross-model common patterns)
+        for (tag, to_phase) in [
+            ("<analysis>", OutputPhase::Analysis),
+            ("<think>", OutputPhase::Analysis),
+            ("<reasoning>", OutputPhase::Analysis),
+            ("<final>", OutputPhase::Final),
+        ] {
+            if let Some(idx) = rest.find(tag) {
+                let cand = (idx, to_phase, tag.len());
+                best = Some(match best {
+                    None => cand,
+                    Some(cur) => if cand.0 < cur.0 { cand } else { cur },
+                });
+            }
+        }
+
+        // End tags: go back to Final.
+        for tag in ["</analysis>", "</think>", "</reasoning>", "</final>"] {
+            if let Some(idx) = rest.find(tag) {
+                let cand = (idx, OutputPhase::Final, tag.len());
+                best = Some(match best {
+                    None => cand,
+                    Some(cur) => if cand.0 < cur.0 { cand } else { cur },
+                });
+            }
+        }
+
+        // Line-based markers (must be at beginning-of-line).
+        // We consider both start-of-string and after '\n'.
+        for (pat, to_phase) in [
+            ("### Final", OutputPhase::Final),
+            ("Final:", OutputPhase::Final),
+            ("final:", OutputPhase::Final),
+            ("final", OutputPhase::Final),
+            ("### Answer", OutputPhase::Final),
+            ("### 思考", OutputPhase::Analysis),
+            ("思考：", OutputPhase::Analysis),
+            ("分析：", OutputPhase::Analysis),
+            ("analysis:", OutputPhase::Analysis),
+            ("analysis", OutputPhase::Analysis),
+            ("### 答案", OutputPhase::Final),
+            ("答案：", OutputPhase::Final),
+        ] {
+            if rest.starts_with(pat) {
+                // Guard: for plain "analysis"/"final" tokens, require boundary (space/newline/:) to reduce false positives.
+                if (pat == "analysis" || pat == "final")
+                    && rest.len() > pat.len()
+                    && !rest[pat.len()..].starts_with([' ', '\n', '\r', '\t', ':'])
+                {
+                    // Likely normal word usage (e.g. "analysis-based"), ignore.
+                } else {
+                    let cand = (0usize, to_phase, pat.len());
+                    best = Some(match best {
+                        None => cand,
+                        Some(cur) => if cand.0 < cur.0 { cand } else { cur },
+                    });
+                }
+            }
+            let needle = format!("\n{}", pat);
+            if let Some(idx) = rest.find(&needle) {
+                // idx points to '\n', marker starts right after it.
+                let cand = (idx + 1, to_phase, pat.len());
+                best = Some(match best {
+                    None => cand,
+                    Some(cur) => if cand.0 < cur.0 { cand } else { cur },
+                });
+            }
+        }
+
+        best
+    }
+
+    fn split_tail_for_carry<'a>(tail: &'a str) -> (&'a str, &'a str) {
+        // Keep at most max_marker_len-1 chars as carry if it could be a prefix of any marker.
+        // This allows markers to cross chunk boundaries.
+        let markers = [
+            "<analysis>", "</analysis>",
+            "<think>", "</think>",
+            "<reasoning>", "</reasoning>",
+            "<final>", "</final>",
+            "### Final", "Final:", "### Answer",
+            "final:", "final",
+            "### 思考", "思考：", "分析：",
+            "analysis:", "analysis",
+            "### 答案", "答案：",
+        ];
+        let max_len = markers.iter().map(|s| s.len()).max().unwrap_or(0);
+
+        let mut carry_len: usize = 0;
+        let max_scan = (max_len.saturating_sub(1)).min(tail.len());
+
+        for l in 1..=max_scan {
+            let start = tail.len() - l;
+            if !tail.is_char_boundary(start) {
+                continue;
+            }
+            let suf = &tail[start..];
+            if markers.iter().any(|m| m.starts_with(suf)) {
+                carry_len = l;
+            }
+            // also allow line-markers preceded by '\n'
+            if markers.iter().any(|m| {
+                let nm = format!("\n{}", m);
+                nm.starts_with(suf)
+            }) {
+                carry_len = l;
+            }
+        }
+
+        if carry_len == 0 {
+            return (tail, "");
+        }
+
+        let split = tail.len() - carry_len;
+        if !tail.is_char_boundary(split) {
+            return (tail, "");
+        }
+        (&tail[..split], &tail[split..])
+    }
+
+    fn phase(&self) -> OutputPhase {
+        self.phase
+    }
+
+    fn push(&mut self, text: &str) -> Vec<(OutputPhase, String)> {
+        if text.is_empty() {
+            return Vec::new();
+        }
+
+        let mut combined = String::new();
+        if !self.carry.is_empty() {
+            combined.push_str(&self.carry);
+            self.carry.clear();
+        }
+        combined.push_str(text);
+
+        let mut out: Vec<(OutputPhase, String)> = Vec::new();
+        let mut pos: usize = 0;
+
+        while pos < combined.len() {
+            let rest = &combined[pos..];
+
+            let Some((rel_pos, to_phase, marker_len)) = Self::next_marker(rest) else {
+                let tail = &combined[pos..];
+                let (safe, carry) = Self::split_tail_for_carry(tail);
+                if !safe.is_empty() {
+                    out.push((self.phase, safe.to_string()));
+                }
+                self.carry = carry.to_string();
+                break;
+            };
+
+            let tag_pos = pos + rel_pos;
+
+            if tag_pos > pos {
+                let seg = &combined[pos..tag_pos];
+                if !seg.is_empty() {
+                    out.push((self.phase, seg.to_string()));
+                }
+            }
+
+            // If the tag is incomplete at the end, save to carry and stop.
+            if tag_pos + marker_len > combined.len() {
+                self.carry = combined[tag_pos..].to_string();
+                break;
+            }
+
+            self.phase = to_phase;
+            pos = tag_pos + marker_len;
+        }
+        out
+    }
 }
 
 fn derive_model_id_from_path(model_path: &str) -> String {
@@ -440,7 +618,11 @@ impl ClientWorker {
             let max_bytes: usize = self.args.stream_chunk_bytes.max(1);
             let mut seq: u32 = 0;
             let mut buf = String::new();
+            let mut buf_phase: OutputPhase = OutputPhase::Unknown;
             let mut completion_tokens: u32 = 0;
+            let mut analysis_tokens: u32 = 0;
+            let mut final_tokens: u32 = 0;
+            let mut splitter = PhaseSplitter::default();
 
             let mut cancelled_early = false;
             loop {
@@ -472,19 +654,56 @@ impl ClientWorker {
                         // Never count bytes/chars here, otherwise completion_tokens can greatly exceed max_tokens.
                         completion_tokens = completion_tokens.saturating_add(1);
 
-                        if !filtered.is_empty() {
-                            buf.push_str(&filtered);
+                        let segs = splitter.push(&filtered);
+                        for (phase, seg) in segs {
+                            if seg.is_empty() {
+                                continue;
+                            }
+                            match phase {
+                                OutputPhase::Analysis => {
+                                    analysis_tokens = analysis_tokens.saturating_add(1);
+                                }
+                                OutputPhase::Final => {
+                                    final_tokens = final_tokens.saturating_add(1);
+                                }
+                                OutputPhase::Unknown => {}
+                            }
 
+                            if buf.is_empty() {
+                                buf_phase = phase;
+                            } else if buf_phase != phase {
+                                let delta = std::mem::take(&mut buf);
+                                let chunk = CommandV1::InferenceResultChunk {
+                                    task_id: task_id.clone(),
+                                    seq,
+                                    delta,
+                                    phase: buf_phase,
+                                    done: false,
+                                    error: None,
+                                    prompt_tokens,
+                                    completion_tokens,
+                                    analysis_tokens,
+                                    final_tokens,
+                                };
+                                self.send_command(chunk).await?;
+                                seq = seq.wrapping_add(1);
+                                buf_phase = phase;
+                            }
+
+                            buf.push_str(&seg);
                             if buf.len() >= max_bytes {
                                 let delta = std::mem::take(&mut buf);
                                 let chunk = CommandV1::InferenceResultChunk {
                                     task_id: task_id.clone(),
                                     seq,
                                     delta,
+                                    phase: buf_phase,
                                     done: false,
                                     error: None,
                                     prompt_tokens,
                                     completion_tokens,
+                                    analysis_tokens,
+                                    final_tokens,
                                 };
                                 self.send_command(chunk).await?;
                                 seq = seq.wrapping_add(1);
@@ -499,10 +718,13 @@ impl ClientWorker {
                     task_id: task_id.clone(),
                     seq,
                     delta: buf,
+                    phase: buf_phase,
                     done: false,
                     error: None,
                     prompt_tokens,
                     completion_tokens,
+                    analysis_tokens,
+                    final_tokens,
                 };
                 self.send_command(chunk).await?;
                 seq = seq.wrapping_add(1);
@@ -512,10 +734,13 @@ impl ClientWorker {
                 task_id: task_id.clone(),
                 seq,
                 delta: String::new(),
+                phase: splitter.phase(),
                 done: true,
                 error: None,
                 prompt_tokens,
                 completion_tokens,
+                analysis_tokens,
+                final_tokens,
             };
             self.send_command(done_chunk).await?;
 
@@ -1539,10 +1764,13 @@ impl ClientWorker {
                             task_id: task_id.clone(),
                             seq: 0,
                             delta: String::new(),
+                            phase: OutputPhase::Unknown,
                             done: true,
                             error: Some(
                                 "P2P streaming is only supported for LLAMA engine".to_string(),
                             ),
+                            analysis_tokens: 0,
+                            final_tokens: 0,
                         });
                         write_command(&mut stream, &chunk).await?;
                         stream.flush().await?;
@@ -1565,43 +1793,85 @@ impl ClientWorker {
                     let mut token_stream = Box::pin(token_stream);
 
                     let mut seq: u32 = 0;
+                    let mut buf = String::new();
+                    let mut buf_phase: OutputPhase = OutputPhase::Unknown;
+                    let mut splitter = PhaseSplitter::default();
+                    let mut analysis_tokens: u32 = 0;
+                    let mut final_tokens: u32 = 0;
+                    let max_bytes: usize = 64;
 
                     while let Some(piece_res) = token_stream.next().await {
                         let piece = piece_res?;
                         let filtered = filter_control_tokens(&piece);
-                        if filtered.is_empty() {
-                            continue;
-                        }
-
-                        let mut start: usize = 0;
-                        let max_bytes: usize = 64;
-                        while start < filtered.len() {
-                            let mut end = (start + max_bytes).min(filtered.len());
-                            while end < filtered.len() && !filtered.is_char_boundary(end) {
-                                end -= 1;
+                        let segs = splitter.push(&filtered);
+                        for (phase, seg) in segs {
+                            if seg.is_empty() {
+                                continue;
                             }
-                            if end == start {
-                                end = filtered
-                                    .char_indices()
-                                    .nth(1)
-                                    .map(|(i, _)| i)
-                                    .unwrap_or(filtered.len());
+                            match phase {
+                                OutputPhase::Analysis => analysis_tokens = analysis_tokens.saturating_add(1),
+                                OutputPhase::Final => final_tokens = final_tokens.saturating_add(1),
+                                OutputPhase::Unknown => {}
                             }
-                            let delta = filtered[start..end].to_string();
-                            start = end;
 
-                            let chunk = Command::V2(CommandV2::P2PInferenceChunk {
-                                connection_id,
-                                task_id: task_id.clone(),
-                                seq,
-                                delta,
-                                done: false,
-                                error: None,
-                            });
-                            write_command(&mut stream, &chunk).await?;
-                            stream.flush().await?;
-                            seq = seq.wrapping_add(1);
+                            if buf.is_empty() {
+                                buf_phase = phase;
+                            } else if buf_phase != phase {
+                                let delta = std::mem::take(&mut buf);
+                                let chunk = Command::V2(CommandV2::P2PInferenceChunk {
+                                    connection_id,
+                                    task_id: task_id.clone(),
+                                    seq,
+                                    delta,
+                                    phase: buf_phase,
+                                    done: false,
+                                    error: None,
+                                    analysis_tokens,
+                                    final_tokens,
+                                });
+                                write_command(&mut stream, &chunk).await?;
+                                stream.flush().await?;
+                                seq = seq.wrapping_add(1);
+                                buf_phase = phase;
+                            }
+
+                            buf.push_str(&seg);
+                            if buf.len() >= max_bytes {
+                                let delta = std::mem::take(&mut buf);
+                                let chunk = Command::V2(CommandV2::P2PInferenceChunk {
+                                    connection_id,
+                                    task_id: task_id.clone(),
+                                    seq,
+                                    delta,
+                                    phase: buf_phase,
+                                    done: false,
+                                    error: None,
+                                    analysis_tokens,
+                                    final_tokens,
+                                });
+                                write_command(&mut stream, &chunk).await?;
+                                stream.flush().await?;
+                                seq = seq.wrapping_add(1);
+                            }
                         }
+                    }
+
+                    if !buf.is_empty() {
+                        let delta = std::mem::take(&mut buf);
+                        let chunk = Command::V2(CommandV2::P2PInferenceChunk {
+                            connection_id,
+                            task_id: task_id.clone(),
+                            seq,
+                            delta,
+                            phase: buf_phase,
+                            done: false,
+                            error: None,
+                            analysis_tokens,
+                            final_tokens,
+                        });
+                        write_command(&mut stream, &chunk).await?;
+                        stream.flush().await?;
+                        seq = seq.wrapping_add(1);
                     }
 
                     let done = Command::V2(CommandV2::P2PInferenceDone {
@@ -1610,6 +1880,8 @@ impl ClientWorker {
                         prompt_tokens: 0,
                         completion_tokens: 0,
                         total_tokens: 0,
+                        analysis_tokens,
+                        final_tokens,
                     });
                     write_command(&mut stream, &done).await?;
                     stream.flush().await?;
@@ -2407,10 +2679,13 @@ impl WorkerHandle for ClientWorker {
                                         task_id,
                                         seq: 0,
                                         delta: String::new(),
+                                        phase: OutputPhase::Unknown,
                                         done: true,
                                         completion_tokens: 0,
                                         prompt_tokens: 0,
                                         error: Some(e.to_string()),
+                                        analysis_tokens: 0,
+                                        final_tokens: 0,
                                     };
                                     self.send_command(chunk).await?;
                                 }
@@ -2455,10 +2730,13 @@ impl WorkerHandle for ClientWorker {
                                             task_id,
                                             seq: 0,
                                             delta: String::new(),
+                                            phase: OutputPhase::Unknown,
                                             done: true,
                                             completion_tokens: 0,
                                             prompt_tokens: 0,
                                             error: Some(e.to_string()),
+                                            analysis_tokens: 0,
+                                            final_tokens: 0,
                                         };
                                         self.send_command(chunk).await?;
                                     }
@@ -2507,10 +2785,13 @@ impl WorkerHandle for ClientWorker {
                                                     task_id: task_id.clone(),
                                                     seq,
                                                     delta,
+                                                    phase: OutputPhase::Unknown,
                                                     done: false,
                                                     error: None,
                                                     prompt_tokens: 0,
                                                     completion_tokens: 0,
+                                                    analysis_tokens: 0,
+                                                    final_tokens: 0,
                                                 };
                                                 self.send_command(chunk).await?;
                                                 seq = seq.wrapping_add(1);
@@ -2521,10 +2802,13 @@ impl WorkerHandle for ClientWorker {
                                                 task_id,
                                                 seq,
                                                 delta: String::new(),
+                                                phase: OutputPhase::Unknown,
                                                 done: true,
                                                 error: None,
                                                 prompt_tokens: 0,
                                                 completion_tokens: 0,
+                                                analysis_tokens: 0,
+                                                final_tokens: 0,
                                             };
                                             self.send_command(done_chunk).await?;
                                         }
@@ -2533,10 +2817,13 @@ impl WorkerHandle for ClientWorker {
                                                 task_id,
                                                 seq: 0,
                                                 delta: String::new(),
+                                                phase: OutputPhase::Unknown,
                                                 done: true,
                                                 error: Some(e.to_string()),
                                                 prompt_tokens: 0,
                                                 completion_tokens: 0,
+                                                analysis_tokens: 0,
+                                                final_tokens: 0,
                                             };
                                             self.send_command(chunk).await?;
                                         }
@@ -2680,11 +2967,14 @@ impl WorkerHandle for ClientWorker {
                                                                 task_id: task_id.clone(),
                                                                 seq: 0,
                                                                 delta: String::new(),
+                                                                phase: OutputPhase::Unknown,
                                                                 done: true,
                                                                 error: Some(
                                                                     "Engine not initialized"
                                                                         .to_string(),
                                                                 ),
+                                                                analysis_tokens: 0,
+                                                                final_tokens: 0,
                                                             },
                                                         );
                                                         if let Ok(pkt) = TCPWorker::p2p_udp_encode_command_payload(&chunk) {
@@ -2702,8 +2992,11 @@ impl WorkerHandle for ClientWorker {
                                                         task_id: task_id.clone(),
                                                         seq: 0,
                                                         delta: String::new(),
+                                                        phase: OutputPhase::Unknown,
                                                         done: true,
                                                         error: Some("P2P UDP streaming is only supported for LLAMA engine".to_string()),
+                                                        analysis_tokens: 0,
+                                                        final_tokens: 0,
                                                     });
                                                     if let Ok(pkt) =
                                                         TCPWorker::p2p_udp_encode_command_payload(
@@ -2738,8 +3031,11 @@ impl WorkerHandle for ClientWorker {
                                                             task_id: task_id.clone(),
                                                             seq: 0,
                                                             delta: String::new(),
+                                                            phase: OutputPhase::Unknown,
                                                             done: true,
                                                             error: Some(e.to_string()),
+                                                            analysis_tokens: 0,
+                                                            final_tokens: 0,
                                                         });
                                                     if let Ok(pkt) =
                                                         TCPWorker::p2p_udp_encode_command_payload(
@@ -2770,8 +3066,11 @@ impl WorkerHandle for ClientWorker {
                                                                 task_id: task_id.clone(),
                                                                 seq,
                                                                 delta: String::new(),
+                                                                phase: OutputPhase::Unknown,
                                                                 done: true,
                                                                 error: Some(e.to_string()),
+                                                                analysis_tokens: 0,
+                                                                final_tokens: 0,
                                                             },
                                                         );
                                                         if let Ok(pkt) = TCPWorker::p2p_udp_encode_command_payload(&chunk) {
@@ -2813,8 +3112,11 @@ impl WorkerHandle for ClientWorker {
                                                             task_id: task_id.clone(),
                                                             seq,
                                                             delta,
+                                                            phase: OutputPhase::Unknown,
                                                             done: false,
                                                             error: None,
+                                                            analysis_tokens: 0,
+                                                            final_tokens: 0,
                                                         });
                                                     if let Ok(pkt) =
                                                         TCPWorker::p2p_udp_encode_command_payload(
@@ -2838,6 +3140,8 @@ impl WorkerHandle for ClientWorker {
                                                 prompt_tokens: 0,
                                                 completion_tokens: 0,
                                                 total_tokens: 0,
+                                                analysis_tokens: 0,
+                                                final_tokens: 0,
                                             });
                                             if let Ok(pkt) =
                                                 TCPWorker::p2p_udp_encode_command_payload(&done)
@@ -3072,8 +3376,11 @@ impl WorkerHandle for ClientWorker {
                                                                         task_id: task_id.clone(),
                                                                         seq: 0,
                                                                         delta: String::new(),
+                                                                        phase: OutputPhase::Unknown,
                                                                         done: true,
                                                                         error: Some("Engine not initialized".to_string()),
+                                                                        analysis_tokens: 0,
+                                                                        final_tokens: 0,
                                                                     });
                                                                     if let Ok(pkt) = TCPWorker::p2p_udp_encode_command_payload(&chunk) {
                                                                         let msg_id = next_msg_id;
@@ -3099,8 +3406,11 @@ impl WorkerHandle for ClientWorker {
                                                                     task_id: task_id.clone(),
                                                                     seq: 0,
                                                                     delta: String::new(),
+                                                                    phase: OutputPhase::Unknown,
                                                                     done: true,
                                                                     error: Some("P2P TURN/UDP streaming is only supported for LLAMA engine".to_string()),
+                                                                    analysis_tokens: 0,
+                                                                    final_tokens: 0,
                                                                 });
                                                                 if let Ok(pkt) = TCPWorker::p2p_udp_encode_command_payload(&chunk) {
                                                                     let msg_id = next_msg_id;
@@ -3136,8 +3446,11 @@ impl WorkerHandle for ClientWorker {
                                                                         task_id: task_id.clone(),
                                                                         seq: 0,
                                                                         delta: String::new(),
+                                                                        phase: OutputPhase::Unknown,
                                                                         done: true,
                                                                         error: Some(e.to_string()),
+                                                                        analysis_tokens: 0,
+                                                                        final_tokens: 0,
                                                                     },
                                                                 );
                                                                 if let Ok(pkt) = TCPWorker::p2p_udp_encode_command_payload(&chunk) {
@@ -3171,8 +3484,11 @@ impl WorkerHandle for ClientWorker {
                                                                         task_id: task_id.clone(),
                                                                         seq,
                                                                         delta: String::new(),
+                                                                        phase: OutputPhase::Unknown,
                                                                         done: true,
                                                                         error: Some(e.to_string()),
+                                                                        analysis_tokens: 0,
+                                                                        final_tokens: 0,
                                                                     });
                                                                     if let Ok(pkt) = TCPWorker::p2p_udp_encode_command_payload(&chunk) {
                                                                         let msg_id = next_msg_id;
@@ -3224,8 +3540,11 @@ impl WorkerHandle for ClientWorker {
                                                                         task_id: task_id.clone(),
                                                                         seq,
                                                                         delta,
+                                                                        phase: OutputPhase::Unknown,
                                                                         done: false,
                                                                         error: None,
+                                                                        analysis_tokens: 0,
+                                                                        final_tokens: 0,
                                                                     },
                                                                 );
                                                                 if let Ok(pkt) = TCPWorker::p2p_udp_encode_command_payload(&chunk) {
@@ -3251,6 +3570,8 @@ impl WorkerHandle for ClientWorker {
                                                                 prompt_tokens: 0,
                                                                 completion_tokens: 0,
                                                                 total_tokens: 0,
+                                                                analysis_tokens: 0,
+                                                                final_tokens: 0,
                                                             },
                                                         );
                                                         if let Ok(pkt) = TCPWorker::p2p_udp_encode_command_payload(&done) {

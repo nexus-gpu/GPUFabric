@@ -3793,6 +3793,8 @@ pub extern "C" fn start_remote_worker(
         config: None,
         local_addr: "0.0.0.0".to_string(),
         local_port: 0,
+        p2p_advertise_ip: None,
+        p2p_udp_port: 40000,
         cert_chain_path: "".to_string(),
         auto_models: false,
         hugging_face_hub_token: None,
