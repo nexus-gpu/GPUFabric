@@ -21,6 +21,7 @@ use crate::inference::{
     },
 };
 use crate::util::protoc::ClientId;
+use common::OutputPhase;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ModelFamily {
@@ -276,21 +277,19 @@ pub async fn handle_completion(
                     device_id,
                     finished: finished.clone(),
                 });
-                let scheduler = gateway.scheduler.clone();
                 let stop_state: Arc<Mutex<StopMarkerState>> =
                     Arc::new(Mutex::new(StopMarkerState::new(&[])));
                 let s = ReceiverStream::new(rx)
                     .then(move |ev| {
                         let guard = guard.clone();
                         let stop_state = stop_state.clone();
-                        let scheduler = scheduler.clone();
                         let task_id = task_id.clone();
                         let model_name = model_name.clone();
                         let finished = finished.clone();
                         async move {
                             let _guard = guard;
                             let data = match ev {
-                                StreamEvent::Delta(text) => {
+                                StreamEvent::Delta(text, _phase) => {
                                     let text = {
                                         let mut st = stop_state.lock().await;
                                         let (out, _hit_stop) = st.consume(&text);
@@ -560,21 +559,19 @@ pub async fn handle_chat_completion(
                     device_id,
                     finished: finished.clone(),
                 });
-                let scheduler = gateway.scheduler.clone();
                 let stop_state: Arc<Mutex<StopMarkerState>> =
                     Arc::new(Mutex::new(StopMarkerState::new(&[])));
                 let s = ReceiverStream::new(rx)
                     .then(move |ev| {
                         let guard = guard.clone();
                         let stop_state = stop_state.clone();
-                        let scheduler = scheduler.clone();
                         let task_id = task_id.clone();
                         let model_name = model_name.clone();
                         let finished = finished.clone();
                         async move {
                             let _guard = guard;
                             let data = match ev {
-                                StreamEvent::Delta(text) => {
+                                StreamEvent::Delta(text, phase) => {
                                     let text = {
                                         let mut st = stop_state.lock().await;
                                         let (out, _hit_stop) = st.consume(&text);
@@ -585,7 +582,12 @@ pub async fn handle_chat_completion(
                                         return None;
                                     }
 
-                                    let delta = json!({"role": "assistant", "content": text});
+                                    let delta = match phase {
+                                        OutputPhase::Analysis => {
+                                            json!({"role": "assistant", "reasoning_content": text})
+                                        }
+                                        _ => json!({"role": "assistant", "content": text}),
+                                    };
                                     let payload = json!({
                                         "id": task_id,
                                         "object": "chat.completion.chunk",
@@ -711,7 +713,7 @@ pub async fn handle_chat_completion(
 
             while let Some(ev) = rx.recv().await {
                 match ev {
-                    StreamEvent::Delta(d) => {
+                    StreamEvent::Delta(d, _phase) => {
                         text.push_str(&d);
                     }
                     StreamEvent::Finish(usage) => {
@@ -734,6 +736,8 @@ pub async fn handle_chat_completion(
                 prompt_tokens: 0,
                 completion_tokens: 0,
                 total_tokens: 0,
+                analysis_tokens: None,
+                final_tokens: None,
             });
             let max_tokens_effective: u32 = request.max_tokens.unwrap_or(1024);
             let finish_reason = if usage.completion_tokens >= max_tokens_effective {

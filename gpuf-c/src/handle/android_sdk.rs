@@ -8,7 +8,7 @@
 use anyhow::{anyhow, Result};
 
 #[cfg(target_os = "android")]
-use common::{ChatMessage, Command, CommandV1, Model, OsType, SystemInfo};
+use common::{ChatMessage, Command, CommandV1, Model, OsType, OutputPhase, SystemInfo};
 
 #[cfg(target_os = "android")]
 use std::ffi::{CStr, CString};
@@ -230,12 +230,192 @@ fn token_should_be_suppressed(token: &str) -> bool {
     token.contains("<|")
         || token.contains("<assistant")
         || token.contains("assistantfinal")
-        || token.contains("analysis")
         || token.contains("The user is speaking")
         || token.contains("The assistant should")
         || token.contains("We need to")
         || token.contains("Thus produce")
         || token.contains("Ok produce answer")
+}
+
+#[cfg(target_os = "android")]
+#[derive(Debug, Clone)]
+struct PhaseSplitter {
+    phase: OutputPhase,
+    carry: String,
+}
+
+#[cfg(target_os = "android")]
+impl Default for PhaseSplitter {
+    fn default() -> Self {
+        Self {
+            phase: OutputPhase::Final,
+            carry: String::new(),
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+impl PhaseSplitter {
+    fn next_marker(rest: &str) -> Option<(usize, OutputPhase, usize)> {
+        let mut best: Option<(usize, OutputPhase, usize)> = None;
+
+        for (tag, to_phase) in [
+            ("<analysis>", OutputPhase::Analysis),
+            ("<think>", OutputPhase::Analysis),
+            ("<reasoning>", OutputPhase::Analysis),
+            ("<final>", OutputPhase::Final),
+        ] {
+            if let Some(idx) = rest.find(tag) {
+                let cand = (idx, to_phase, tag.len());
+                best = Some(match best {
+                    None => cand,
+                    Some(cur) => if cand.0 < cur.0 { cand } else { cur },
+                });
+            }
+        }
+
+        for tag in ["</analysis>", "</think>", "</reasoning>", "</final>"] {
+            if let Some(idx) = rest.find(tag) {
+                let cand = (idx, OutputPhase::Final, tag.len());
+                best = Some(match best {
+                    None => cand,
+                    Some(cur) => if cand.0 < cur.0 { cand } else { cur },
+                });
+            }
+        }
+
+        for (pat, to_phase) in [
+            ("### Final", OutputPhase::Final),
+            ("Final:", OutputPhase::Final),
+            ("final:", OutputPhase::Final),
+            ("final", OutputPhase::Final),
+            ("### Answer", OutputPhase::Final),
+            ("### 思考", OutputPhase::Analysis),
+            ("思考：", OutputPhase::Analysis),
+            ("分析：", OutputPhase::Analysis),
+            ("analysis:", OutputPhase::Analysis),
+            ("analysis", OutputPhase::Analysis),
+            ("### 答案", OutputPhase::Final),
+            ("答案：", OutputPhase::Final),
+        ] {
+            if rest.starts_with(pat) {
+                if (pat == "analysis" || pat == "final")
+                    && rest.len() > pat.len()
+                    && !rest[pat.len()..].starts_with([' ', '\n', '\r', '\t', ':'])
+                {
+                } else {
+                    let cand = (0usize, to_phase, pat.len());
+                    best = Some(match best {
+                        None => cand,
+                        Some(cur) => if cand.0 < cur.0 { cand } else { cur },
+                    });
+                }
+            }
+            let needle = format!("\n{}", pat);
+            if let Some(idx) = rest.find(&needle) {
+                let cand = (idx + 1, to_phase, pat.len());
+                best = Some(match best {
+                    None => cand,
+                    Some(cur) => if cand.0 < cur.0 { cand } else { cur },
+                });
+            }
+        }
+
+        best
+    }
+
+    fn split_tail_for_carry<'a>(tail: &'a str) -> (&'a str, &'a str) {
+        let markers = [
+            "<analysis>", "</analysis>",
+            "<think>", "</think>",
+            "<reasoning>", "</reasoning>",
+            "<final>", "</final>",
+            "### Final", "Final:", "### Answer",
+            "final:", "final",
+            "### 思考", "思考：", "分析：",
+            "analysis:", "analysis",
+            "### 答案", "答案：",
+        ];
+        let max_len = markers.iter().map(|s| s.len()).max().unwrap_or(0);
+
+        let mut carry_len: usize = 0;
+        let max_scan = (max_len.saturating_sub(1)).min(tail.len());
+
+        for l in 1..=max_scan {
+            let start = tail.len() - l;
+            if !tail.is_char_boundary(start) {
+                continue;
+            }
+            let suf = &tail[start..];
+            if markers.iter().any(|m| m.starts_with(suf)) {
+                carry_len = l;
+            }
+            if markers.iter().any(|m| {
+                let nm = format!("\n{}", m);
+                nm.starts_with(suf)
+            }) {
+                carry_len = l;
+            }
+        }
+
+        if carry_len == 0 {
+            return (tail, "");
+        }
+
+        let split = tail.len() - carry_len;
+        if !tail.is_char_boundary(split) {
+            return (tail, "");
+        }
+        (&tail[..split], &tail[split..])
+    }
+
+    fn push(&mut self, text: &str) -> Vec<(OutputPhase, String)> {
+        if text.is_empty() {
+            return Vec::new();
+        }
+
+        let mut combined = String::new();
+        if !self.carry.is_empty() {
+            combined.push_str(&self.carry);
+            self.carry.clear();
+        }
+        combined.push_str(text);
+
+        let mut out: Vec<(OutputPhase, String)> = Vec::new();
+        let mut pos: usize = 0;
+
+        while pos < combined.len() {
+            let rest = &combined[pos..];
+
+            let Some((rel_pos, to_phase, marker_len)) = Self::next_marker(rest) else {
+                let tail = &combined[pos..];
+                let (safe, carry) = Self::split_tail_for_carry(tail);
+                if !safe.is_empty() {
+                    out.push((self.phase, safe.to_string()));
+                }
+                self.carry = carry.to_string();
+                break;
+            };
+
+            let tag_pos = pos + rel_pos;
+            if tag_pos > pos {
+                let seg = &combined[pos..tag_pos];
+                if !seg.is_empty() {
+                    out.push((self.phase, seg.to_string()));
+                }
+            }
+
+            if tag_pos + marker_len > combined.len() {
+                self.carry = combined[tag_pos..].to_string();
+                break;
+            }
+
+            self.phase = to_phase;
+            pos = tag_pos + marker_len;
+        }
+
+        out
+    }
 }
 
 #[cfg(target_os = "android")]
@@ -898,6 +1078,7 @@ pub async fn start_worker_tasks() -> Result<()> {
                                         task_id: task_id.clone(),
                                         seq: 0,
                                         delta: String::new(),
+                                        phase: OutputPhase::Unknown,
                                         done: true,
                                         error: Some(
                                             "Model not loaded - please load a model first"
@@ -905,6 +1086,8 @@ pub async fn start_worker_tasks() -> Result<()> {
                                         ),
                                         prompt_tokens: 0,
                                         completion_tokens: 0,
+                                        analysis_tokens: 0,
+                                        final_tokens: 0,
                                     };
                                     let _ = common::write_command_sync(
                                         &mut *stream,
@@ -930,10 +1113,13 @@ pub async fn start_worker_tasks() -> Result<()> {
                                             task_id: task_id.clone(),
                                             seq: 0,
                                             delta: String::new(),
+                                            phase: OutputPhase::Unknown,
                                             done: true,
                                             error: Some(err.clone()),
                                             prompt_tokens: 0,
                                             completion_tokens: 0,
+                                            analysis_tokens: 0,
+                                            final_tokens: 0,
                                         };
                                         let _ = common::write_command_sync(
                                             &mut *stream,
@@ -957,6 +1143,10 @@ pub async fn start_worker_tasks() -> Result<()> {
                                         max_bytes: usize,
                                         prompt_tokens: u32,
                                         completion_tokens: u32,
+                                        analysis_tokens: u32,
+                                        final_tokens: u32,
+                                        buf_phase: OutputPhase,
+                                        splitter: PhaseSplitter,
                                         suppress: bool,
                                     }
 
@@ -993,9 +1183,53 @@ pub async fn start_worker_tasks() -> Result<()> {
                                             return;
                                         }
 
-                                        state.buf.push_str(token_str);
-                                        state.completion_tokens =
-                                            state.completion_tokens.saturating_add(1);
+                                        let segs = state.splitter.push(token_str);
+                                        for (phase, seg) in segs {
+                                            if seg.is_empty() {
+                                                continue;
+                                            }
+                                            state.completion_tokens =
+                                                state.completion_tokens.saturating_add(1);
+                                            match phase {
+                                                OutputPhase::Analysis => {
+                                                    state.analysis_tokens =
+                                                        state.analysis_tokens.saturating_add(1)
+                                                }
+                                                OutputPhase::Final => {
+                                                    state.final_tokens = state.final_tokens.saturating_add(1)
+                                                }
+                                                OutputPhase::Unknown => {
+                                                    state.final_tokens = state.final_tokens.saturating_add(1)
+                                                }
+                                            }
+
+                                            if state.buf.is_empty() {
+                                                state.buf_phase = phase;
+                                            } else if state.buf_phase != phase {
+                                                let delta = std::mem::take(&mut state.buf);
+                                                let chunk = CommandV1::InferenceResultChunk {
+                                                    task_id: state.task_id.clone(),
+                                                    seq: state.seq,
+                                                    delta,
+                                                    phase: state.buf_phase,
+                                                    done: false,
+                                                    error: None,
+                                                    prompt_tokens: state.prompt_tokens,
+                                                    completion_tokens: state.completion_tokens,
+                                                    analysis_tokens: state.analysis_tokens,
+                                                    final_tokens: state.final_tokens,
+                                                };
+                                                state.seq = state.seq.wrapping_add(1);
+                                                let _ = common::write_command_sync(
+                                                    &mut state.stream,
+                                                    &Command::V1(chunk),
+                                                );
+                                                state.buf_phase = phase;
+                                            }
+
+                                            state.buf.push_str(&seg);
+                                        }
+
                                         if state.buf.len() < state.max_bytes {
                                             return;
                                         }
@@ -1005,10 +1239,13 @@ pub async fn start_worker_tasks() -> Result<()> {
                                             task_id: state.task_id.clone(),
                                             seq: state.seq,
                                             delta,
+                                            phase: state.buf_phase,
                                             done: false,
                                             error: None,
                                             prompt_tokens: state.prompt_tokens,
                                             completion_tokens: state.completion_tokens,
+                                            analysis_tokens: state.analysis_tokens,
+                                            final_tokens: state.final_tokens,
                                         };
                                         state.seq = state.seq.wrapping_add(1);
 
@@ -1029,10 +1266,13 @@ pub async fn start_worker_tasks() -> Result<()> {
                                                 task_id: task_id_for_thread.clone(),
                                                 seq: 0,
                                                 delta: String::new(),
+                                                phase: OutputPhase::Unknown,
                                                 done: true,
                                                 error: Some(err),
                                                 prompt_tokens: 0,
                                                 completion_tokens: 0,
+                                                analysis_tokens: 0,
+                                                final_tokens: 0,
                                             };
                                             let _ = common::write_command_sync(
                                                 &mut s,
@@ -1053,6 +1293,10 @@ pub async fn start_worker_tasks() -> Result<()> {
                                         max_bytes: 8,
                                         prompt_tokens,
                                         completion_tokens: 0,
+                                        analysis_tokens: 0,
+                                        final_tokens: 0,
+                                        buf_phase: OutputPhase::Final,
+                                        splitter: PhaseSplitter::default(),
                                         suppress: false,
                                     };
 
@@ -1081,10 +1325,13 @@ pub async fn start_worker_tasks() -> Result<()> {
                                             task_id: task_id_for_thread.clone(),
                                             seq: cb_state.seq,
                                             delta,
+                                            phase: cb_state.buf_phase,
                                             done: false,
                                             error: None,
                                             prompt_tokens: cb_state.prompt_tokens,
                                             completion_tokens: cb_state.completion_tokens,
+                                            analysis_tokens: cb_state.analysis_tokens,
+                                            final_tokens: cb_state.final_tokens,
                                         };
                                         cb_state.seq = cb_state.seq.wrapping_add(1);
                                         let _ = common::write_command_sync(
@@ -1097,10 +1344,13 @@ pub async fn start_worker_tasks() -> Result<()> {
                                         task_id: task_id_for_thread.clone(),
                                         seq: cb_state.seq,
                                         delta: String::new(),
+                                        phase: cb_state.buf_phase,
                                         done: true,
                                         error: None,
                                         prompt_tokens: cb_state.prompt_tokens,
                                         completion_tokens: cb_state.completion_tokens,
+                                        analysis_tokens: cb_state.analysis_tokens,
+                                        final_tokens: cb_state.final_tokens,
                                     };
                                     let _ = common::write_command_sync(
                                         &mut cb_state.stream,
@@ -1152,6 +1402,7 @@ pub async fn start_worker_tasks() -> Result<()> {
                                         task_id: task_id.clone(),
                                         seq: 0,
                                         delta: String::new(),
+                                        phase: OutputPhase::Unknown,
                                         done: true,
                                         error: Some(
                                             "Model not loaded - please load a model first"
@@ -1159,6 +1410,8 @@ pub async fn start_worker_tasks() -> Result<()> {
                                         ),
                                         prompt_tokens: 0,
                                         completion_tokens: 0,
+                                        analysis_tokens: 0,
+                                        final_tokens: 0,
                                     };
                                     let _ = common::write_command_sync(
                                         &mut *stream,
@@ -1189,10 +1442,13 @@ pub async fn start_worker_tasks() -> Result<()> {
                                             task_id: task_id.clone(),
                                             seq: 0,
                                             delta: String::new(),
+                                            phase: OutputPhase::Unknown,
                                             done: true,
                                             error: Some(err.clone()),
                                             prompt_tokens: 0,
                                             completion_tokens: 0,
+                                            analysis_tokens: 0,
+                                            final_tokens: 0,
                                         };
                                         let _ = common::write_command_sync(
                                             &mut *stream,
@@ -1264,10 +1520,13 @@ pub async fn start_worker_tasks() -> Result<()> {
                                             task_id: state.task_id.clone(),
                                             seq: state.seq,
                                             delta,
+                                            phase: OutputPhase::Unknown,
                                             done: false,
                                             error: None,
                                             prompt_tokens: state.prompt_tokens,
                                             completion_tokens: state.completion_tokens,
+                                            analysis_tokens: 0,
+                                            final_tokens: 0,
                                         };
                                         state.seq = state.seq.wrapping_add(1);
 
@@ -1287,10 +1546,13 @@ pub async fn start_worker_tasks() -> Result<()> {
                                                 task_id: task_id_for_thread.clone(),
                                                 seq: 0,
                                                 delta: String::new(),
+                                                phase: OutputPhase::Unknown,
                                                 done: true,
                                                 error: Some(err),
                                                 prompt_tokens: 0,
                                                 completion_tokens: 0,
+                                                analysis_tokens: 0,
+                                                final_tokens: 0,
                                             };
                                             let _ = common::write_command_sync(
                                                 &mut s,
@@ -1339,10 +1601,13 @@ pub async fn start_worker_tasks() -> Result<()> {
                                             task_id: task_id_for_thread.clone(),
                                             seq: cb_state.seq,
                                             delta,
+                                            phase: OutputPhase::Unknown,
                                             done: false,
                                             error: None,
                                             prompt_tokens: cb_state.prompt_tokens,
                                             completion_tokens: cb_state.completion_tokens,
+                                            analysis_tokens: 0,
+                                            final_tokens: 0,
                                         };
                                         cb_state.seq = cb_state.seq.wrapping_add(1);
                                         let _ = common::write_command_sync(
@@ -1355,10 +1620,13 @@ pub async fn start_worker_tasks() -> Result<()> {
                                         task_id: task_id_for_thread.clone(),
                                         seq: cb_state.seq,
                                         delta: String::new(),
+                                        phase: OutputPhase::Unknown,
                                         done: true,
                                         error: None,
                                         prompt_tokens: cb_state.prompt_tokens,
                                         completion_tokens: cb_state.completion_tokens,
+                                        analysis_tokens: 0,
+                                        final_tokens: 0,
                                     };
                                     let _ = common::write_command_sync(
                                         &mut cb_state.stream,
@@ -1915,10 +2183,13 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                             task_id: task_id.clone(),
                                             seq: 0,
                                             delta: String::new(),
+                                            phase: OutputPhase::Unknown,
                                             done: true,
                                             error: Some(err.clone()),
                                             prompt_tokens: 0,
                                             completion_tokens: 0,
+                                            analysis_tokens: 0,
+                                            final_tokens: 0,
                                         };
                                         let _ = common::write_command_sync(
                                             &mut *stream,
@@ -1938,6 +2209,7 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                             .lock()
                                             .unwrap();
                                         *active = Some(task_id.clone());
+
                                     }
 
                                     let writer_stream = match stream.try_clone() {
@@ -1948,10 +2220,13 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                                 task_id: task_id.clone(),
                                                 seq: 0,
                                                 delta: String::new(),
+                                                phase: OutputPhase::Unknown,
                                                 done: true,
                                                 error: Some(err.clone()),
                                                 prompt_tokens: 0,
                                                 completion_tokens: 0,
+                                                analysis_tokens: 0,
+                                                final_tokens: 0,
                                             };
                                             let _ = common::write_command_sync(
                                                 &mut *stream,
@@ -1979,6 +2254,10 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                             max_bytes: usize,
                                             prompt_tokens: u32,
                                             completion_tokens: u32,
+                                            analysis_tokens: u32,
+                                            final_tokens: u32,
+                                            buf_phase: OutputPhase,
+                                            splitter: PhaseSplitter,
                                             suppress: bool,
                                         }
 
@@ -2016,9 +2295,55 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                                 return;
                                             }
 
-                                            state.buf.push_str(token_str);
-                                            state.completion_tokens =
-                                                state.completion_tokens.saturating_add(1);
+                                            let segs = state.splitter.push(token_str);
+                                            for (phase, seg) in segs {
+                                                if seg.is_empty() {
+                                                    continue;
+                                                }
+                                                state.completion_tokens =
+                                                    state.completion_tokens.saturating_add(1);
+                                                match phase {
+                                                    OutputPhase::Analysis => {
+                                                        state.analysis_tokens =
+                                                            state.analysis_tokens.saturating_add(1)
+                                                    }
+                                                    OutputPhase::Final => {
+                                                        state.final_tokens =
+                                                            state.final_tokens.saturating_add(1)
+                                                    }
+                                                    OutputPhase::Unknown => {
+                                                        state.final_tokens =
+                                                            state.final_tokens.saturating_add(1)
+                                                    }
+                                                }
+
+                                                if state.buf.is_empty() {
+                                                    state.buf_phase = phase;
+                                                } else if state.buf_phase != phase {
+                                                    let delta = std::mem::take(&mut state.buf);
+                                                    let chunk = CommandV1::InferenceResultChunk {
+                                                        task_id: state.task_id.clone(),
+                                                        seq: state.seq,
+                                                        delta,
+                                                        phase: state.buf_phase,
+                                                        done: false,
+                                                        error: None,
+                                                        prompt_tokens: state.prompt_tokens,
+                                                        completion_tokens: state.completion_tokens,
+                                                        analysis_tokens: state.analysis_tokens,
+                                                        final_tokens: state.final_tokens,
+                                                    };
+                                                    state.seq = state.seq.wrapping_add(1);
+                                                    let _ = common::write_command_sync(
+                                                        &mut state.stream,
+                                                        &Command::V1(chunk),
+                                                    );
+                                                    state.buf_phase = phase;
+                                                }
+
+                                                state.buf.push_str(&seg);
+                                            }
+
                                             if state.buf.len() < state.max_bytes {
                                                 return;
                                             }
@@ -2028,10 +2353,13 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                                 task_id: state.task_id.clone(),
                                                 seq: state.seq,
                                                 delta,
+                                                phase: state.buf_phase,
                                                 done: false,
                                                 error: None,
                                                 prompt_tokens: state.prompt_tokens,
                                                 completion_tokens: state.completion_tokens,
+                                                analysis_tokens: state.analysis_tokens,
+                                                final_tokens: state.final_tokens,
                                             };
                                             state.seq = state.seq.wrapping_add(1);
 
@@ -2040,8 +2368,7 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                                 &Command::V1(chunk),
                                             );
                                         }
-
-                                        let _lock = GLOBAL_INFERENCE_MUTEX.lock().unwrap();
+ let _lock = GLOBAL_INFERENCE_MUTEX.lock().unwrap();
                                         let start_time = std::time::Instant::now();
                                         let prompt_cstr = match CString::new(prompt_for_thread) {
                                             Ok(s) => s,
@@ -2053,10 +2380,13 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                                         task_id: task_id_for_thread.clone(),
                                                         seq: 0,
                                                         delta: String::new(),
+                                                        phase: OutputPhase::Unknown,
                                                         done: true,
                                                         error: Some(err.clone()),
                                                         prompt_tokens: 0,
                                                         completion_tokens: 0,
+                                                        analysis_tokens: 0,
+                                                        final_tokens: 0,
                                                     };
                                                 let _ = common::write_command_sync(
                                                     &mut s,
@@ -2084,6 +2414,10 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                             max_bytes: 8,
                                             prompt_tokens,
                                             completion_tokens: 0,
+                                            analysis_tokens: 0,
+                                            final_tokens: 0,
+                                            buf_phase: OutputPhase::Final,
+                                            splitter: PhaseSplitter::default(),
                                             suppress: false,
                                         };
 
@@ -2113,10 +2447,13 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                                 task_id: task_id_for_thread.clone(),
                                                 seq: cb_state.seq,
                                                 delta,
+                                                phase: cb_state.buf_phase,
                                                 done: false,
                                                 error: None,
                                                 prompt_tokens: cb_state.prompt_tokens,
                                                 completion_tokens: cb_state.completion_tokens,
+                                                analysis_tokens: cb_state.analysis_tokens,
+                                                final_tokens: cb_state.final_tokens,
                                             };
                                             cb_state.seq = cb_state.seq.wrapping_add(1);
                                             let _ = common::write_command_sync(
@@ -2129,10 +2466,13 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                             task_id: task_id_for_thread.clone(),
                                             seq: cb_state.seq,
                                             delta: String::new(),
+                                            phase: cb_state.buf_phase,
                                             done: true,
                                             error: None,
                                             prompt_tokens: cb_state.prompt_tokens,
                                             completion_tokens: cb_state.completion_tokens,
+                                            analysis_tokens: cb_state.analysis_tokens,
+                                            final_tokens: cb_state.final_tokens,
                                         };
                                         let _ = common::write_command_sync(
                                             &mut cb_state.stream,
@@ -2206,10 +2546,13 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                             task_id: task_id.clone(),
                                             seq: 0,
                                             delta: String::new(),
+                                            phase: OutputPhase::Unknown,
                                             done: true,
                                             error: Some(err.clone()),
                                             prompt_tokens: 0,
                                             completion_tokens: 0,
+                                            analysis_tokens: 0,
+                                            final_tokens: 0,
                                         };
                                         let _ = common::write_command_sync(
                                             &mut *stream,
@@ -2245,10 +2588,13 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                                 task_id: task_id.clone(),
                                                 seq: 0,
                                                 delta: String::new(),
+                                                phase: OutputPhase::Unknown,
                                                 done: true,
                                                 error: Some(err.clone()),
                                                 prompt_tokens: 0,
                                                 completion_tokens: 0,
+                                                analysis_tokens: 0,
+                                                final_tokens: 0,
                                             };
                                             let _ = common::write_command_sync(
                                                 &mut *stream,
@@ -2277,6 +2623,10 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                             max_bytes: usize,
                                             prompt_tokens: u32,
                                             completion_tokens: u32,
+                                            analysis_tokens: u32,
+                                            final_tokens: u32,
+                                            buf_phase: OutputPhase,
+                                            splitter: PhaseSplitter,
                                             suppress: bool,
                                         }
 
@@ -2314,9 +2664,55 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                                 return;
                                             }
 
-                                            state.buf.push_str(token_str);
-                                            state.completion_tokens =
-                                                state.completion_tokens.saturating_add(1);
+                                            let segs = state.splitter.push(token_str);
+                                            for (phase, seg) in segs {
+                                                if seg.is_empty() {
+                                                    continue;
+                                                }
+
+                                                state.completion_tokens =
+                                                    state.completion_tokens.saturating_add(1);
+                                                match phase {
+                                                    OutputPhase::Analysis => {
+                                                        state.analysis_tokens =
+                                                            state.analysis_tokens.saturating_add(1)
+                                                    }
+                                                    OutputPhase::Final => {
+                                                        state.final_tokens =
+                                                            state.final_tokens.saturating_add(1)
+                                                    }
+                                                    OutputPhase::Unknown => {
+                                                        state.final_tokens =
+                                                            state.final_tokens.saturating_add(1)
+                                                    }
+                                                }
+
+                                                if state.buf.is_empty() {
+                                                    state.buf_phase = phase;
+                                                } else if state.buf_phase != phase {
+                                                    let delta = std::mem::take(&mut state.buf);
+                                                    let chunk = CommandV1::InferenceResultChunk {
+                                                        task_id: state.task_id.clone(),
+                                                        seq: state.seq,
+                                                        delta,
+                                                        phase: state.buf_phase,
+                                                        done: false,
+                                                        error: None,
+                                                        prompt_tokens: state.prompt_tokens,
+                                                        completion_tokens: state.completion_tokens,
+                                                        analysis_tokens: state.analysis_tokens,
+                                                        final_tokens: state.final_tokens,
+                                                    };
+                                                    state.seq = state.seq.wrapping_add(1);
+                                                    let _ = common::write_command_sync(
+                                                        &mut state.stream,
+                                                        &Command::V1(chunk),
+                                                    );
+                                                    state.buf_phase = phase;
+                                                }
+
+                                                state.buf.push_str(&seg);
+                                            }
                                             if state.buf.len() < state.max_bytes {
                                                 return;
                                             }
@@ -2326,10 +2722,13 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                                 task_id: state.task_id.clone(),
                                                 seq: state.seq,
                                                 delta,
+                                                phase: state.buf_phase,
                                                 done: false,
                                                 error: None,
                                                 prompt_tokens: state.prompt_tokens,
                                                 completion_tokens: state.completion_tokens,
+                                                analysis_tokens: state.analysis_tokens,
+                                                final_tokens: state.final_tokens,
                                             };
                                             state.seq = state.seq.wrapping_add(1);
 
@@ -2351,10 +2750,13 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                                         task_id: task_id_for_thread.clone(),
                                                         seq: 0,
                                                         delta: String::new(),
+                                                        phase: OutputPhase::Unknown,
                                                         done: true,
                                                         error: Some(err.clone()),
                                                         prompt_tokens: 0,
                                                         completion_tokens: 0,
+                                                        analysis_tokens: 0,
+                                                        final_tokens: 0,
                                                     };
                                                 let _ = common::write_command_sync(
                                                     &mut s,
@@ -2382,6 +2784,10 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                             max_bytes: 8,
                                             prompt_tokens,
                                             completion_tokens: 0,
+                                            analysis_tokens: 0,
+                                            final_tokens: 0,
+                                            buf_phase: OutputPhase::Final,
+                                            splitter: PhaseSplitter::default(),
                                             suppress: false,
                                         };
 
@@ -2408,10 +2814,13 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                                 task_id: task_id_for_thread.clone(),
                                                 seq: cb_state.seq,
                                                 delta,
+                                                phase: cb_state.buf_phase,
                                                 done: false,
                                                 error: None,
                                                 prompt_tokens: cb_state.prompt_tokens,
                                                 completion_tokens: cb_state.completion_tokens,
+                                                analysis_tokens: cb_state.analysis_tokens,
+                                                final_tokens: cb_state.final_tokens,
                                             };
                                             cb_state.seq = cb_state.seq.wrapping_add(1);
                                             let _ = common::write_command_sync(
@@ -2424,10 +2833,13 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                             task_id: task_id_for_thread.clone(),
                                             seq: cb_state.seq,
                                             delta: String::new(),
+                                            phase: cb_state.buf_phase,
                                             done: true,
                                             error: None,
                                             prompt_tokens: cb_state.prompt_tokens,
                                             completion_tokens: cb_state.completion_tokens,
+                                            analysis_tokens: cb_state.analysis_tokens,
+                                            final_tokens: cb_state.final_tokens,
                                         };
                                         let _ = common::write_command_sync(
                                             &mut cb_state.stream,

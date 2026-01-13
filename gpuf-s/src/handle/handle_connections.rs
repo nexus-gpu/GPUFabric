@@ -265,10 +265,13 @@ async fn handle_single_client(
                 task_id,
                 seq,
                 delta,
+                phase,
                 done,
                 error,
                 prompt_tokens,
                 completion_tokens,
+                analysis_tokens,
+                final_tokens,
             })) => {
                 server_state
                     .inference_scheduler
@@ -276,10 +279,13 @@ async fn handle_single_client(
                         task_id,
                         seq,
                         delta,
+                        phase,
                         done,
                         error,
                         prompt_tokens,
                         completion_tokens,
+                        analysis_tokens,
+                        final_tokens,
                     )
                     .await;
             }

@@ -119,6 +119,8 @@ curl -H "Authorization: Bearer your-api-key" http://localhost:18080
 ### 启动服务端（gpuf-s）
 
 详见 [gpuf-s 文档](./gpuf-s.md)
+
+```bash
 cargo run --release --bin gpuf-s -- \
   --control-port 17000 \
   --proxy-port 17001 \
@@ -135,6 +137,8 @@ cargo run --release --bin gpuf-s -- \
 ### 启动客户端（gpuf-c）
 
 详见 [gpuf-c 文档](./gpuf-c.md)
+
+```bash
 cargo run --release --bin gpuf-c -- \
   --client-id client_A \
   --server-addr 192.168.1.100 \
@@ -312,7 +316,7 @@ GPUFabric/
 
 ## 🏗️ 架构
 
-![GPUFabric System Architecture](./docs/svg/GPUFabric.svg)
+![GPUFabric System Architecture](./svg/GPUFabric.svg)
 
 ### 系统组件
 

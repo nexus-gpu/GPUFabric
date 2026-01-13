@@ -46,6 +46,19 @@ GPUFabric/
 - ✅ **Multi-threading support** - Parallel inference
 - ✅ **Memory optimization** - Efficient memory management
 
+## 🌐 Networking: SSE & P2P
+
+This crate can act as a compute node in the GPUFabric network.
+
+- **SSE (OpenAI-compatible streaming)** is provided by **gpuf-s** over HTTP (`/v1/chat/completions` with `"stream": true`).
+  - Streaming deltas are split into:
+    - `delta.reasoning_content` (analysis/thinking)
+    - `delta.content` (final answer)
+  - gpuf-c is responsible for producing and reporting phase-aware chunks upstream to gpuf-s.
+
+- **P2P inference** is supported in the gpuf-c protocol for direct peer streaming.
+  - See example: `gpuf-c/examples/p2p_sdk_client.rs`
+
 ## 📋 Requirements
 
 - Android NDK r27d

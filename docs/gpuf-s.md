@@ -36,21 +36,30 @@ For system architecture and integration details, see the [main README](../README
 
 ### Building
 
+```bash
 # Build in release mode
 cargo build --release --bin gpuf-s
 
 # The binary will be located at:
-# target/release/gpuf-s### Generate TLS Certificates
+# target/release/gpuf-s
+```
 
+### Generate TLS Certificates
+
+```bash
 # Generate self-signed certificates
 ../scripts/create_cert.sh
+```
 
-# This creates:
-# - cert.pem (certificate chain)
-# - key.pem (private key)## Usage
+This creates:
+- cert.pem (certificate chain)
+- key.pem (private key)
+
+## Usage
 
 ### Basic Usage
 
+```bash
 # Start with default configuration
 ./gpuf-s
 
@@ -59,7 +68,10 @@ cargo build --release --bin gpuf-s
   --control-port 17000 \
   --proxy-port 17001 \
   --public-port 18080 \
-  --api-port 18081### Command Line Arguments
+  --api-port 18081
+```
+
+### Command Line Arguments
 
 | Argument | Type | Default | Description |
 |----------|------|---------|-------------|
@@ -77,6 +89,7 @@ cargo build --release --bin gpuf-s
 
 ### Complete Example
 
+```bash
 ./gpuf-s \
   --control-port 17000 \
   --proxy-port 17001 \
@@ -87,23 +100,34 @@ cargo build --release --bin gpuf-s
   --bootstrap-server "localhost:9092" \
   --api-key "your-secure-api-key" \
   --proxy-cert-chain-path "cert.pem" \
-  --proxy-private-key-path "key.pem"### Environment Variables
+  --proxy-private-key-path "key.pem"
+```
+
+### Environment Variables
 
 You can also configure using environment variables:
 
+```bash
 export DATABASE_URL="postgres://user:pass@localhost/frpx"
 export REDIS_URL="redis://localhost:6379"
-export API_KEY="your-api-key"## Configuration
+export API_KEY="your-api-key"
+```
+
+## Configuration
 
 ### Database Setup
 
 Initialize the PostgreSQL database:
 
+```bash
 # Create database
 createdb GPUFabric
 
 # Run schema migrations
-psql -U postgres -d GPUFabric -f ../scripts/db.sqlThe database stores:
+psql -U postgres -d GPUFabric -f ../scripts/db.sql
+```
+
+The database stores:
 - API keys and tokens
 - Client information
 - System statistics
@@ -113,15 +137,20 @@ psql -U postgres -d GPUFabric -f ../scripts/db.sqlThe database stores:
 ### Redis Configuration
 
 Redis is used for caching token validations with a 5-minute TTL:
-ash
+
+```bash
 # Start Redis (if not already running)
 redis-server
 
 # Or using Docker
-docker run -d -p 6379:6379 redis:alpine### Kafka Configuration
+docker run -d -p 6379:6379 redis:alpine
+```
+
+### Kafka Configuration
 
 Kafka is used for message queuing:
 
+```bash
 # Start Kafka using Docker Compose
 docker compose -f ../kafka_compose.yaml up -d
 
@@ -136,12 +165,16 @@ docker exec -it <kafka-container> kafka-topics --create \
   --topic request-message \
   --bootstrap-server localhost:9092 \
   --partitions 1 \
-  --replication-factor 1## Core Components
+  --replication-factor 1
+```
+
+## Core Components
 
 ### Server State
 
 The server maintains shared state across all connections:
 
+```rust
 pub struct ServerState {
     pub active_clients: Arc<Mutex<HashMap<ClientId, ClientInfo>>>,
     pub pending_connections: Arc<Mutex<HashMap<ProxyConnId, (TcpStream, BytesMut)>>>,
@@ -153,8 +186,12 @@ pub struct ServerState {
     pub cert_chain: Arc<Vec<CertificateDer<'static>>>,
     pub priv_key: Arc<PrivateKeyDer<'static>>,
     pub buffer_pool: Arc<BufferPool>,
-}### Client Information
+}
+```
 
+### Client Information
+
+```rust
 pub struct ClientInfo {
     pub writer: Arc<Mutex<OwnedWriteHalf>>,
     pub authed: bool,
@@ -163,7 +200,10 @@ pub struct ClientInfo {
     pub devices_info: Vec<DevicesInfo>,
     pub connected_at: DateTime<Utc>,
     pub models: Option<Vec<Model>>,
-}### Command Protocol
+}
+```
+
+### Command Protocol
 
 The server communicates with clients using JSON-based commands:
 
@@ -179,9 +219,13 @@ The server communicates with clients using JSON-based commands:
 ### Random Selection Algorithm
 
 The server uses random selection for load balancing:
-ust
+
+```rust
 let client_ids: Vec<ClientId> = active_clients.keys().cloned().collect();
-let chosen_client_id = client_ids.choose(&mut rand::thread_rng())?;### Model-Based Routing
+let chosen_client_id = client_ids.choose(&mut rand::thread_rng())?;
+```
+
+### Model-Based Routing
 
 When a model is specified in the request, the server selects clients that have that model available:
 
@@ -233,25 +277,32 @@ See [API Server Documentation](./api_server.md) for detailed API reference.
 ### Client Monitoring
 
 Use the `--monitor` flag to print client monitoring data:
-ash
+
+```bash
 ./gpuf-s --monitor
 
 # Output:
 # Client ID              CPU (%)    Memory (%) Disk (%)  Last Heartbeat
 # --------------------------------------------------------------------------------
-# 6e1131b4...           45.00      60.00      30.00      15s ago### Logging
+# 6e1131b4...           45.00      60.00      30.00      15s ago
+```
+
+### Logging
 
 The server provides structured logging:
 
+```bash
 # Set log level
 RUST_LOG=gpuf-s=info ./gpuf-s
 RUST_LOG=gpuf-s=debug ./gpuf-s
+```
 
 # Log levels:
 # - error: Critical errors only
 # - warn: Warnings and errors
 # - info: General information (default)
 # - debug: Detailed debugging information
+
 ## Performance
 
 ### Connection Pooling
@@ -264,10 +315,14 @@ RUST_LOG=gpuf-s=debug ./gpuf-s
 
 Efficient memory management with a buffer pool:
 
+```rust
 pub struct BufferPool {
     pool: Vec<BytesMut>,
     capacity: usize,
-}### Keepalive Settings
+}
+```
+
+### Keepalive Settings
 
 TCP keepalive configured for:
 - Time: 30 seconds
@@ -348,12 +403,16 @@ Consider implementing rate limiting for production use.
 ## Development
 
 ### Running Tests
-h
+
+```bash
 # Run all tests
 cargo test
 
 # Run specific test
-cargo test test_load_balancing### Code Structure
+cargo test test_load_balancing
+```
+
+### Code Structure
 
 ```
 gpuf-s/src/

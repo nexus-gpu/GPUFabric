@@ -329,10 +329,9 @@ nm -D libgpuf_c.so | grep gpuf_
 
 ## 📚 Related Documentation
 
-- [API Reference](./API_REFERENCE.md)
-- [Integration Guide](./INTEGRATION_GUIDE.md) 
-- [Performance Tuning](./PERFORMANCE_TUNING.md)
-- [Example Projects](../../examples/mobile-sdk/)
+- [Mobile SDK Index](./README.md)
+- [Integration Guide (EN)](./INTEGRATION_GUIDE_EN.md)
+- [Example Projects](../../gpuf-c/examples/mobile/)
 
 ## 🤝 Contributing
 

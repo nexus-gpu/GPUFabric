@@ -739,7 +739,62 @@ impl Engine for LlamaEngine {
                     return Ok(());
                 }
 
-                self.ensure_initialized().await?;
+                let model_path = self
+                    .model_path
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("Model path not set"))?
+                    .clone();
+
+                {
+                    let mut status = crate::MODEL_STATUS
+                        .lock()
+                        .map_err(|e| anyhow!("Failed to lock MODEL_STATUS: {:?}", e))?;
+                    status.set_loading(&model_path);
+                }
+                {
+                    let mut status = self.loading_status.write().await;
+                    *status = "loading".to_string();
+                }
+                {
+                    let mut loading_model = self.current_loading_model.write().await;
+                    *loading_model = Some(model_path.clone());
+                }
+
+                match self.ensure_initialized().await {
+                    Ok(()) => {
+                        {
+                            let mut status = crate::MODEL_STATUS
+                                .lock()
+                                .map_err(|e| anyhow!("Failed to lock MODEL_STATUS: {:?}", e))?;
+                            status.set_loaded(&model_path);
+                        }
+                        {
+                            let mut status = self.loading_status.write().await;
+                            *status = "loaded".to_string();
+                        }
+                        {
+                            let mut loading_model = self.current_loading_model.write().await;
+                            *loading_model = None;
+                        }
+                    }
+                    Err(e) => {
+                        {
+                            let mut status = crate::MODEL_STATUS
+                                .lock()
+                                .map_err(|e| anyhow!("Failed to lock MODEL_STATUS: {:?}", e))?;
+                            status.set_error(&e.to_string());
+                        }
+                        {
+                            let mut status = self.loading_status.write().await;
+                            *status = format!("error: {}", e);
+                        }
+                        {
+                            let mut loading_model = self.current_loading_model.write().await;
+                            *loading_model = None;
+                        }
+                        return Err(e);
+                    }
+                }
             }
 
             Ok(())
@@ -924,6 +979,11 @@ impl LlamaEngine {
             *status = format!("error: Model file not found: {}", model_path);
 
             {
+                let mut loading_model = self.current_loading_model.write().await;
+                *loading_model = None;
+            }
+
+            {
                 let mut status = crate::MODEL_STATUS
                     .lock()
                     .map_err(|e| anyhow!("Failed to lock MODEL_STATUS: {:?}", e))?;
@@ -953,6 +1013,11 @@ impl LlamaEngine {
                 }
 
                 {
+                    let mut loading_model = self.current_loading_model.write().await;
+                    *loading_model = None;
+                }
+
+                {
                     let mut status = crate::MODEL_STATUS
                         .lock()
                         .map_err(|e| anyhow!("Failed to lock MODEL_STATUS: {:?}", e))?;
@@ -965,6 +1030,11 @@ impl LlamaEngine {
             Err(e) => {
                 let mut status = self.loading_status.write().await;
                 *status = format!("error: {}", e);
+
+                {
+                    let mut loading_model = self.current_loading_model.write().await;
+                    *loading_model = None;
+                }
 
                 {
                     let mut status = crate::MODEL_STATUS

@@ -180,6 +180,21 @@ curl -H "Authorization: Bearer your-api-key" \
     "model": "llama2",
     "messages": [{"role": "user", "content": "Hello!"}]
   }'
+
+# Test streaming (SSE)
+curl -N -H "Authorization: Bearer your-api-key" \
+  -H "Content-Type: application/json" \
+  http://localhost:18080/v1/chat/completions \
+  -d '{
+    "model": "llama2",
+    "stream": true,
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+
+# Notes:
+# - Streaming chunks use OpenAI-compatible SSE payloads.
+# - Token deltas are split into `delta.reasoning_content` (analysis) and `delta.content` (final).
+# - `usage` includes `analysis_tokens` and `final_tokens`.
 ```
 
 ## 📚 Documentation
@@ -193,11 +208,10 @@ Comprehensive documentation is available in the `docs/` directory:
 - **[Heartbeat Consumer Documentation](./docs/heartbeat_consumer.md)** - Kafka consumer documentation
 - **[XDP Documentation](./docs/xdp.md)** - Kernel-level packet filtering
 
-### Mobile SDK (In Planning)
-- **[Mobile SDK Summary](./docs/MOBILE_SDK_SUMMARY.md)** - Overview and quick reference
-- **[Mobile SDK Requirements](./docs/mobile-sdk-requirements.md)** - Detailed technical requirements
-- **[Mobile SDK Quick Start](./docs/mobile-sdk-quickstart.md)** - Implementation guide
-- **[Mobile SDK Checklist](./MOBILE_SDK_CHECKLIST.md)** - Development progress tracker
+### Mobile SDK
+- **[Mobile SDK Build Guide](./docs/mobile-sdk/BUILD_GUIDE.md)** - Build and packaging guide
+- **[Mobile SDK Integration Guide](./docs/mobile-sdk/INTEGRATION_GUIDE_EN.md)** - Android/iOS integration steps
+- **[Mobile SDK Checklist](./gpuf-c/docs/mobile/MOBILE_SDK_CHECKLIST.md)** - Development progress tracker
 
 ## 🛠️ Configuration
 

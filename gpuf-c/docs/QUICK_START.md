@@ -5,15 +5,15 @@
 ```
 gpuf-c/
 ├── docs/           # 📚 Documentation directory
-│   ├── README_ANDROID.md
-│   ├── ANDROID_BUILD_LESSONS_LEARNED.md
-│   ├── ANDROID_JNI_NETWORK_BUILD_GUIDE.md
+│   ├── README.md
+│   ├── BUILD_GUIDE.md
+│   ├── STREAMING_API_GUIDE.md
 │   └── ANDROID_X86_64_DEPLOYMENT_GUIDE.md
 │
 ├── scripts/        # 🔧 Build scripts directory
-│   ├── README_ANDROID.md
+│   ├── README.md
 │   ├── build_arm64_with_android.sh
-│   └── build_x86_64_with_android.sh
+│   └── test_android_inference.sh
 │
 └── src/            # 💻 Source code directory
 ```
@@ -39,10 +39,12 @@ gpuf-c/
 
 ## 📖 Detailed Documentation
 
-- **Build Experience**: `docs/ANDROID_BUILD_LESSONS_LEARNED.md`
+- **Docs Index**: `docs/README.md`
+- **Build Guide**: `docs/BUILD_GUIDE.md`
 - **Deployment Guide**: `docs/ANDROID_X86_64_DEPLOYMENT_GUIDE.md`
-- **Advanced Build**: `docs/ANDROID_JNI_NETWORK_BUILD_GUIDE.md`
-- **Script Documentation**: `scripts/README_ANDROID.md`
+- **Streaming (token callback)**: `docs/STREAMING_API_GUIDE.md`
+- **Script Documentation**: `scripts/README.md`
+- **P2P example client**: `examples/p2p_sdk_client.rs`
 
 ## ⚙️ Environment Requirements
 
@@ -60,4 +62,4 @@ export LLAMA_CPP_ROOT="/path/to/llama.cpp"
 
 ---
 
-> 💡 **Tip**: It's recommended to read `docs/ANDROID_BUILD_LESSONS_LEARNED.md` first to understand architecture limitations and best practices.
+> 💡 **Tip**: Start from `docs/README.md` to find the latest, valid entry points.

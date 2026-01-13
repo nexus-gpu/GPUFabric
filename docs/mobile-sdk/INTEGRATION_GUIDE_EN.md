@@ -736,9 +736,9 @@ ld: library not found for -lgpuf_c
 ## 📖 More Resources
 
 - [Build Guide](./BUILD_GUIDE.md)
-- [API Complete Reference](./API_REFERENCE.md)
-- [Performance Tuning](./PERFORMANCE_TUNING.md)
-- [Example Projects](../../examples/mobile-sdk/)
+- [Mobile SDK Index](./README.md)
+- [Example Projects (Android)](../../gpuf-c/examples/android/)
+- [Example Projects (Mobile)](../../gpuf-c/examples/mobile/)
 
 ## 🤝 Contributing
 

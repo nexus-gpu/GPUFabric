@@ -16,7 +16,7 @@ A high-performance reverse proxy client that establishes secure connections to a
 ## Architecture
 ![gpuf-c_code_map](svg/gpuf-c_code_map.svg)
 
-Configuration
+## Configuration
 Create a config.toml file:
 
 ```toml
@@ -34,12 +34,14 @@ engine_type = "ollama"  # or "vllm"
 cert_chain_path = "ca-cert.pem"
 ```
 
-Usage
-Basic Usage
+## Usage
+
+### Basic Usage
 ```bash
 ./gpuf-c --config config.toml
 ```
-Command Line Arguments
+
+### Command Line Arguments
 
 | Argument | Description | Default |
 |----------|-------------|---------|
@@ -62,12 +64,15 @@ Command Line Arguments
 - `ollama`: Ollama inference engine (default)
 - `vllm`: vLLM inference engine
 
-Development
-Prerequisites
-Rust toolchain (stable)
-Cargo
-System dependencies for building native extensions
-Building
+## Development
+
+### Prerequisites
+
+- Rust toolchain (stable)
+- Cargo
+- System dependencies for building native extensions
+
+### Building
 ```bash
 # Debug build
 cargo build
@@ -84,10 +89,8 @@ rustup target add x86_64-pc-windows-gnu
 RUSTFLAGS="-C linker=x86_64-w64-mingw32-gcc" OPENSSL_DIR="$(brew --prefix openssl@3)" OPENSSL_STATIC=1 cargo build --target=x86_64-pc-windows-gnu --release --bin gpuf-c 
 ```
 
-Testing
+### Testing
+
 ```bash
 cargo test
 ```
-Testing
-bash
-cargo test

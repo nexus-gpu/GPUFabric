@@ -30,3 +30,6 @@ config/
 android_test_app/.gradle/
 android_test_app/build/
 android_test_app/app/build/
+
+# gpuf-c Android build artifacts
+gpuf-c/build_android/android_test

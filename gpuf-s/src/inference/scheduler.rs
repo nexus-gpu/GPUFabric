@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use crate::handle::ActiveClients;
 use crate::util::protoc::ClientId;
-use common::{Command, CommandV1};
+use common::{Command, CommandV1, OutputPhase};
 
 // Type aliases for easier function signatures
 // Note: Can't create type alias for enum variants in Rust
@@ -92,6 +92,8 @@ pub struct CompletionUsage {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
     pub total_tokens: u32,
+    pub analysis_tokens: Option<u32>,
+    pub final_tokens: Option<u32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -107,7 +109,7 @@ type PendingTask = oneshot::Sender<Result<CompletionResponse>>;
 
 #[derive(Debug)]
 pub enum StreamEvent {
-    Delta(String),
+    Delta(String, OutputPhase),
     Finish(Option<CompletionUsage>),
     Done,
     Error(String),
@@ -374,10 +376,13 @@ impl InferenceScheduler {
         task_id: String,
         _seq: u32,
         delta: String,
+        phase: OutputPhase,
         done: bool,
         error: Option<String>,
         prompt_tokens: u32,
         completion_tokens: u32,
+        analysis_tokens: u32,
+        final_tokens: u32,
     ) {
         let stream_sender = {
             let streams = self.pending_streams.lock().await;
@@ -396,7 +401,7 @@ impl InferenceScheduler {
             }
 
             if !delta.is_empty() {
-                let _ = sender.send(StreamEvent::Delta(delta)).await;
+                let _ = sender.send(StreamEvent::Delta(delta, phase)).await;
             }
 
             if done {
@@ -404,10 +409,12 @@ impl InferenceScheduler {
                     prompt_tokens,
                     completion_tokens,
                     total_tokens: prompt_tokens.saturating_add(completion_tokens),
+                    analysis_tokens: Some(analysis_tokens),
+                    final_tokens: Some(final_tokens),
                 };
                 {
                     let mut usages = self.stream_usages.lock().await;
-                    usages.insert(task_id.clone(), usage);
+                    usages.insert(task_id.clone(), usage.clone());
                 }
 
                 let usage_for_finish = {
@@ -502,6 +509,8 @@ impl InferenceScheduler {
                         prompt_tokens,
                         completion_tokens,
                         total_tokens: prompt_tokens.saturating_add(completion_tokens),
+                        analysis_tokens: None,
+                        final_tokens: None,
                     },
                 })
             } else {

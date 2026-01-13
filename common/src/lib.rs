@@ -63,6 +63,19 @@ pub struct ChatMessage {
     pub content: String,
 }
 
+ #[derive(Encode, Decode, Debug, Clone, Copy, PartialEq, Eq)]
+ pub enum OutputPhase {
+     Unknown,
+     Analysis,
+     Final,
+ }
+
+ impl Default for OutputPhase {
+     fn default() -> Self {
+         Self::Unknown
+     }
+ }
+
 impl Default for DevicesInfo {
     fn default() -> Self {
         Self {
@@ -230,10 +243,13 @@ pub enum CommandV1 {
         task_id: String,
         seq: u32,
         delta: String,
+        phase: OutputPhase,
         done: bool,
         error: Option<String>,
         prompt_tokens: u32,
         completion_tokens: u32,
+        analysis_tokens: u32,
+        final_tokens: u32,
     },
 }
 
@@ -283,8 +299,11 @@ pub enum CommandV2 {
         task_id: String,
         seq: u32,
         delta: String,
+        phase: OutputPhase,
         done: bool,
         error: Option<String>,
+        analysis_tokens: u32,
+        final_tokens: u32,
     },
 
     P2PInferenceDone {
@@ -293,6 +312,8 @@ pub enum CommandV2 {
         prompt_tokens: u32,
         completion_tokens: u32,
         total_tokens: u32,
+        analysis_tokens: u32,
+        final_tokens: u32,
     },
 
     P2PCancelInference {

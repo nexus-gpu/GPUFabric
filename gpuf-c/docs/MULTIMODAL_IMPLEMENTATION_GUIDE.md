@@ -178,7 +178,7 @@ cd /home/jack/codedir/GPUFabric/gpuf-c/examples
 - **Testing Guide**: `MULTIMODAL_TESTING.md`
 - **API Reference**: `../gpuf_c.h`
 - **Build Guide**: `BUILD_GUIDE.md`
-- **Android Deployment**: `ANDROID_JNI_NETWORK_BUILD_GUIDE.md`
+- **Android Deployment**: `ANDROID_X86_64_DEPLOYMENT_GUIDE.md`
 
 ---
 

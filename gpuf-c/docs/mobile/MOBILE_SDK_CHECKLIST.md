@@ -141,8 +141,8 @@ This checklist helps you track the implementation progress of the mobile SDK.
 ## 📚 Phase 5: Documentation and Examples (1 week)
 
 ### Documentation
-- [x] Mobile SDK requirements document (`mobile-sdk-requirements.md`)
-- [x] Quick start guide (`mobile-sdk-quickstart.md`)
+- [x] Mobile SDK build guide (`docs/mobile-sdk/BUILD_GUIDE.md`)
+- [x] Mobile SDK integration guide (`docs/mobile-sdk/INTEGRATION_GUIDE_EN.md`)
 - [ ] Android SDK detailed documentation (`mobile-sdk-android.md`)
 - [ ] iOS SDK detailed documentation (`mobile-sdk-ios.md`)
 - [ ] API reference documentation
@@ -247,10 +247,10 @@ This checklist helps you track the implementation progress of the mobile SDK.
 
 ## 🔗 Related Resources
 
-- [Detailed Requirements](./docs/mobile-sdk-requirements.md)
-- [Quick Start Guide](./docs/mobile-sdk-quickstart.md)
-- [gpuf-c Documentation](./docs/gpuf-c.md)
-- [Protocol Definitions](./common/src/lib.rs)
+- [Mobile SDK Build Guide](../../../docs/mobile-sdk/BUILD_GUIDE.md)
+- [Mobile SDK Integration Guide (EN)](../../../docs/mobile-sdk/INTEGRATION_GUIDE_EN.md)
+- [gpuf-c Documentation Index](../README.md)
+- [Protocol Definitions](../../../common/src/lib.rs)
 
 ## 📞 Getting Help
 

@@ -205,13 +205,12 @@ cd examples && ./build_and_test_multimodal.sh
 ### Core Documents
 - **`MULTIMODAL_IMPLEMENTATION_GUIDE.md`** - Multimodal implementation guide
 - **`STREAMING_API_GUIDE.md`** - Streaming API usage guide
-- **`ANDROID_TESTING_GUIDE.md`** - Complete Android testing process
 - **`BUILD_GUIDE.md`** - Build system guide
 
 ### Technical Documents
-- **`ANDROID_JNI_NETWORK_BUILD_GUIDE.md`** - JNI integration details
 - **`MODEL_MANAGEMENT_GUIDE.md`** - Model management guide
 - **`INITIALIZATION_GUIDE.md`** - Initialization process
+- **`scripts/README.md`** - Build/test scripts
 
 ### Reference Materials
 - **`../gpuf_c.h`** - Complete API reference
