@@ -22,15 +22,21 @@ typedef struct llama_model {
 } llama_model;
 
 typedef struct llama_model_params {
+  void *devices;
+  const void *tensor_buft_overrides;
   int32_t n_gpu_layers;
+  int32_t split_mode;
   int32_t main_gpu;
   const float *tensor_split;
+  bool (*progress_callback)(float, void*);
+  void *progress_callback_user_data;
+  const void *kv_overrides;
+  bool vocab_only;
   bool use_mmap;
   bool use_mlock;
-  void (*progress_callback)(float, void*);
-  void *progress_callback_user_data;
-  const char *kv_overrides;
-  bool vocab_only;
+  bool check_tensors;
+  bool use_extra_bufts;
+  bool no_host;
 } llama_model_params;
 
 typedef struct llama_context {
@@ -82,15 +88,12 @@ typedef int LlamaSeqId;
 
 typedef struct llama_batch {
   int n_tokens;
-  const LlamaToken *token;
-  const float *embd;
-  const LlamaPos *pos;
-  const int *n_seq_id;
-  const LlamaSeqId *seq_id;
-  const int8_t *logits;
-  LlamaPos all_pos_0;
-  LlamaPos all_pos_1;
-  int all_seq_id;
+  LlamaToken *token;
+  float *embd;
+  LlamaPos *pos;
+  int *n_seq_id;
+  LlamaSeqId **seq_id;
+  int8_t *logits;
 } llama_batch;
 
 typedef struct MtmdContextParams {
@@ -132,7 +135,7 @@ typedef struct llama_sampler {
 } llama_sampler;
 
 typedef struct llama_sampler_chain_params {
-  bool no_perf_fac;
+  bool no_perf;
 } llama_sampler_chain_params;
 
 typedef struct llama_token_data {
@@ -144,6 +147,7 @@ typedef struct llama_token_data {
 typedef struct llama_token_data_array {
   struct llama_token_data *data;
   uintptr_t size;
+  int64_t selected;
   bool sorted;
 } llama_token_data_array;
 
@@ -193,7 +197,9 @@ extern int llama_tokenize(const struct llama_vocab *vocab,
                           bool add_bos,
                           bool parse_special);
 
-extern int llama_decode(struct llama_context *ctx, const struct llama_batch *batch);
+extern int llama_decode(struct llama_context *ctx, struct llama_batch batch);
+
+extern int llama_encode(struct llama_context *ctx, struct llama_batch batch);
 
 extern struct MtmdContextParams mtmd_context_params_default(void);
 
@@ -255,10 +261,7 @@ extern struct llama_batch llama_batch_init(int n_tokens, int embd, int n_seq_max
 
 extern void llama_batch_free(struct llama_batch batch);
 
-extern struct llama_batch llama_batch_get_one(const LlamaToken *token,
-                                              int n_tokens,
-                                              LlamaPos pos_0,
-                                              int seq_id);
+extern struct llama_batch llama_batch_get_one(LlamaToken *tokens, int n_tokens);
 
 extern void *llama_get_memory(struct llama_context *ctx);
 
@@ -591,86 +594,6 @@ extern int32_t llama_chat_apply_template(const char *tmpl,
                                          int32_t length);
 
 /**
- * Sets the model path for the remote worker (hot swapping support)
- *
- * Java signature:
- * public static native int setRemoteWorkerModel(String modelPath);
- *
- * @param modelPath Path to the GGUF model file
- * @return 0 on success, -1 on failure
- */
-jint Java_com_gpuf_c_RemoteWorker_setRemoteWorkerModel(JNIEnv env,
-                                                       JClass _class,
-                                                       JString model_path);
-
-jint Java_com_gpuf_c_RemoteWorker_registerCallbackEmitter(JNIEnv env,
-                                                          JClass _class,
-                                                          JObject emitter);
-
-jint Java_com_gpuf_c_RemoteWorker_startRemoteWorkerTasksWithJavaCallback(JNIEnv _env,
-                                                                         JClass _class);
-
-/**
- * Starts the remote worker connection to the server
- *
- * Java signature:
- * public static native int startRemoteWorker(
- *     String serverAddr,
- *     int controlPort,
- *     int proxyPort,
- *     String workerType,
- *     String clientId
- * );
- *
- * @param serverAddr Server IP address or hostname
- * @param controlPort Control port number
- * @param proxyPort Proxy port number
- * @param workerType Worker type ("TCP" or "WS")
- * @param clientId Client ID (32 hex characters)
- * @return 0 on success, -1 on failure
- */
-jint Java_com_gpuf_c_RemoteWorker_startRemoteWorker(JNIEnv env,
-                                                    JClass _class,
-                                                    JString server_addr,
-                                                    jint control_port,
-                                                    jint proxy_port,
-                                                    JString worker_type,
-                                                    JString client_id);
-
-/**
- * Starts the background tasks for the remote worker with optional callback
- *
- * Java signature:
- * public static native int startRemoteWorkerTasks(long callbackFunctionPtr);
- *
- * @param callbackFunctionPtr Optional function pointer for status updates
- * @return 0 on success, -1 on failure
- */
-jint Java_com_gpuf_c_RemoteWorker_startRemoteWorkerTasks(JNIEnv _env,
-                                                         JClass _class,
-                                                         jlong callback_function_ptr);
-
-/**
- * Gets the current status of the remote worker
- *
- * Java signature:
- * public static native String getRemoteWorkerStatus();
- *
- * @return Status string or null on failure
- */
-jstring Java_com_gpuf_c_RemoteWorker_getRemoteWorkerStatus(JNIEnv env, JClass _class);
-
-/**
- * Stops the remote worker and cleans up resources
- *
- * Java signature:
- * public static native int stopRemoteWorker();
- *
- * @return 0 on success, -1 on failure
- */
-jint Java_com_gpuf_c_RemoteWorker_stopRemoteWorker(JNIEnv _env, JClass _class);
-
-/**
  * Initialize the GPUFabric engine
  *
  * Java signature:
@@ -949,5 +872,85 @@ jboolean Java_com_gpuf_c_GPUEngine_supportsVision(JNIEnv _env,
 void Java_com_gpuf_c_GPUEngine_freeMultimodalModel(JNIEnv _env,
                                                    JClass _class,
                                                    jlong multimodal_model_ptr);
+
+/**
+ * Sets the model path for the remote worker (hot swapping support)
+ *
+ * Java signature:
+ * public static native int setRemoteWorkerModel(String modelPath);
+ *
+ * @param modelPath Path to the GGUF model file
+ * @return 0 on success, -1 on failure
+ */
+jint Java_com_gpuf_c_RemoteWorker_setRemoteWorkerModel(JNIEnv env,
+                                                       JClass _class,
+                                                       JString model_path);
+
+jint Java_com_gpuf_c_RemoteWorker_registerCallbackEmitter(JNIEnv env,
+                                                          JClass _class,
+                                                          JObject emitter);
+
+jint Java_com_gpuf_c_RemoteWorker_startRemoteWorkerTasksWithJavaCallback(JNIEnv _env,
+                                                                         JClass _class);
+
+/**
+ * Starts the remote worker connection to the server
+ *
+ * Java signature:
+ * public static native int startRemoteWorker(
+ *     String serverAddr,
+ *     int controlPort,
+ *     int proxyPort,
+ *     String workerType,
+ *     String clientId
+ * );
+ *
+ * @param serverAddr Server IP address or hostname
+ * @param controlPort Control port number
+ * @param proxyPort Proxy port number
+ * @param workerType Worker type ("TCP" or "WS")
+ * @param clientId Client ID (32 hex characters)
+ * @return 0 on success, -1 on failure
+ */
+jint Java_com_gpuf_c_RemoteWorker_startRemoteWorker(JNIEnv env,
+                                                    JClass _class,
+                                                    JString server_addr,
+                                                    jint control_port,
+                                                    jint proxy_port,
+                                                    JString worker_type,
+                                                    JString client_id);
+
+/**
+ * Starts the background tasks for the remote worker with optional callback
+ *
+ * Java signature:
+ * public static native int startRemoteWorkerTasks(long callbackFunctionPtr);
+ *
+ * @param callbackFunctionPtr Optional function pointer for status updates
+ * @return 0 on success, -1 on failure
+ */
+jint Java_com_gpuf_c_RemoteWorker_startRemoteWorkerTasks(JNIEnv _env,
+                                                         JClass _class,
+                                                         jlong callback_function_ptr);
+
+/**
+ * Gets the current status of the remote worker
+ *
+ * Java signature:
+ * public static native String getRemoteWorkerStatus();
+ *
+ * @return Status string or null on failure
+ */
+jstring Java_com_gpuf_c_RemoteWorker_getRemoteWorkerStatus(JNIEnv env, JClass _class);
+
+/**
+ * Stops the remote worker and cleans up resources
+ *
+ * Java signature:
+ * public static native int stopRemoteWorker();
+ *
+ * @return 0 on success, -1 on failure
+ */
+jint Java_com_gpuf_c_RemoteWorker_stopRemoteWorker(JNIEnv _env, JClass _class);
 
 #endif /* GPUF_C_H */

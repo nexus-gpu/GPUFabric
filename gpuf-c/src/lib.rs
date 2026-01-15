@@ -166,15 +166,25 @@ pub struct MtmdContextParams {
 
 #[repr(C)]
 pub struct llama_model_params {
+    // ggml_backend_dev_t *
+    pub devices: *mut c_void,
+    // const struct llama_model_tensor_buft_override *
+    pub tensor_buft_overrides: *const c_void,
     pub n_gpu_layers: i32,
+    // enum llama_split_mode
+    pub split_mode: i32,
     pub main_gpu: i32,
     pub tensor_split: *const f32,
+    pub progress_callback: Option<extern "C" fn(f32, *mut c_void) -> bool>,
+    pub progress_callback_user_data: *mut c_void,
+    // const struct llama_model_kv_override *
+    pub kv_overrides: *const c_void,
+    pub vocab_only: bool,
     pub use_mmap: bool,
     pub use_mlock: bool,
-    pub progress_callback: Option<extern "C" fn(f32, *mut c_void)>,
-    pub progress_callback_user_data: *mut c_void,
-    pub kv_overrides: *const c_char,
-    pub vocab_only: bool,
+    pub check_tensors: bool,
+    pub use_extra_bufts: bool,
+    pub no_host: bool,
 }
 
 #[repr(C)]
@@ -225,15 +235,12 @@ pub type MtmdLlamaSeqId = c_int;
 #[derive(Clone)]
 pub struct llama_batch {
     pub n_tokens: c_int,
-    pub token: *const LlamaToken,
-    pub embd: *const f32,
-    pub pos: *const LlamaPos,
-    pub n_seq_id: *const c_int,
-    pub seq_id: *const LlamaSeqId,
-    pub logits: *const i8,
-    pub all_pos_0: LlamaPos,
-    pub all_pos_1: LlamaPos,
-    pub all_seq_id: c_int,
+    pub token: *mut LlamaToken,
+    pub embd: *mut f32,
+    pub pos: *mut LlamaPos,
+    pub n_seq_id: *mut c_int,
+    pub seq_id: *mut *mut LlamaSeqId,
+    pub logits: *mut i8,
 }
 
 // Completion structures (like llama.rn uses)
@@ -279,6 +286,7 @@ pub struct llama_token_data {
 pub struct llama_token_data_array {
     pub data: *mut llama_token_data,
     pub size: usize,
+    pub selected: i64,
     pub sorted: bool,
 }
 
@@ -290,7 +298,7 @@ pub struct llama_sampler {
 
 #[repr(C)]
 pub struct llama_sampler_chain_params {
-    pub no_perf_fac: bool,
+    pub no_perf: bool,
 }
 
 // ============================================================================
@@ -426,7 +434,8 @@ extern "C" {
     ) -> c_int;
 
     // Generation functions - use actual llama.cpp API
-    fn llama_decode(ctx: *mut llama_context, batch: *const llama_batch) -> c_int;
+    fn llama_decode(ctx: *mut llama_context, batch: llama_batch) -> c_int;
+    fn llama_encode(ctx: *mut llama_context, batch: llama_batch) -> c_int;
 
     // 🆕 Multimodal libmtmd functions
     fn mtmd_context_params_default() -> MtmdContextParams;
@@ -476,12 +485,7 @@ extern "C" {
     fn llama_n_batch(ctx: *mut llama_context) -> c_int;
     fn llama_batch_init(n_tokens: c_int, embd: c_int, n_seq_max: c_int) -> llama_batch;
     fn llama_batch_free(batch: llama_batch);
-    fn llama_batch_get_one(
-        token: *const LlamaToken,
-        n_tokens: c_int,
-        pos_0: LlamaPos,
-        seq_id: c_int,
-    ) -> llama_batch;
+    fn llama_batch_get_one(tokens: *mut LlamaToken, n_tokens: c_int) -> llama_batch;
 
     // Memory/KV cache management (llama.rn style)
     fn llama_get_memory(ctx: *mut llama_context) -> *mut c_void;
@@ -926,15 +930,12 @@ pub fn manual_llama_completion(
 
         let initial_batch = llama_batch {
             n_tokens: token_count,
-            token: tokens.as_ptr(),
-            embd: std::ptr::null(),
-            pos: batch_pos_array.as_ptr(),
-            n_seq_id: std::ptr::null(),
-            seq_id: std::ptr::null(),
-            logits: logits_array.as_ptr(), // Request logits for last token
-            all_pos_0: current_pos,
-            all_pos_1: current_pos + token_count - 1,
-            all_seq_id: 0,
+            token: tokens.as_ptr() as *mut LlamaToken,
+            embd: std::ptr::null_mut(),
+            pos: batch_pos_array.as_ptr() as *mut LlamaPos,
+            n_seq_id: std::ptr::null_mut(),
+            seq_id: std::ptr::null_mut(),
+            logits: logits_array.as_ptr() as *mut i8, // Request logits for last token
         };
 
         println!("🔍 Initial batch created, about to decode...");
@@ -947,7 +948,7 @@ pub fn manual_llama_completion(
         );
 
         // Decode prompt
-        let decode_result = llama_decode(ctx, &initial_batch);
+        let decode_result = llama_decode(ctx, initial_batch);
         if decode_result != 0 {
             println!(" Initial decode failed with code {}", decode_result);
             let msg = format!("Initial decode failed: code {}", decode_result);
@@ -983,7 +984,7 @@ pub fn manual_llama_completion(
         );
 
         // Create sampler chain
-        let chain_params = llama_sampler_chain_params { no_perf_fac: false };
+        let chain_params = llama_sampler_chain_params { no_perf: false };
         let persistent_sampler = unsafe { llama_sampler_chain_init(chain_params) };
 
         if persistent_sampler.is_null() {
@@ -1101,19 +1102,16 @@ pub fn manual_llama_completion(
 
             let new_batch = llama_batch {
                 n_tokens: 1,           // Single token batch
-                token: &sampled_token, // The new token
-                embd: std::ptr::null(),
-                pos: single_token_pos.as_ptr(),
-                n_seq_id: std::ptr::null(),
-                seq_id: std::ptr::null(),
-                logits: single_token_logits.as_ptr(),
-                all_pos_0: next_pos - 1,
-                all_pos_1: next_pos - 1,
-                all_seq_id: 0,
+                token: (&sampled_token as *const LlamaToken) as *mut LlamaToken, // The new token
+                embd: std::ptr::null_mut(),
+                pos: single_token_pos.as_ptr() as *mut LlamaPos,
+                n_seq_id: std::ptr::null_mut(),
+                seq_id: std::ptr::null_mut(),
+                logits: single_token_logits.as_ptr() as *mut i8,
             };
 
             // Step 3: Decode the new single token batch
-            let decode_result = unsafe { llama_decode(ctx, &new_batch) };
+            let decode_result = unsafe { llama_decode(ctx, new_batch) };
             if decode_result != 0 {
                 println!(" Decode failed at step {} with code {}", i, decode_result);
                 break;
@@ -1366,15 +1364,21 @@ fn simulate_llama_n_ctx(ctx: *const llama_context) -> c_int {
 
 fn simulate_llama_model_default_params() -> llama_model_params {
     llama_model_params {
+        devices: std::ptr::null_mut(),
+        tensor_buft_overrides: std::ptr::null(),
         n_gpu_layers: 0,
+        split_mode: 0,
         main_gpu: 0,
         tensor_split: std::ptr::null(),
-        use_mmap: true,
-        use_mlock: false,
         progress_callback: None,
         progress_callback_user_data: std::ptr::null_mut(),
         kv_overrides: std::ptr::null(),
-        vocab_only: false, // Force setting as false to ensure loading tensor data not just vocabulary
+        vocab_only: false,
+        use_mmap: true,
+        use_mlock: false,
+        check_tensors: false,
+        use_extra_bufts: false,
+        no_host: false,
     }
 }
 
@@ -2402,7 +2406,7 @@ pub extern "C" fn gpuf_generate_multimodal_stream(
             let dist_sampler = llama_sampler_init_dist(1234);
 
             // Chain samplers
-            let chain_params = llama_sampler_chain_params { no_perf_fac: false };
+            let chain_params = llama_sampler_chain_params { no_perf: false };
             let sampler = llama_sampler_chain_init(chain_params);
 
             llama_sampler_chain_add(sampler, temp_sampler);
@@ -2460,8 +2464,18 @@ pub extern "C" fn gpuf_generate_multimodal_stream(
                     }
                 }
 
-                let batch = llama_batch_get_one(&new_token_id, 1, n_past, 0);
-                if llama_decode(ctx, &batch) != 0 {
+                let mut pos = n_past as LlamaPos;
+                let mut tok = new_token_id as LlamaToken;
+                let batch = llama_batch {
+                    n_tokens: 1,
+                    token: (&mut tok as *mut LlamaToken),
+                    embd: std::ptr::null_mut(),
+                    pos: (&mut pos as *mut LlamaPos),
+                    n_seq_id: std::ptr::null_mut(),
+                    seq_id: std::ptr::null_mut(),
+                    logits: std::ptr::null_mut(),
+                };
+                if llama_decode(ctx, batch) != 0 {
                     println!("❌ Decode failed");
                     break;
                 }
@@ -2665,7 +2679,7 @@ fn generate_multimodal_response_with_vocab(
     let dist_sampler = unsafe { llama_sampler_init_dist(1234) }; // Fixed seed for reproducibility
 
     // Chain samplers together
-    let chain_params = llama_sampler_chain_params { no_perf_fac: false };
+    let chain_params = llama_sampler_chain_params { no_perf: false };
     let sampler = unsafe { llama_sampler_chain_init(chain_params) };
 
     unsafe {
@@ -2783,9 +2797,19 @@ fn generate_multimodal_response_with_vocab(
                 token, token
             );
             // Still need to accept the token into context but don't add to output
-            let accept_batch = unsafe { llama_batch_get_one(&token, 1, n_past as LlamaPos, 0) };
+            let mut pos = n_past as LlamaPos;
+            let mut tok = token as LlamaToken;
+            let accept_batch = llama_batch {
+                n_tokens: 1,
+                token: (&mut tok as *mut LlamaToken),
+                embd: std::ptr::null_mut(),
+                pos: (&mut pos as *mut LlamaPos),
+                n_seq_id: std::ptr::null_mut(),
+                seq_id: std::ptr::null_mut(),
+                logits: std::ptr::null_mut(),
+            };
             n_past += 1;
-            let accept_result = unsafe { llama_decode(ctx, &accept_batch) };
+            let accept_result = unsafe { llama_decode(ctx, accept_batch) };
             if accept_result != 0 {
                 println!("❌ Failed to accept control token {}: {}", i, accept_result);
                 break;
@@ -2816,10 +2840,20 @@ fn generate_multimodal_response_with_vocab(
         }
 
         // Accept the token into context
-        let accept_batch = unsafe { llama_batch_get_one(&token, 1, n_past as LlamaPos, 0) };
+        let mut pos = n_past as LlamaPos;
+        let mut tok = token as LlamaToken;
+        let accept_batch = llama_batch {
+            n_tokens: 1,
+            token: (&mut tok as *mut LlamaToken),
+            embd: std::ptr::null_mut(),
+            pos: (&mut pos as *mut LlamaPos),
+            n_seq_id: std::ptr::null_mut(),
+            seq_id: std::ptr::null_mut(),
+            logits: std::ptr::null_mut(),
+        };
         n_past += 1;
 
-        let accept_result = unsafe { llama_decode(ctx, &accept_batch) };
+        let accept_result = unsafe { llama_decode(ctx, accept_batch) };
         if accept_result != 0 {
             println!("❌ Failed to accept token {}: {}", i, accept_result);
             break;
@@ -2882,7 +2916,7 @@ fn generate_multimodal_response_with_callbacks(
         println!("🔍 dist_sampler: {:p}", dist_sampler);
 
         // Chain samplers together
-        let chain_params = llama_sampler_chain_params { no_perf_fac: false };
+        let chain_params = llama_sampler_chain_params { no_perf: false };
         let sampler = llama_sampler_chain_init(chain_params);
         println!("🔍 sampler chain: {:p}", sampler);
 
@@ -2966,8 +3000,18 @@ fn generate_multimodal_response_with_callbacks(
 
             // Token is already sampled and accepted
 
-            let batch = llama_batch_get_one(&new_token_id, 1, n_past, 0);
-            if llama_decode(ctx, &batch) != 0 {
+            let mut pos = n_past as LlamaPos;
+            let mut tok = new_token_id as LlamaToken;
+            let batch = llama_batch {
+                n_tokens: 1,
+                token: (&mut tok as *mut LlamaToken),
+                embd: std::ptr::null_mut(),
+                pos: (&mut pos as *mut LlamaPos),
+                n_seq_id: std::ptr::null_mut(),
+                seq_id: std::ptr::null_mut(),
+                logits: std::ptr::null_mut(),
+            };
+            if llama_decode(ctx, batch) != 0 {
                 println!("❌ Failed to decode token");
                 break;
             }
@@ -3438,27 +3482,23 @@ pub extern "C" fn gpuf_start_generation_async(
 
             let batch = llama_batch {
                 n_tokens: n,
-                token: tokens.as_ptr().add(start as usize),
-                embd: std::ptr::null(),
-                pos: batch_pos_array.as_ptr(),
-                n_seq_id: std::ptr::null(),
-                seq_id: std::ptr::null(),
-                logits: logits_array.as_ptr(),
-                all_pos_0: n_past,
-                all_pos_1: n_past + n - 1,
-                all_seq_id: 0,
+                token: tokens.as_ptr().add(start as usize) as *mut LlamaToken,
+                embd: std::ptr::null_mut(),
+                pos: batch_pos_array.as_ptr() as *mut LlamaPos,
+                n_seq_id: std::ptr::null_mut(),
+                seq_id: std::ptr::null_mut(),
+                logits: logits_array.as_ptr() as *mut i8,
             };
 
             println!(
-                "🔍 Prefill llama_decode: start={}, end={}, n_tokens={}, n_past={}",
+                "🔍 Prefill llama_decode: start={}, end={}, n_tokens={}, n_past={} ",
                 start, end, n, n_past
             );
-            let decode_result = llama_decode(ctx, &batch);
+            let decode_result = llama_decode(ctx, batch);
             if decode_result != 0 {
                 println!("🔍 Early return due to decode failure: {}", decode_result);
                 return -1;
             }
-
             n_past += n;
             start = end;
         }
@@ -3472,7 +3512,7 @@ pub extern "C" fn gpuf_start_generation_async(
         let repeat_sampler = llama_sampler_init_penalties(-1, repeat_penalty, 0.0, 0.0);
         let dist_sampler = llama_sampler_init_dist(1234);
 
-        let chain_params = llama_sampler_chain_params { no_perf_fac: false };
+        let chain_params = llama_sampler_chain_params { no_perf: false };
         let sampler = llama_sampler_chain_init(chain_params);
 
         llama_sampler_chain_add(sampler, temp_sampler);
@@ -3565,19 +3605,16 @@ pub extern "C" fn gpuf_start_generation_async(
             // Create single token batch
             let single_token_batch = llama_batch {
                 n_tokens: 1,
-                token: &sampled_token,
-                embd: std::ptr::null(),
-                pos: &next_pos,
-                n_seq_id: std::ptr::null(),
-                seq_id: std::ptr::null(),
+                token: (&sampled_token as *const LlamaToken) as *mut LlamaToken,
+                embd: std::ptr::null_mut(),
+                pos: (&next_pos as *const LlamaPos) as *mut LlamaPos,
+                n_seq_id: std::ptr::null_mut(),
+                seq_id: std::ptr::null_mut(),
                 logits: std::ptr::null_mut(),
-                all_pos_0: next_pos,
-                all_pos_1: next_pos,
-                all_seq_id: 0,
             };
 
             // Decode token
-            if llama_decode(ctx, &single_token_batch) != 0 {
+            if llama_decode(ctx, single_token_batch) != 0 {
                 break;
             }
 
@@ -3659,19 +3696,16 @@ pub extern "C" fn gpuf_generate_single_token(
 
         let batch = llama_batch {
             n_tokens: token_count,
-            token: tokens.as_ptr(),
-            embd: std::ptr::null(),
-            pos: batch_pos_array.as_ptr(),
-            n_seq_id: std::ptr::null(),
-            seq_id: std::ptr::null(),
-            logits: logits_array.as_ptr(),
-            all_pos_0: 0,
-            all_pos_1: token_count - 1,
-            all_seq_id: 0,
+            token: tokens.as_ptr() as *mut LlamaToken,
+            embd: std::ptr::null_mut(),
+            pos: batch_pos_array.as_ptr() as *mut LlamaPos,
+            n_seq_id: std::ptr::null_mut(),
+            seq_id: std::ptr::null_mut(),
+            logits: logits_array.as_ptr() as *mut i8,
         };
 
         // Decode prompt
-        let decode_result = llama_decode(ctx, &batch);
+        let decode_result = llama_decode(ctx, batch);
         if decode_result != 0 {
             println!("❌ Decode failed: {}", decode_result);
             return -5;
