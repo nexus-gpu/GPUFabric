@@ -228,7 +228,7 @@ async fn handle_single_client(
                 write_command(&mut *writer.lock().await, &Command::V1(pods_model)).await?;
             }
             Err(e) => {
-                info!("Client {} addr {} disconnected: {}", session_client_id, addr, e);
+                info!("addr {} disconnected: {}", addr, e);
                 active_clients.lock().await.remove(&session_client_id);
                 client::upsert_client_status(&db_pool, &session_client_id, "offline").await?;
                 return Ok(());
