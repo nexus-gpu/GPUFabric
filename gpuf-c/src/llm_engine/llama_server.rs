@@ -8,7 +8,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use futures_util::stream;
+use futures_util::{stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -61,6 +61,29 @@ pub struct ChatChoice {
     pub index: usize,
     pub message: ChatMessage,
     pub finish_reason: String,
+}
+
+/// Streaming chunk for chat completion
+#[derive(Debug, Serialize)]
+pub struct ChatCompletionChunk {
+    pub id: String,
+    pub object: String,
+    pub created: u64,
+    pub model: String,
+    pub choices: Vec<ChatChoiceChunk>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ChatChoiceChunk {
+    pub index: usize,
+    pub delta: ChatMessageDelta,
+    pub finish_reason: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ChatMessageDelta {
+    pub role: String,
+    pub content: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -239,40 +262,41 @@ async fn chat_completions(
         .as_secs();
 
     if req.stream {
-        // Streaming response using SSE - wrap non-streaming response in SSE format
-        let (response_text, prompt_tokens, completion_tokens) = engine
-            .generate_with_cached_model_sampling(&prompt, max_tokens, &sampling)
+        // True streaming: use stream_with_cached_model_sampling
+        // When SSE disconnects, the channel send fails and inference stops
+        let token_stream = engine
+            .stream_with_cached_model_sampling(&prompt, max_tokens, &sampling)
             .await?;
 
-        let response = ChatCompletionResponse {
-            id: id.clone(),
-            object: "chat.completion".to_string(),
-            created,
-            model: model_name,
-            choices: vec![ChatChoice {
-                index: 0,
-                message: ChatMessage {
-                    role: "assistant".to_string(),
-                    content: response_text,
-                },
-                finish_reason: "stop".to_string(),
-            }],
-            usage: Usage {
-                prompt_tokens,
-                completion_tokens,
-                total_tokens: prompt_tokens + completion_tokens,
-            },
-        };
-
-        // Return as SSE (proper format for OpenAI streaming)
-        let data = format!("data: {}\n\n", serde_json::to_string(&response).unwrap_or_default());
-        let data_done = "data: [DONE]\n\n".to_string();
-
-        use std::convert::Infallible;
-        let stream = stream::iter(vec![
-            Ok::<_, Infallible>(sse::Event::default().data(data)),
-            Ok::<_, Infallible>(sse::Event::default().data(data_done)),
-        ]);
+        // Convert token stream to SSE stream with proper OpenAI format
+        // Clone values to move into the async map closure
+        let id = id.clone();
+        let created = created;
+        let model_name = model_name.clone();
+        let stream = token_stream.map(move |result| {
+            match result {
+                Ok(token) => {
+                    let chunk = ChatCompletionChunk {
+                        id: id.clone(),
+                        object: "chat.completion.chunk".to_string(),
+                        created,
+                        model: model_name.clone(),
+                        choices: vec![ChatChoiceChunk {
+                            index: 0,
+                            delta: ChatMessageDelta {
+                                role: "assistant".to_string(),
+                                content: token,
+                            },
+                            finish_reason: None,
+                        }],
+                    };
+                    Ok::<_, std::convert::Infallible>(sse::Event::default().data(format!("data: {}\n\n", serde_json::to_string(&chunk).unwrap_or_default())))
+                }
+                Err(_e) => {
+                    Ok::<_, std::convert::Infallible>(sse::Event::default().data("data: [DONE]\n\n".to_string()))
+                }
+            }
+        });
 
         Ok(sse::Sse::new(stream).into_response())
     } else {
