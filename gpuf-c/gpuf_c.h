@@ -74,6 +74,7 @@ typedef struct llama_context_params {
   bool op_offload;
   bool swa_full;
   bool kv_unified;
+  void *samplers;
 } llama_context_params;
 
 typedef struct llama_vocab {
@@ -337,6 +338,8 @@ extern int llama_chat_apply_template(const char *tmpl,
  */
 struct llama_context *gpuf_create_context(struct llama_model *model);
 
+struct llama_context *gpuf_create_context(struct llama_model *_model);
+
 /**
  * Start async model loading (realistic implementation)
  *
@@ -345,6 +348,8 @@ struct llama_context *gpuf_create_context(struct llama_model *model);
  * of this call.
  */
 bool gpuf_load_model_async_start(const char *path);
+
+bool gpuf_load_model_async_start(const char *_path);
 
 /**
  * Get loading status (realistic polling)
@@ -376,9 +381,13 @@ struct llama_model *gpuf_load_model_get_result(void);
  */
 int32_t gpuf_load_model_wait(void);
 
+int32_t gpuf_load_model_wait(void);
+
 /**
  * Cleanup async loading state
  */
+void gpuf_load_model_cleanup(void);
+
 void gpuf_load_model_cleanup(void);
 
 /**
@@ -388,6 +397,10 @@ struct llama_model *gpuf_load_model_async(const char *path,
                                           void (*on_progress)(float, void*),
                                           void *user_data);
 
+struct llama_model *gpuf_load_model_async(const char *_path,
+                                          void (*_on_progress)(float, void*),
+                                          void *_user_data);
+
 /**
  * Context creation remains synchronous (fast operation)
  * Use the regular gpuf_create_context for context creation
@@ -395,6 +408,10 @@ struct llama_model *gpuf_load_model_async(const char *path,
 struct llama_context *gpuf_create_context_async(struct llama_model *model,
                                                 void (*on_progress)(float, void*),
                                                 void *user_data);
+
+struct llama_context *gpuf_create_context_async(struct llama_model *_model,
+                                                void (*_on_progress)(float, void*),
+                                                void *_user_data);
 
 /**
  * Check if model is loaded (non-blocking)
@@ -419,6 +436,8 @@ int gpuf_get_model_status(void);
  */
 struct llama_model *gpuf_load_model(const char *path);
 
+struct llama_model *gpuf_load_model(const char *_path);
+
 /**
  *
  * # Safety
@@ -428,6 +447,9 @@ struct llama_model *gpuf_load_model(const char *path);
 struct gpuf_multimodal_model *gpuf_load_multimodal_model(const char *text_model_path,
                                                          const char *mmproj_path);
 
+struct gpuf_multimodal_model *gpuf_load_multimodal_model(const char *_text_model_path,
+                                                         const char *_mmproj_path);
+
 /**
  *
  * # Safety
@@ -435,6 +457,8 @@ struct gpuf_multimodal_model *gpuf_load_multimodal_model(const char *text_model_
  * remain valid for the duration of this call.
  */
 struct llama_context *gpuf_create_multimodal_context(struct gpuf_multimodal_model *multimodal_model);
+
+struct llama_context *gpuf_create_multimodal_context(struct gpuf_multimodal_model *_multimodal_model);
 
 /**
  * # Safety
@@ -446,6 +470,19 @@ struct llama_context *gpuf_create_multimodal_context(struct gpuf_multimodal_mode
  *   `image_size == 0`).
  * - `output` must be a valid writable buffer of at least `output_len` bytes.
  */
+int gpuf_generate_multimodal(struct gpuf_multimodal_model *_multimodal_model,
+                             struct llama_context *_ctx,
+                             const char *_text_prompt,
+                             const uint8_t *_image_data,
+                             unsigned long long _image_size,
+                             int _max_tokens,
+                             float _temperature,
+                             int _top_k,
+                             float _top_p,
+                             float _repeat_penalty,
+                             char *_output,
+                             int _output_len);
+
 int gpuf_generate_multimodal(struct gpuf_multimodal_model *multimodal_model,
                              struct llama_context *ctx,
                              const char *text_prompt,
@@ -458,6 +495,20 @@ int gpuf_generate_multimodal(struct gpuf_multimodal_model *multimodal_model,
                              float repeat_penalty,
                              char *output,
                              int output_len);
+
+int gpuf_generate_multimodal_stream(struct gpuf_multimodal_model *_multimodal_model,
+                                    struct llama_context *_ctx,
+                                    const char *_text_prompt,
+                                    const uint8_t *_image_data,
+                                    unsigned long long _image_size,
+                                    int _max_tokens,
+                                    float _temperature,
+                                    int _top_k,
+                                    float _top_p,
+                                    float _repeat_penalty,
+                                    TokenCallback _on_token,
+                                    CompletionCallback _on_complete,
+                                    void *_user_data);
 
 int gpuf_generate_multimodal_stream(struct gpuf_multimodal_model *multimodal_model,
                                     struct llama_context *ctx,
@@ -473,17 +524,29 @@ int gpuf_generate_multimodal_stream(struct gpuf_multimodal_model *multimodal_mod
                                     CompletionCallback on_complete,
                                     void *user_data);
 
+void gpuf_free_multimodal_model(struct gpuf_multimodal_model *_multimodal_model);
+
 void gpuf_free_multimodal_model(struct gpuf_multimodal_model *multimodal_model);
 
 bool gpuf_multimodal_supports_vision(struct gpuf_multimodal_model *multimodal_model);
 
+bool gpuf_multimodal_supports_vision(struct gpuf_multimodal_model *_multimodal_model);
+
 int gpuf_get_multimodal_info(struct gpuf_multimodal_model *multimodal_model, bool *has_vision);
+
+int gpuf_get_multimodal_info(struct gpuf_multimodal_model *_multimodal_model, bool *_has_vision);
 
 int gpuf_get_vision_tokens(struct gpuf_multimodal_model *multimodal_model,
                            char *start_token,
                            char *end_token,
                            char *media_token,
                            int max_length);
+
+int gpuf_get_vision_tokens(struct gpuf_multimodal_model *_multimodal_model,
+                           char *_start_token,
+                           char *_end_token,
+                           char *_media_token,
+                           int _max_length);
 
 int gpuf_generate_final_solution_text(const struct llama_model *model,
                                       struct llama_context *ctx,
@@ -504,6 +567,19 @@ int gpuf_generate_with_sampling(const struct llama_model *model,
                                 int output_len,
                                 LlamaToken *token_buffer,
                                 int token_buffer_size);
+
+int gpuf_generate_with_sampling(const struct llama_model *_model,
+                                struct llama_context *_ctx,
+                                const char *_prompt,
+                                int _max_tokens,
+                                float _temperature,
+                                int _top_k,
+                                float _top_p,
+                                float _repeat_penalty,
+                                char *_output,
+                                int _output_len,
+                                LlamaToken *_token_buffer,
+                                int _token_buffer_size);
 
 const char *gpuf_system_info(void);
 
@@ -531,6 +607,16 @@ int gpuf_start_generation_async(struct llama_context *ctx,
                                 void (*on_token_callback)(const char*, void*),
                                 void *user_data);
 
+int gpuf_start_generation_async(struct llama_context *_ctx,
+                                const char *_prompt,
+                                int _max_tokens,
+                                float _temperature,
+                                int _top_k,
+                                float _top_p,
+                                float _repeat_penalty,
+                                void (*_on_token_callback)(const char*, void*),
+                                void *_user_data);
+
 /**
  * Simple single token generation for testing
  */
@@ -548,6 +634,12 @@ int start_remote_worker(const char *server_addr,
                         int proxy_port,
                         const char *worker_type,
                         const char *client_id);
+
+int start_remote_worker(const char *_server_addr,
+                        int _control_port,
+                        int _proxy_port,
+                        const char *_worker_type,
+                        const char *_client_id);
 
 /**
  * Set remote worker model (C API) - Safe Hot Swapping Version
@@ -575,9 +667,13 @@ int start_remote_worker(const char *server_addr,
  */
 int set_remote_worker_model(const char *model_path);
 
+int set_remote_worker_model(const char *_model_path);
+
 /**
  * Start remote worker background tasks (C API)
  */
+int start_remote_worker_tasks(void);
+
 int start_remote_worker_tasks(void);
 
 /**
@@ -585,9 +681,13 @@ int start_remote_worker_tasks(void);
  */
 int start_remote_worker_tasks_with_callback_ptr(void (*callback)(const char*, void*));
 
+int start_remote_worker_tasks_with_callback_ptr(void (*_callback)(const char*, void*));
+
 /**
  * Stop remote worker and cleanup (C API)
  */
+int stop_remote_worker(void);
+
 int stop_remote_worker(void);
 
 /**
@@ -604,6 +704,8 @@ int stop_remote_worker(void);
  * # Safety
  * Caller must ensure `buffer` is valid and can hold `buffer_size` bytes
  */
+int get_remote_worker_status(char *buffer, size_t buffer_size);
+
 int get_remote_worker_status(char *buffer, size_t buffer_size);
 
 extern const struct llama_model *llama_get_model(const struct llama_context *ctx);

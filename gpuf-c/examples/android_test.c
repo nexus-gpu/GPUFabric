@@ -19,8 +19,8 @@
 #include "gpuf_c_minimal.h"
 
 // Model paths for testing (adjust these paths for your device)
-#define MODEL_PATH_1 "/data/local/tmp/models/Llama-3.2-1B-Instruct-Q8_0.gguf"
-#define MODEL_PATH_2 "/data/local/tmp/models/Llama-3.2-1B-Instruct-Q8_0.gguf"
+#define MODEL_PATH_1 "/data/local/tmp/models/gemma-4-E2B-it-Q4_K_M.gguf"
+#define MODEL_PATH_2 "/data/local/tmp/models/gemma-4-E2B-it-Q4_K_M.gguf"
 
 // Callback function for worker status updates
 void worker_status_callback(const char* message, void* user_data) {

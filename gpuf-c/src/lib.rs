@@ -235,6 +235,8 @@ pub struct llama_context_params {
     pub op_offload: bool,
     pub swa_full: bool,
     pub kv_unified: bool,
+    // [EXPERIMENTAL] backend sampler chain configuration
+    pub samplers: *mut c_void,
 }
 
 pub type LlamaToken = i32;
@@ -1429,6 +1431,7 @@ fn simulate_llama_context_default_params() -> llama_context_params {
         op_offload: false,
         swa_full: false,
         kv_unified: false,
+        samplers: std::ptr::null_mut(),
     }
 }
 
@@ -4056,7 +4059,8 @@ pub extern "C" fn start_remote_worker(
         standalone_llama: false,
         llama_model_path: None,
         n_gpu_layers: 99,
-        n_ctx: 8192,
+        n_ctx: 2048,  // Reduced for Android memory constraints
+        n_batch: 512,  // Reduced for Android memory constraints
         llama_split_mode: LlamaSplitModeArg::Layer,
         llama_main_gpu: 0,
         llama_devices: None,

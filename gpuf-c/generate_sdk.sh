@@ -70,22 +70,7 @@ check_environment() {
         fi
     else
         echo "✅ llama.cpp source directory already exists"
-        echo "🔍 Verifying pinned version..."
-        cd "$LLAMA_CPP_ROOT"
-        CURRENT_COMMIT=$(git rev-parse HEAD)
-        if [ "$CURRENT_COMMIT" != "$LLAMA_CPP_COMMIT" ]; then
-            echo "⚠️  Current commit ($CURRENT_COMMIT) differs from pinned version"
-            echo "🔄 Checking out to pinned version: $LLAMA_CPP_COMMIT"
-            git fetch origin
-            git checkout "$LLAMA_CPP_COMMIT"
-            if [ $? -eq 0 ]; then
-                echo "✅ Checked out to pinned version successfully!"
-            else
-                handle_error "Failed to checkout to pinned version"
-            fi
-        else
-            echo "✅ Already on pinned version: $LLAMA_CPP_COMMIT"
-        fi
+        echo "🔍 Using latest llama.cpp version: $(cd "$LLAMA_CPP_ROOT" && git rev-parse --short HEAD 2>/dev/null || echo 'unknown')"
     fi
     
     handle_success "Environment check passed"

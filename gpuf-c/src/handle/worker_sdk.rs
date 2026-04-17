@@ -499,7 +499,7 @@ fn build_chat_prompt_with_template(messages: &[common::ChatMessage]) -> String {
                     c_messages.as_ptr(),
                     messages.len(),
                     true, // add_ass=true
-                    buffer.as_mut_ptr() as *mut i8,
+                    buffer.as_mut_ptr() as *mut u8,
                     buffer.len() as i32,
                 )
             };
@@ -795,7 +795,7 @@ fn handle_inference_task(
         if let Some(slot) = WORKER_CANCELLED_TASK.get() {
             if let Ok(mut guard) = slot.lock() {
                 if guard.as_ref() == Some(&state.task_id) {
-                    crate::gpuf_stop_generation();
+                    crate::gpuf_stop_generation(std::ptr::null_mut());
                     state.cancelled.store(true, Ordering::Relaxed);
                     *guard = None;
                     return;
