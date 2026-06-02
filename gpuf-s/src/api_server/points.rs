@@ -143,8 +143,8 @@ pub async fn get_user_points(
     // Main query to get paginated results with total summary
     let query = format!(
         r#"
-        WITH filtered_points AS (
-            SELECT 
+        WITH base_points AS (
+            SELECT
                 encode(dpd.client_id::bytea, 'hex') as client_id,
                 COALESCE(ga.client_name, '') as client_name,
                 dpd.date,
@@ -152,13 +152,31 @@ pub async fn get_user_points(
                 COALESCE(dpd.device_name, '-') as device_name,
                 COALESCE(dpd.device_id, 0) as device_id,
                 dpd.device_index,
-                (dpd.points)::DOUBLE PRECISION as points,
-                (SUM(dpd.points) OVER ())::DOUBLE PRECISION as total_points,
-                COUNT(*) OVER () as total_count,
-                ROW_NUMBER() OVER (ORDER BY dpd.date DESC, dpd.client_id) as row_num
+                dpd.points as raw_points,
+                SUM(dpd.points * 100) OVER (
+                    ORDER BY dpd.date ASC, dpd.client_id ASC, dpd.device_index ASC
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                ) as cumulative_scaled_points,
+                SUM(dpd.points * 100) OVER () as total_scaled_points,
+                COUNT(*) OVER () as total_count
             FROM public.device_points_daily dpd
             INNER JOIN public.gpu_assets ga ON dpd.client_id = ga.client_id
             WHERE {}
+        ),
+        filtered_points AS (
+            SELECT
+                client_id,
+                client_name,
+                date,
+                total_heartbeats,
+                device_name,
+                device_id,
+                device_index,
+                ((FLOOR(cumulative_scaled_points) - FLOOR(cumulative_scaled_points - raw_points * 100)) / 100.0)::DOUBLE PRECISION as points,
+                (FLOOR(total_scaled_points) / 100.0)::DOUBLE PRECISION as total_points,
+                total_count,
+                ROW_NUMBER() OVER (ORDER BY date DESC, client_id, device_index) as row_num
+            FROM base_points
         )
         SELECT 
             client_id,

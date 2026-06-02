@@ -9,6 +9,7 @@ use tracing::{debug, error, info, warn};
 const SYNC_LOCK_ID: i64 = 0x4750_5546_4352_4544; // GPUFCRED
 const SOURCE: &str = "gpuf_compute";
 const CREDIT_TYPE: &str = "earned";
+const CUMULATIVE_SYNC_KEY_PREFIX: &str = "gpuf:compute:cumulative:v1:";
 
 #[derive(Clone, Debug)]
 pub struct PointsSyncConfig {
@@ -78,11 +79,11 @@ pub struct PointsSyncWorker {
 struct SyncItem {
     sync_key: String,
     user_id: i64,
-    client_id_hex: String,
-    device_index: i16,
     settle_date: NaiveDate,
     source_points: String,
     credit_amount: i32,
+    target_credit_amount: i64,
+    previous_credit_amount: i64,
     attempts: i32,
 }
 
@@ -209,6 +210,8 @@ impl PointsSyncWorker {
                 settle_date DATE NOT NULL,
                 source_points NUMERIC NOT NULL,
                 credit_amount INTEGER NOT NULL,
+                target_credit_amount BIGINT,
+                previous_credit_amount BIGINT,
                 source_refreshed_at TIMESTAMPTZ NOT NULL,
                 status VARCHAR(32) NOT NULL DEFAULT 'pending',
                 attempts INTEGER NOT NULL DEFAULT 0,
@@ -221,12 +224,24 @@ impl PointsSyncWorker {
             )
             "#,
             r#"
+            ALTER TABLE device_points_credit_sync
+            ADD COLUMN IF NOT EXISTS target_credit_amount BIGINT
+            "#,
+            r#"
+            ALTER TABLE device_points_credit_sync
+            ADD COLUMN IF NOT EXISTS previous_credit_amount BIGINT
+            "#,
+            r#"
             CREATE INDEX IF NOT EXISTS idx_device_points_credit_sync_status
             ON device_points_credit_sync (status, settle_date)
             "#,
             r#"
             CREATE INDEX IF NOT EXISTS idx_device_points_credit_sync_user_date
             ON device_points_credit_sync (user_id, settle_date)
+            "#,
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_device_points_credit_sync_user_status
+            ON device_points_credit_sync (user_id, status)
             "#,
         ];
 
@@ -238,22 +253,55 @@ impl PointsSyncWorker {
 
     async fn stage_ready_points(&self) -> Result<()> {
         let sql = r#"
-            WITH ready_points AS (
+            WITH source_totals AS (
                 SELECT
-                    concat('gpuf:device_points_daily:', dpd.date::text, ':', encode(dpd.client_id, 'hex'), ':', dpd.device_index::text) AS sync_key,
                     ga.user_id::BIGINT AS user_id,
-                    dpd.client_id,
-                    encode(dpd.client_id, 'hex') AS client_id_hex,
-                    dpd.device_index,
-                    dpd.date AS settle_date,
-                    dpd.points AS source_points,
-                    ROUND(dpd.points * $1)::NUMERIC AS credit_amount,
-                    dpd.refreshed_at AS source_refreshed_at
+                    COALESCE(SUM(dpd.points), 0)::NUMERIC AS source_points,
+                    FLOOR(COALESCE(SUM(dpd.points * $1::NUMERIC), 0))::BIGINT AS target_credit_amount,
+                    MAX(dpd.date) AS settle_date,
+                    MAX(dpd.refreshed_at) AS source_refreshed_at
                 FROM device_points_daily dpd
                 INNER JOIN gpu_assets ga ON ga.client_id = dpd.client_id
                 WHERE dpd.points > 0
                   AND dpd.date <= (CURRENT_DATE - ($2::INTEGER * INTERVAL '1 day'))::DATE
                   AND ga.user_id ~ '^[0-9]{1,18}$'
+                GROUP BY ga.user_id::BIGINT
+            ),
+            synced_totals AS (
+                SELECT
+                    user_id,
+                    COALESCE(SUM(credit_amount), 0)::BIGINT AS synced_credit_amount
+                FROM device_points_credit_sync
+                WHERE status = 'synced'
+                GROUP BY user_id
+            ),
+            current_targets AS (
+                SELECT
+                    concat($3::TEXT, st.user_id::TEXT, ':', st.target_credit_amount::TEXT) AS sync_key,
+                    st.user_id,
+                    decode(repeat('00', 16), 'hex') AS client_id,
+                    repeat('0', 32) AS client_id_hex,
+                    -1::SMALLINT AS device_index,
+                    st.settle_date,
+                    st.source_points,
+                    (st.target_credit_amount - COALESCE(synced.synced_credit_amount, 0))::BIGINT AS credit_amount,
+                    st.target_credit_amount,
+                    COALESCE(synced.synced_credit_amount, 0)::BIGINT AS previous_credit_amount,
+                    st.source_refreshed_at
+                FROM source_totals st
+                LEFT JOIN synced_totals synced ON synced.user_id = st.user_id
+            ),
+            superseded AS (
+                UPDATE device_points_credit_sync existing
+                SET status = 'superseded',
+                    last_error = 'superseded by cumulative floor target recalculation',
+                    updated_at = NOW()
+                FROM current_targets ct
+                WHERE existing.user_id = ct.user_id
+                  AND existing.status IN ('pending', 'failed')
+                  AND existing.sync_key LIKE ($3::TEXT || '%')
+                  AND (ct.credit_amount <= 0 OR existing.sync_key <> ct.sync_key)
+                RETURNING existing.sync_key
             )
             INSERT INTO device_points_credit_sync (
                 sync_key,
@@ -264,6 +312,8 @@ impl PointsSyncWorker {
                 settle_date,
                 source_points,
                 credit_amount,
+                target_credit_amount,
+                previous_credit_amount,
                 source_refreshed_at,
                 status,
                 updated_at
@@ -277,26 +327,28 @@ impl PointsSyncWorker {
                 settle_date,
                 source_points,
                 credit_amount::INTEGER,
+                target_credit_amount,
+                previous_credit_amount,
                 source_refreshed_at,
                 'pending' AS status,
                 NOW() AS updated_at
-            FROM ready_points
+            FROM current_targets
             WHERE credit_amount > 0
               AND credit_amount <= 2147483647
             ON CONFLICT (sync_key) DO UPDATE SET
                 user_id = EXCLUDED.user_id,
                 source_points = EXCLUDED.source_points,
                 credit_amount = EXCLUDED.credit_amount,
+                target_credit_amount = EXCLUDED.target_credit_amount,
+                previous_credit_amount = EXCLUDED.previous_credit_amount,
                 source_refreshed_at = EXCLUDED.source_refreshed_at,
-                status = 'pending',
-                attempts = 0,
-                last_error = NULL,
                 updated_at = NOW()
-            WHERE device_points_credit_sync.status = 'pending'
-              AND device_points_credit_sync.attempts = 0
+            WHERE device_points_credit_sync.status IN ('pending', 'failed')
               AND (
                 device_points_credit_sync.source_points IS DISTINCT FROM EXCLUDED.source_points
                 OR device_points_credit_sync.credit_amount IS DISTINCT FROM EXCLUDED.credit_amount
+                OR device_points_credit_sync.target_credit_amount IS DISTINCT FROM EXCLUDED.target_credit_amount
+                OR device_points_credit_sync.previous_credit_amount IS DISTINCT FROM EXCLUDED.previous_credit_amount
                 OR device_points_credit_sync.user_id IS DISTINCT FROM EXCLUDED.user_id
               );
         "#;
@@ -304,11 +356,12 @@ impl PointsSyncWorker {
         let result = sqlx::query(sql)
             .bind(self.config.credit_scale)
             .bind(self.config.settle_lag_days as i32)
+            .bind(CUMULATIVE_SYNC_KEY_PREFIX)
             .execute(&self.db_pool)
             .await?;
         debug!(
             rows = result.rows_affected(),
-            "staged ready device points for credit sync"
+            "staged cumulative device points delta for credit sync"
         );
         Ok(())
     }
@@ -318,21 +371,23 @@ impl PointsSyncWorker {
             SELECT
                 sync_key,
                 user_id,
-                client_id_hex,
-                device_index,
                 settle_date,
                 source_points::TEXT AS source_points,
                 credit_amount,
+                COALESCE(target_credit_amount, credit_amount::BIGINT) AS target_credit_amount,
+                COALESCE(previous_credit_amount, 0) AS previous_credit_amount,
                 attempts
             FROM device_points_credit_sync
             WHERE status IN ('pending', 'failed')
               AND attempts < $1
+              AND sync_key LIKE ($2::TEXT || '%')
             ORDER BY settle_date ASC, sync_key ASC
-            LIMIT $2
+            LIMIT $3
         "#;
 
         let rows = sqlx::query(sql)
             .bind(self.config.max_attempts)
+            .bind(CUMULATIVE_SYNC_KEY_PREFIX)
             .bind(self.config.batch_size)
             .fetch_all(&self.db_pool)
             .await?;
@@ -342,11 +397,11 @@ impl PointsSyncWorker {
                 Ok(SyncItem {
                     sync_key: row.try_get("sync_key")?,
                     user_id: row.try_get("user_id")?,
-                    client_id_hex: row.try_get("client_id_hex")?,
-                    device_index: row.try_get("device_index")?,
                     settle_date: row.try_get("settle_date")?,
                     source_points: row.try_get("source_points")?,
                     credit_amount: row.try_get("credit_amount")?,
+                    target_credit_amount: row.try_get("target_credit_amount")?,
+                    previous_credit_amount: row.try_get("previous_credit_amount")?,
                     attempts: row.try_get("attempts")?,
                 })
             })
@@ -362,8 +417,11 @@ impl PointsSyncWorker {
             biz_no: &item.sync_key,
             source: SOURCE,
             description: format!(
-                "GPUFabric compute points {} client={} device={} points={}",
-                item.settle_date, item.client_id_hex, item.device_index, item.source_points
+                "GPUFabric compute points cumulative cutoff={} raw_points={} target_units={} previous_units={}",
+                item.settle_date,
+                item.source_points,
+                item.target_credit_amount,
+                item.previous_credit_amount
             ),
         };
 
@@ -542,7 +600,9 @@ mod tests {
         sqlx::query(
             r#"
             INSERT INTO device_points_daily (client_id, device_index, date, points)
-            VALUES ($1, 0, (CURRENT_DATE - INTERVAL '3 days')::DATE, 10.2)
+            VALUES
+                ($1, 0, (CURRENT_DATE - INTERVAL '3 days')::DATE, 0.095),
+                ($1, 1, (CURRENT_DATE - INTERVAL '3 days')::DATE, 0.095)
             "#,
         )
         .bind(&client_id)
@@ -581,17 +641,25 @@ mod tests {
         let received = state.received.lock().await;
         assert_eq!(received.len(), 1);
         assert_eq!(received[0]["user_id"], json!(42));
-        assert_eq!(received[0]["amount"], json!(1020));
+        assert_eq!(received[0]["amount"], json!(19));
         assert_eq!(received[0]["credit_type"], json!("earned"));
         assert_eq!(received[0]["source"], json!("gpuf_compute"));
 
-        let (status, amount, transaction_id): (String, i32, Option<i64>) = sqlx::query_as(
-            "SELECT status, credit_amount, credit_transaction_id FROM device_points_credit_sync",
+        let (status, amount, target_amount, previous_amount, transaction_id): (
+            String,
+            i32,
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+        ) = sqlx::query_as(
+            "SELECT status, credit_amount, target_credit_amount, previous_credit_amount, credit_transaction_id FROM device_points_credit_sync",
         )
         .fetch_one(&db_pool)
         .await?;
         assert_eq!(status, "synced");
-        assert_eq!(amount, 1020);
+        assert_eq!(amount, 19);
+        assert_eq!(target_amount, Some(19));
+        assert_eq!(previous_amount, Some(0));
         assert_eq!(transaction_id, Some(9001));
 
         drop(received);
@@ -628,7 +696,7 @@ mod tests {
                 "message": "success",
                 "data": {
                     "transaction_id": 9001,
-                    "balance_after": 1020
+                    "balance_after": 19
                 }
             })),
         )
