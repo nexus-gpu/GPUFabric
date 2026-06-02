@@ -16,12 +16,13 @@ pub struct Args {
     pub batch_timeout: u64,
 
     #[arg(
+        env = "GPUF_DATABASE_URL",
         long,
         default_value = "postgres://username:password@localhost/database"
     )]
     pub database_url: String,
 
-    #[arg(long, default_value = "localhost:9092")]
+    #[arg(long, env = "GPUF_BOOTSTRAP_SERVER", default_value = "localhost:9092")]
     pub bootstrap_server: String,
 
     #[arg(long, default_value = "300")]
@@ -33,28 +34,48 @@ pub struct Args {
     #[arg(long, default_value = "600")]
     pub points_refresh_interval_secs: u64,
 
-    #[arg(long, default_value_t = false)]
+    #[arg(long, env = "GPUF_POINTS_CREDIT_SYNC_ENABLED", default_value_t = false)]
     pub points_credit_sync_enabled: bool,
 
-    #[arg(long, default_value = "")]
+    #[arg(long, env = "GPUF_POINTS_CREDIT_SYNC_ENDPOINT", default_value = "")]
     pub points_credit_sync_endpoint: String,
 
-    #[arg(long, default_value = "")]
+    #[arg(
+        long,
+        env = "GPUF_POINTS_CREDIT_SYNC_SERVICE_TOKEN",
+        default_value = ""
+    )]
     pub points_credit_sync_service_token: String,
 
-    #[arg(long, default_value = "100")]
+    #[arg(
+        long,
+        env = "GPUF_POINTS_CREDIT_SYNC_BATCH_SIZE",
+        default_value = "100"
+    )]
     pub points_credit_sync_batch_size: i64,
 
-    #[arg(long, default_value = "2")]
+    #[arg(
+        long,
+        env = "GPUF_POINTS_CREDIT_SYNC_SETTLE_LAG_DAYS",
+        default_value = "2"
+    )]
     pub points_credit_sync_settle_lag_days: i64,
 
-    #[arg(long, default_value = "100")]
+    #[arg(long, env = "GPUF_POINTS_CREDIT_SYNC_SCALE", default_value = "100")]
     pub points_credit_sync_scale: i64,
 
-    #[arg(long, default_value = "10")]
+    #[arg(
+        long,
+        env = "GPUF_POINTS_CREDIT_SYNC_TIMEOUT_SECS",
+        default_value = "10"
+    )]
     pub points_credit_sync_timeout_secs: u64,
 
-    #[arg(long, default_value = "10")]
+    #[arg(
+        long,
+        env = "GPUF_POINTS_CREDIT_SYNC_MAX_ATTEMPTS",
+        default_value = "10"
+    )]
     pub points_credit_sync_max_attempts: i32,
 }
 #[tokio::main]
