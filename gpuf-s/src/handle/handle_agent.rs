@@ -17,9 +17,9 @@ use std::collections::HashMap;
 use std::pin::Pin;
 #[cfg(feature = "experimental")]
 use std::task::{Context, Poll};
-use tokio::io::{self, AsyncRead, AsyncReadExt};
 #[cfg(feature = "experimental")]
 use tokio::io::AsyncWrite;
+use tokio::io::{self, AsyncRead, AsyncReadExt};
 use twoway;
 
 use anyhow::{anyhow, Result};

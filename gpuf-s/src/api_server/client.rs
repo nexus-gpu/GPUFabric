@@ -101,9 +101,10 @@ pub async fn get_user_clients(
     })?;
 
     let client_ids: Vec<String> = devices.iter().map(|d| d.client_id.clone()).collect();
-    let models_map = client::get_loaded_models_batch_from_redis(&app_state.redis_client, &client_ids)
-        .await
-        .unwrap_or_default();
+    let models_map =
+        client::get_loaded_models_batch_from_redis(&app_state.redis_client, &client_ids)
+            .await
+            .unwrap_or_default();
     for d in &mut devices {
         if let Some(models) = models_map.get(&d.client_id) {
             d.loaded_models = models.clone();
@@ -135,9 +136,10 @@ pub async fn get_user_client_status_list(
     })?;
 
     let client_ids: Vec<String> = devices.iter().map(|d| d.client_id.clone()).collect();
-    let models_map = client::get_loaded_models_batch_from_redis(&app_state.redis_client, &client_ids)
-        .await
-        .unwrap_or_default();
+    let models_map =
+        client::get_loaded_models_batch_from_redis(&app_state.redis_client, &client_ids)
+            .await
+            .unwrap_or_default();
     for d in &mut devices {
         if let Some(models) = models_map.get(&d.client_id) {
             d.loaded_models = models.clone();
@@ -366,7 +368,10 @@ pub async fn get_model_download_progress(
                 }
             }
 
-            info!("Model download progress for client {}: {:?}", query.client_id, response);
+            info!(
+                "Model download progress for client {}: {:?}",
+                query.client_id, response
+            );
             Ok(Json(ApiResponse::success(response)))
         }
         _ => {

@@ -1,5 +1,5 @@
-use crate::util::protoc::ClientId;
 use crate::util::policy::AccessLevel;
+use crate::util::protoc::ClientId;
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
 use common::Model;
@@ -145,8 +145,7 @@ pub async fn get_loaded_models_batch_from_redis(
     redis_client: &RedisClient,
     client_ids: &[String],
 ) -> Result<std::collections::HashMap<String, Vec<Model>>> {
-    let mut out: std::collections::HashMap<String, Vec<Model>> =
-        std::collections::HashMap::new();
+    let mut out: std::collections::HashMap<String, Vec<Model>> = std::collections::HashMap::new();
 
     if client_ids.is_empty() {
         return Ok(out);

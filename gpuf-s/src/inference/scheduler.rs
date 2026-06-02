@@ -189,7 +189,10 @@ impl InferenceScheduler {
                     continue;
                 }
             }
-            debug!("Client {} is authed {} model {}", client_id, client_info.authed, model_name);
+            debug!(
+                "Client {} is authed {} model {}",
+                client_id, client_info.authed, model_name
+            );
             if !client_info.authed {
                 continue;
             }

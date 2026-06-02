@@ -680,7 +680,7 @@ pub async fn handle_chat_completion(
         .as_ref()
         .map(std::slice::from_ref)
         .unwrap_or(auth.client_ids.as_slice());
-    
+
     let stream_res = gateway
         .scheduler
         .execute_chat_inference_stream(

@@ -150,7 +150,10 @@ async fn process_batch(messages: Vec<OwnedMessage>, db_pool: Pool<Postgres>) -> 
                 }
 
                 if let Err(e) = transaction.commit().await {
-                    error!("Failed to commit transaction for client {}: {}", heartbeat.client_id, e);
+                    error!(
+                        "Failed to commit transaction for client {}: {}",
+                        heartbeat.client_id, e
+                    );
                     continue;
                 }
 

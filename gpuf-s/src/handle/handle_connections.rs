@@ -10,8 +10,8 @@ use std::collections::HashMap;
 
 use anyhow::{anyhow, Result};
 use common::{format_bytes, os_type_str, CommandV2, DownloadStatus, Model, OsType, PodModel};
-use redis::Client as RedisClient;
 use redis::AsyncCommands;
+use redis::Client as RedisClient;
 use sqlx::{Pool, Postgres};
 use std::sync::Arc;
 
@@ -332,7 +332,7 @@ async fn handle_single_client(
                         error
                     );
                 }
-                
+
                 // Store or delete progress in Redis
                 update_model_download_progress_in_redis(
                     &redis_client,
@@ -344,7 +344,8 @@ async fn handle_single_client(
                     speed_bps,
                     &status,
                     error.as_deref(),
-                ).await;
+                )
+                .await;
             }
 
             Ok(Command::V2(CommandV2::P2PConnectionRequest {
@@ -537,7 +538,7 @@ async fn handle_login(
     let validate_result = if is_valid {
         info!("Client {} registered successfully", client_id);
         *authed = true;
-        
+
         // Only recommend models if auto_models is enabled
         let pods_model = if auto_models {
             models::get_models_batch(&hot_models, &devices_info).await?
@@ -609,7 +610,11 @@ async fn handle_models_status(
             Ok(model_info) => {
                 pods_model.push(PodModel {
                     pod_id: device.pod_id,
-                    model_name: if model_info.name.is_empty() { None } else { Some(model_info.name) },
+                    model_name: if model_info.name.is_empty() {
+                        None
+                    } else {
+                        Some(model_info.name)
+                    },
                     download_url: model_info.download_url,
                     checksum: model_info.checksum,
                     expected_size: model_info.expected_size.map(|s| s as u64),
@@ -707,7 +712,7 @@ async fn update_model_download_progress_in_redis(
     error: Option<&str>,
 ) {
     use redis::AsyncCommands;
-    
+
     let Ok(mut conn) = redis_client.get_async_connection().await else {
         error!("Failed to get Redis connection for model download progress");
         return;
@@ -717,11 +722,17 @@ async fn update_model_download_progress_in_redis(
     let key = format!("client:{}:model_download", client_id);
 
     // If download is completed or failed, delete the key
-    if matches!(status, common::DownloadStatus::Completed | common::DownloadStatus::Failed) {
+    if matches!(
+        status,
+        common::DownloadStatus::Completed | common::DownloadStatus::Failed
+    ) {
         if let Err(e) = conn.del::<_, ()>(&key).await {
             error!("Failed to delete model download progress from Redis: {}", e);
         } else {
-            info!("Deleted model download progress from Redis for client {}", client_id);
+            info!(
+                "Deleted model download progress from Redis for client {}",
+                client_id
+            );
         }
         return;
     }
@@ -729,7 +740,7 @@ async fn update_model_download_progress_in_redis(
     // Otherwise, update the progress
     let timestamp = chrono::Utc::now().timestamp();
     let status_str = format!("{:?}", status);
-    
+
     let mut fields: Vec<(&str, String)> = vec![
         ("model_name", model_name.to_string()),
         ("downloaded_bytes", downloaded_bytes.to_string()),

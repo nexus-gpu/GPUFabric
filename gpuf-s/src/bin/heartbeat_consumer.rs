@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
-use gpuf_s::consumer;
-use tracing::{error, info};
+use gpuf_s::{consumer, points_sync};
+use tracing::{error, info, warn};
 use tracing_subscriber::{fmt, EnvFilter};
 
 use std::time::Duration;
@@ -32,6 +32,30 @@ pub struct Args {
 
     #[arg(long, default_value = "600")]
     pub points_refresh_interval_secs: u64,
+
+    #[arg(long, default_value_t = false)]
+    pub points_credit_sync_enabled: bool,
+
+    #[arg(long, default_value = "")]
+    pub points_credit_sync_endpoint: String,
+
+    #[arg(long, default_value = "")]
+    pub points_credit_sync_service_token: String,
+
+    #[arg(long, default_value = "100")]
+    pub points_credit_sync_batch_size: i64,
+
+    #[arg(long, default_value = "2")]
+    pub points_credit_sync_settle_lag_days: i64,
+
+    #[arg(long, default_value = "100")]
+    pub points_credit_sync_scale: i64,
+
+    #[arg(long, default_value = "10")]
+    pub points_credit_sync_timeout_secs: u64,
+
+    #[arg(long, default_value = "10")]
+    pub points_credit_sync_max_attempts: i32,
 }
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -88,8 +112,24 @@ async fn main() -> Result<()> {
         }
     });
 
+    let mut points_sync_config = points_sync::PointsSyncConfig {
+        enabled: args.points_credit_sync_enabled,
+        endpoint: args.points_credit_sync_endpoint.clone(),
+        service_token: args.points_credit_sync_service_token.clone(),
+        batch_size: args.points_credit_sync_batch_size,
+        settle_lag_days: args.points_credit_sync_settle_lag_days,
+        credit_scale: args.points_credit_sync_scale,
+        request_timeout_secs: args.points_credit_sync_timeout_secs,
+        max_attempts: args.points_credit_sync_max_attempts,
+    };
+    if let Err(e) = points_sync_config.validate() {
+        warn!(error = %e, "points credit sync disabled due to invalid configuration");
+        points_sync_config.enabled = false;
+    }
+
     let points_pool = db_pool.clone();
     let points_refresh_interval_secs = args.points_refresh_interval_secs;
+    let points_sync_config = points_sync_config.clone();
     tokio::spawn(async move {
         if points_refresh_interval_secs == 0 {
             info!("Points refresher disabled (points_refresh_interval_secs=0)");
@@ -110,6 +150,13 @@ async fn main() -> Result<()> {
                         "Refreshed device_points_daily (interval_secs={})",
                         points_refresh_interval_secs
                     );
+                    if points_sync_config.enabled {
+                        let sync_pool = points_pool.clone();
+                        let sync_config = points_sync_config.clone();
+                        tokio::spawn(async move {
+                            points_sync::run_after_points_refresh(sync_pool, sync_config).await;
+                        });
+                    }
                 }
                 Err(e) => {
                     error!("Failed to refresh device_points_daily: {}", e);

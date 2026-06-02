@@ -16,8 +16,8 @@ use crate::db::client::get_user_client_by_token;
 #[cfg(feature = "experimental")]
 use crate::handle::ActiveClients;
 use crate::inference::{handlers, InferenceScheduler};
-use crate::util::protoc::{ClientId, RequestIDAndClientIDMessage};
 use crate::util::policy::{AccessLevel, REQUEST_MESSAGE_TOPIC};
+use crate::util::protoc::{ClientId, RequestIDAndClientIDMessage};
 use anyhow::anyhow;
 use rdkafka::producer::FutureRecord;
 use std::time::Duration;

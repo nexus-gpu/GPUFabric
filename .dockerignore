@@ -1,0 +1,10 @@
+target
+**/target
+.git
+.claude
+.qoder
+.vscode
+.windsurf
+llama.cpp
+*.pem
+*.srl

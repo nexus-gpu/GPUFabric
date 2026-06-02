@@ -46,7 +46,10 @@ impl ApiServer {
             .route("/api/user/client_monitor", get(client::get_client_monitor))
             .route("/api/user/client_health", get(client::get_client_health))
             // Model Download Progress
-            .route("/api/user/model_download_progress", get(client::get_model_download_progress))
+            .route(
+                "/api/user/model_download_progress",
+                get(client::get_model_download_progress),
+            )
             // Model Management APIs
             .route("/api/models/insert", post(models::create_or_update_model))
             .route("/api/models/get", get(models::get_models))

@@ -4,4 +4,5 @@ pub mod consumer;
 pub mod db;
 pub mod handle;
 pub mod inference;
+pub mod points_sync;
 pub mod util;
