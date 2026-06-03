@@ -795,7 +795,7 @@ fn handle_inference_task(
         if let Some(slot) = WORKER_CANCELLED_TASK.get() {
             if let Ok(mut guard) = slot.lock() {
                 if guard.as_ref() == Some(&state.task_id) {
-                    crate::gpuf_stop_generation();
+                    crate::gpuf_stop_generation(std::ptr::null_mut());
                     state.cancelled.store(true, Ordering::Relaxed);
                     *guard = None;
                     return;
