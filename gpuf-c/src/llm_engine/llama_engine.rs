@@ -33,6 +33,7 @@ pub struct LlamaEngine {
     pub models_name: Vec<String>,
     pub model_path: Option<String>,
     pub n_ctx: u32,
+    pub n_batch: u32,
     pub n_gpu_layers: u32,
     pub llama_split_mode: LlamaSplitModeArg,
     pub llama_main_gpu: i32,
@@ -61,6 +62,10 @@ pub struct SamplingParams {
     pub repeat_last_n: i32,
     pub seed: u32,
     pub min_keep: usize,
+    /// Hint for max tokens to spend on thinking content (Anthropic extended thinking).
+    /// The model uses this as guidance; actual thinking token count depends on model output.
+    #[allow(dead_code)]
+    pub thinking_budget_tokens: Option<usize>,
 }
 
 impl Default for SamplingParams {
@@ -73,6 +78,7 @@ impl Default for SamplingParams {
             repeat_last_n: 64,
             seed: 0,
             min_keep: 1,
+            thinking_budget_tokens: None,
         }
     }
 }
@@ -296,6 +302,7 @@ impl LlamaEngine {
 
             let prompt = prompt.to_string();
             let n_ctx = self.n_ctx;
+            let n_batch = self.n_batch;
             let sampling = sampling.clone();
 
             // Run inference in blocking thread
@@ -305,7 +312,9 @@ impl LlamaEngine {
                 use llama_cpp_2::sampling::LlamaSampler;
 
                 let context_params =
-                    LlamaContextParams::default().with_n_ctx(NonZeroU32::new(n_ctx));
+                    LlamaContextParams::default()
+                        .with_n_ctx(NonZeroU32::new(n_ctx))
+                        .with_n_batch(n_batch);
 
                 // Lock model and create context with proper lifetime
                 let model_guard = model
@@ -463,6 +472,7 @@ impl LlamaEngine {
 
             let prompt = prompt.to_string();
             let n_ctx = self.n_ctx;
+            let n_batch = self.n_batch;
             let sampling = sampling.clone();
 
             let (tx, rx) = mpsc::channel::<Result<String>>(64);
@@ -473,7 +483,9 @@ impl LlamaEngine {
                 use llama_cpp_2::sampling::LlamaSampler;
 
                 let context_params =
-                    LlamaContextParams::default().with_n_ctx(NonZeroU32::new(n_ctx));
+                    LlamaContextParams::default()
+                        .with_n_ctx(NonZeroU32::new(n_ctx))
+                        .with_n_batch(n_batch);
 
                 let model_guard = model
                     .lock()
@@ -574,6 +586,7 @@ impl LlamaEngine {
             models_name: Vec::new(),
             model_path: None,
             n_ctx: 2048,
+            n_batch: 4096,
             n_gpu_layers: 99,
             llama_split_mode: LlamaSplitModeArg::Layer,
             llama_main_gpu: 0,
@@ -594,6 +607,7 @@ impl LlamaEngine {
 
     pub fn with_runtime_config(
         n_ctx: u32,
+        n_batch: u32,
         n_gpu_layers: u32,
         llama_split_mode: LlamaSplitModeArg,
         llama_main_gpu: i32,
@@ -609,6 +623,7 @@ impl LlamaEngine {
             models_name: Vec::new(),
             model_path: None,
             n_ctx,
+            n_batch,
             n_gpu_layers,
             llama_split_mode,
             llama_main_gpu,
@@ -630,6 +645,7 @@ impl LlamaEngine {
     pub fn with_config(
         model_path: String,
         n_ctx: u32,
+        n_batch: u32,
         n_gpu_layers: u32,
         llama_split_mode: LlamaSplitModeArg,
         llama_main_gpu: i32,
@@ -645,6 +661,7 @@ impl LlamaEngine {
             models_name: Vec::new(),
             model_path: Some(model_path.clone()),
             n_ctx,
+            n_batch,
             n_gpu_layers,
             llama_split_mode,
             llama_main_gpu,

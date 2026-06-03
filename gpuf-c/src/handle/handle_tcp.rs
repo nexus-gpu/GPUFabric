@@ -168,13 +168,13 @@ impl PhaseSplitter {
             ("final:", OutputPhase::Final),
             ("final", OutputPhase::Final),
             ("### Answer", OutputPhase::Final),
-            ("### 思考", OutputPhase::Analysis),
-            ("思考：", OutputPhase::Analysis),
-            ("分析：", OutputPhase::Analysis),
+            ("### Reasoning", OutputPhase::Analysis),
+            ("Reasoning:", OutputPhase::Analysis),
+            ("Analysis:", OutputPhase::Analysis),
             ("analysis:", OutputPhase::Analysis),
             ("analysis", OutputPhase::Analysis),
-            ("### 答案", OutputPhase::Final),
-            ("答案：", OutputPhase::Final),
+            ("### Answer", OutputPhase::Final),
+            ("Answer:", OutputPhase::Final),
         ] {
             if rest.starts_with(pat) {
                 // Guard: for plain "analysis"/"final" tokens, require boundary (space/newline/:) to reduce false positives.
@@ -215,9 +215,9 @@ impl PhaseSplitter {
             "<final>", "</final>",
             "### Final", "Final:", "### Answer",
             "final:", "final",
-            "### 思考", "思考：", "分析：",
+            "### Reasoning", "Reasoning:", "Analysis:",
             "analysis:", "analysis",
-            "### 答案", "答案：",
+            "### Answer", "Answer:",
         ];
         let max_len = markers.iter().map(|s| s.len()).max().unwrap_or(0);
 
@@ -373,6 +373,7 @@ impl ClientWorker {
                         repeat_last_n: repeat_last_n,
                         seed: 0,
                         min_keep: min_keep as usize,
+                        thinking_budget_tokens: None,
                     };
 
                     let (text, _prompt_tokens, _completion_tokens) = llama
@@ -473,6 +474,7 @@ impl ClientWorker {
                 repeat_last_n,
                 seed: 0,
                 min_keep: min_keep as usize,
+                thinking_budget_tokens: None,
             };
 
             let prompt_tokens: u32 = {
@@ -964,6 +966,7 @@ impl ClientWorker {
                     repeat_last_n,
                     seed: 0,
                     min_keep: min_keep as usize,
+                    thinking_budget_tokens: None,
                 };
 
                 let (text, _prompt_tokens, _completion_tokens) = llama
@@ -1037,6 +1040,7 @@ impl ClientWorker {
                         repeat_last_n,
                         seed: 0,
                         min_keep: min_keep as usize,
+                        thinking_budget_tokens: None,
                     };
 
                     let token_stream = llama
@@ -1324,6 +1328,7 @@ impl ClientWorker {
                         llm_engine::AnyEngine::Llama(LlamaEngine::with_config(
                             model_path.clone(),
                             args.n_ctx,
+                            args.n_batch,
                             args.n_gpu_layers,
                             args.llama_split_mode.clone(),
                             args.llama_main_gpu,
@@ -1334,6 +1339,7 @@ impl ClientWorker {
                         info!("Creating LLAMA engine without model (will be set later)");
                         llm_engine::AnyEngine::Llama(LlamaEngine::with_runtime_config(
                             args.n_ctx,
+                            args.n_batch,
                             args.n_gpu_layers,
                             args.llama_split_mode.clone(),
                             args.llama_main_gpu,
@@ -1461,6 +1467,7 @@ impl ClientWorker {
                         llm_engine::AnyEngine::Llama(LlamaEngine::with_config(
                             model_path.clone(),
                             args.n_ctx,
+                            args.n_batch,
                             args.n_gpu_layers,
                             args.llama_split_mode.clone(),
                             args.llama_main_gpu,
@@ -1471,6 +1478,7 @@ impl ClientWorker {
                         info!("Creating LLAMA engine without model (will be set later)");
                         llm_engine::AnyEngine::Llama(LlamaEngine::with_runtime_config(
                             args.n_ctx,
+                            args.n_batch,
                             args.n_gpu_layers,
                             args.llama_split_mode.clone(),
                             args.llama_main_gpu,
@@ -2757,6 +2765,7 @@ impl WorkerHandle for ClientWorker {
                                                     repeat_last_n,
                                                     seed: 0,
                                                     min_keep: min_keep as usize,
+                                                    thinking_budget_tokens: None,
                                                 };
 
                                             let token_stream_res = {
@@ -3173,6 +3182,7 @@ impl WorkerHandle for ClientWorker {
                                                             repeat_last_n,
                                                             seed: 0,
                                                             min_keep: min_keep as usize,
+                                                            thinking_budget_tokens: None,
                                                         };
 
                                                         let token_stream_res = {

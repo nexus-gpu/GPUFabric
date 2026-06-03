@@ -158,6 +158,7 @@ pub async fn download_and_initialize_llama() -> Result<()> {
     let mut engine = LlamaEngine::with_config(
         model_path.to_string_lossy().to_string(),
         2048, // context size
+        4096, // batch size
         35,   // GPU layers
         LlamaSplitModeArg::Layer,
         0,

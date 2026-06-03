@@ -1,5 +1,6 @@
 -- Update device_types with accurate TFLOPS values
 -- Run this on your PostgreSQL database to update existing records
+-- Test environment: postgres://postgres_test:pwd_postgres_aliyun_test1234@8.140.251.142:5432/aliyun_test
 
 -- Apple devices
 UPDATE device_types SET tflops = 2.6 WHERE device_id = 1;
@@ -79,35 +80,34 @@ UPDATE device_types SET tflops = 1979, device_name = 'H100 80GB HBM3e' WHERE dev
 -- A800 (new devices)
 INSERT INTO device_types (device_id, device_name, tflops, points_multiplier, created_at, updated_at)
 VALUES 
-    (8349, 'A800 SXM4 40GB', 312, 1.0, NOW(), NOW()),
-    (8435, 'A800 SXM4 80GB', 624, 1.0, NOW(), NOW()),
-    (8437, 'A800 80GB PCIe', 624, 1.0, NOW(), NOW()),
-    (8438, 'A800 40GB PCIe', 312, 1.0, NOW(), NOW())
+    (8349, 'A800 SXM4 40GB', 312, 0.05, NOW(), NOW()),
+    (8435, 'A800 SXM4 80GB', 624, 0.05, NOW(), NOW()),
+    (8437, 'A800 80GB PCIe', 624, 0.05, NOW(), NOW()),
+    (8438, 'A800 40GB PCIe', 312, 0.05, NOW(), NOW())
 ON CONFLICT (device_id) DO UPDATE SET
     device_name = EXCLUDED.device_name,
     tflops = EXCLUDED.tflops,
+    points_multiplier = EXCLUDED.points_multiplier,
     updated_at = NOW();
 
 -- AMD (new device)
 INSERT INTO device_types (device_id, device_name, tflops, points_multiplier, created_at, updated_at)
 VALUES 
-    (5510, 'AMD Ryzen AI Max+ 395', 16.0, 1.0, NOW(), NOW())
+    (5510, 'AMD Ryzen AI Max+ 395', 16.0, 0.05, NOW(), NOW())
 ON CONFLICT (device_id) DO UPDATE SET
     device_name = EXCLUDED.device_name,
     tflops = EXCLUDED.tflops,
+    points_multiplier = EXCLUDED.points_multiplier,
     updated_at = NOW();
 
--- Recalculate points_multiplier based on RTX 4090 (device_id = 9860) as baseline
--- Only update where tflops > 0 and points_multiplier is default (1.0)
+-- Set all device types points_multiplier to 0.05 (uniform policy)
 UPDATE device_types
 SET
-    points_multiplier = (tflops / NULLIF((SELECT tflops FROM device_types WHERE device_id = 9860), 0)),
-    updated_at = NOW()
-WHERE tflops > 0
-  AND (SELECT tflops FROM device_types WHERE device_id = 9860) > 0;
+    points_multiplier = 0.05,
+    updated_at = NOW();
 
--- Refresh materialized view to apply changes
-REFRESH MATERIALIZED VIEW CONCURRENTLY device_points_daily;
+-- Refresh device_points_daily table to apply changes
+SELECT refresh_device_points_daily();
 
 -- Verify updates
 SELECT device_id, device_name, tflops, points_multiplier 

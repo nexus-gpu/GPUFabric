@@ -69,9 +69,9 @@ fn should_force_short_answer(messages: &[crate::inference::scheduler::ChatMessag
         return false;
     };
     let c = m.content.to_ascii_lowercase();
-    c.contains("只回复")
-        || c.contains("只回答")
-        || c.contains("仅回复")
+    c.contains("only reply")
+        || c.contains("only answer")
+        || c.contains("reply only")
         || c.contains("only reply")
         || c.contains("only respond")
         || c.contains("reply only")

@@ -18,8 +18,6 @@ use jni::sys::{jboolean, jbyteArray, jfloat, jint, jlong, jstring};
 use jni::JNIEnv;
 #[cfg(any(target_os = "android", target_os = "ios"))]
 use libc::size_t;
-#[cfg(target_os = "ios")]
-use libc::size_t;
 use once_cell::sync::Lazy;
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 #[cfg(target_os = "android")]
@@ -1461,12 +1459,6 @@ pub extern "C" fn gpuf_create_context(model: *mut llama_model) -> *mut llama_con
     result
 }
 
-#[no_mangle]
-#[cfg(target_os = "ios")]
-pub extern "C" fn gpuf_create_context(_model: *mut llama_model) -> *mut llama_context {
-    std::ptr::null_mut()
-}
-
 // Async Model Loading and Context Creation Functions
 // ============================================================================
 
@@ -1860,12 +1852,6 @@ pub extern "C" fn gpuf_load_model(path: *const c_char) -> *mut llama_model {
     println!("✅ real_llama_model_load_from_file returned: {:p}", result);
 
     result
-}
-
-#[no_mangle]
-#[cfg(target_os = "ios")]
-pub extern "C" fn gpuf_load_model(_path: *const c_char) -> *mut llama_model {
-    std::ptr::null_mut()
 }
 
 // 🆕 Helper function to detect model type from filename
@@ -3327,25 +3313,6 @@ pub extern "C" fn gpuf_generate_with_sampling(
 }
 
 #[no_mangle]
-#[cfg(target_os = "ios")]
-pub extern "C" fn gpuf_generate_with_sampling(
-    _model: *const llama_model,
-    _ctx: *mut llama_context,
-    _prompt: *const c_char,
-    _max_tokens: c_int,
-    _temperature: f32,
-    _top_k: c_int,
-    _top_p: f32,
-    _repeat_penalty: f32,
-    _output: *mut c_char,
-    _output_len: c_int,
-    _token_buffer: *mut LlamaToken,
-    _token_buffer_size: c_int,
-) -> c_int {
-    -1
-}
-
-#[no_mangle]
 pub extern "C" fn gpuf_system_info() -> *const c_char {
     let info = CString::new("GPUFabric Android LLaMA.cpp Engine").unwrap();
     info.into_raw()
@@ -3850,22 +3817,6 @@ pub extern "C" fn gpuf_start_generation_async(
     }
 }
 
-#[no_mangle]
-#[cfg(target_os = "ios")]
-pub extern "C" fn gpuf_start_generation_async(
-    _ctx: *mut llama_context,
-    _prompt: *const c_char,
-    _max_tokens: c_int,
-    _temperature: f32,
-    _top_k: c_int,
-    _top_p: f32,
-    _repeat_penalty: f32,
-    _on_token_callback: Option<extern "C" fn(*const c_char, *mut c_void)>,
-    _user_data: *mut c_void,
-) -> c_int {
-    -1
-}
-
 /// Simple single token generation for testing
 #[no_mangle]
 #[cfg(any(target_os = "android", target_os = "ios"))]
@@ -4057,6 +4008,7 @@ pub extern "C" fn start_remote_worker(
         llama_model_path: None,
         n_gpu_layers: 99,
         n_ctx: 8192,
+        n_batch: 4096,
         llama_split_mode: LlamaSplitModeArg::Layer,
         llama_main_gpu: 0,
         llama_devices: None,
@@ -4116,18 +4068,6 @@ pub extern "C" fn start_remote_worker(
             }
         }
     }
-}
-
-#[cfg(target_os = "ios")]
-#[no_mangle]
-pub extern "C" fn start_remote_worker(
-    _server_addr: *const c_char,
-    _control_port: c_int,
-    _proxy_port: c_int,
-    _worker_type: *const c_char,
-    _client_id: *const c_char,
-) -> c_int {
-    -1
 }
 
 // Global backend initialization flag
@@ -4278,12 +4218,6 @@ pub extern "C" fn set_remote_worker_model(model_path: *const c_char) -> c_int {
     0 // Success
 }
 
-#[cfg(target_os = "ios")]
-#[no_mangle]
-pub extern "C" fn set_remote_worker_model(_model_path: *const c_char) -> c_int {
-    -1
-}
-
 /// Start remote worker background tasks (C API)
 #[cfg(any(target_os = "android", target_os = "ios"))]
 #[no_mangle]
@@ -4320,12 +4254,6 @@ pub extern "C" fn start_remote_worker_tasks() -> c_int {
             }
         }
     }
-}
-
-#[cfg(target_os = "ios")]
-#[no_mangle]
-pub extern "C" fn start_remote_worker_tasks() -> c_int {
-    -1
 }
 
 /// Start remote worker background tasks with callback support (C API)
@@ -4368,14 +4296,6 @@ pub extern "C" fn start_remote_worker_tasks_with_callback_ptr(
     }
 }
 
-#[cfg(target_os = "ios")]
-#[no_mangle]
-pub extern "C" fn start_remote_worker_tasks_with_callback_ptr(
-    _callback: Option<extern "C" fn(*const c_char, *mut c_void)>,
-) -> c_int {
-    -1
-}
-
 /// Stop remote worker and cleanup (C API)
 #[cfg(any(target_os = "android", target_os = "ios"))]
 #[no_mangle]
@@ -4397,12 +4317,6 @@ pub extern "C" fn stop_remote_worker() -> c_int {
         local_runtime.block_on(async { crate::worker_sdk::stop_global_worker().await });
         0
     }
-}
-
-#[cfg(target_os = "ios")]
-#[no_mangle]
-pub extern "C" fn stop_remote_worker() -> c_int {
-    -1
 }
 
 /// Get remote worker status (C API)
@@ -4485,17 +4399,4 @@ pub extern "C" fn get_remote_worker_status(buffer: *mut c_char, buffer_size: siz
 
     println!("✅ C API: Status written to buffer");
     0 as c_int
-}
-
-#[cfg(target_os = "ios")]
-#[no_mangle]
-pub extern "C" fn get_remote_worker_status(buffer: *mut c_char, buffer_size: size_t) -> c_int {
-    if buffer.is_null() || buffer_size == 0 {
-        return -1;
-    }
-
-    unsafe {
-        *buffer = 0;
-    }
-    -1
 }

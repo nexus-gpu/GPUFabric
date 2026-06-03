@@ -39,6 +39,7 @@ static WORKER_SERVER_ADDR: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 static WORKER_CONTROL_PORT: OnceLock<Mutex<Option<u16>>> = OnceLock::new();
 static WORKER_CLIENT_ID: OnceLock<Mutex<Option<[u8; 16]>>> = OnceLock::new();
 static WORKER_STOP_SIGNAL: OnceLock<Arc<AtomicBool>> = OnceLock::new();
+static WORKER_CANCELLED_TASK: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
 fn os_type() -> OsType {
     #[cfg(target_os = "ios")]
@@ -364,6 +365,13 @@ pub async fn start_worker_tasks_with_callback_ptr(
                     let _ = common::write_command_sync(&mut stream, &Command::V1(model_status));
                     emit_callback(handler_callback, "MODEL_STATUS_SENT");
                 }
+                CommandV1::CancelInference { task_id } => {
+                    emit_callback(handler_callback, &format!("CANCEL_TASK - {task_id}"));
+                    let slot = WORKER_CANCELLED_TASK.get_or_init(|| Mutex::new(None));
+                    if let Ok(mut guard) = slot.lock() {
+                        *guard = Some(task_id);
+                    }
+                }
                 CommandV1::InferenceTask {
                     task_id,
                     prompt,
@@ -603,13 +611,13 @@ fn handle_inference_task(
                 ("final:", common::OutputPhase::Final),
                 ("final", common::OutputPhase::Final),
                 ("### Answer", common::OutputPhase::Final),
-                ("### 思考", common::OutputPhase::Analysis),
-                ("思考：", common::OutputPhase::Analysis),
-                ("分析：", common::OutputPhase::Analysis),
+                ("### Reasoning", common::OutputPhase::Analysis),
+                ("Reasoning:", common::OutputPhase::Analysis),
+                ("Analysis:", common::OutputPhase::Analysis),
                 ("analysis:", common::OutputPhase::Analysis),
                 ("analysis", common::OutputPhase::Analysis),
-                ("### 答案", common::OutputPhase::Final),
-                ("答案：", common::OutputPhase::Final),
+                ("### Answer", common::OutputPhase::Final),
+                ("Answer:", common::OutputPhase::Final),
             ] {
                 if rest.starts_with(pat) {
                     if (pat == "analysis" || pat == "final")
@@ -645,9 +653,9 @@ fn handle_inference_task(
                 "<final>", "</final>",
                 "### Final", "Final:", "### Answer",
                 "final:", "final",
-                "### 思考", "思考：", "分析：",
+                "### Reasoning", "Reasoning:", "Analysis:",
                 "analysis:", "analysis",
-                "### 答案", "答案：",
+                "### Answer", "Answer:",
             ];
             let max_len = markers.iter().map(|s| s.len()).max().unwrap_or(0);
 
@@ -773,6 +781,7 @@ fn handle_inference_task(
         completion_tokens: u32,
         analysis_tokens: u32,
         final_tokens: u32,
+        cancelled: AtomicBool,
     }
 
     extern "C" fn on_token(token: *const c_char, user_data: *mut std::ffi::c_void) {
@@ -781,6 +790,19 @@ fn handle_inference_task(
         }
 
         let state = unsafe { &mut *(user_data as *mut TokenCallbackState) };
+
+        // Check if this task has been cancelled
+        if let Some(slot) = WORKER_CANCELLED_TASK.get() {
+            if let Ok(mut guard) = slot.lock() {
+                if guard.as_ref() == Some(&state.task_id) {
+                    crate::gpuf_stop_generation(std::ptr::null_mut());
+                    state.cancelled.store(true, Ordering::Relaxed);
+                    *guard = None;
+                    return;
+                }
+            }
+        }
+
         let token_str = unsafe { std::ffi::CStr::from_ptr(token).to_str() };
         let Ok(token_str) = token_str else {
             return;
@@ -872,6 +894,7 @@ fn handle_inference_task(
         completion_tokens: 0,
         analysis_tokens: 0,
         final_tokens: 0,
+        cancelled: AtomicBool::new(false),
     };
 
     let rc = unsafe {
@@ -903,8 +926,16 @@ fn handle_inference_task(
         };
         common::write_command_sync(stream, &Command::V1(result_command))?;
         stream.flush().ok();
+        // Clear any stale cancellation flag for this task
+        if let Some(slot) = WORKER_CANCELLED_TASK.get() {
+            if let Ok(mut guard) = slot.lock() {
+                *guard = None;
+            }
+        }
         return Ok(());
     }
+
+    let was_cancelled = cb_state.cancelled.load(Ordering::Relaxed);
 
     if !cb_state.buf.is_empty() {
         let delta = std::mem::take(&mut cb_state.buf);
@@ -931,7 +962,11 @@ fn handle_inference_task(
         delta: String::new(),
         phase: cb_state.splitter.phase(),
         done: true,
-        error: None,
+        error: if was_cancelled {
+            Some("Inference cancelled by server".to_string())
+        } else {
+            None
+        },
         prompt_tokens: cb_state.prompt_tokens,
         completion_tokens: cb_state.completion_tokens,
         analysis_tokens: cb_state.analysis_tokens,
@@ -940,6 +975,13 @@ fn handle_inference_task(
 
     common::write_command_sync(stream, &Command::V1(done_cmd))?;
     stream.flush().ok();
+
+    // Clear any stale cancellation flag for this task
+    if let Some(slot) = WORKER_CANCELLED_TASK.get() {
+        if let Ok(mut guard) = slot.lock() {
+            *guard = None;
+        }
+    }
 
     Ok(())
     }

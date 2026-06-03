@@ -1,3 +1,4 @@
+pub mod anthropic_server;
 pub mod inference_service;
 #[cfg(not(target_os = "ios"))]
 pub mod llama_engine;

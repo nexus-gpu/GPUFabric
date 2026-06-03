@@ -4,10 +4,11 @@ use anyhow::Result;
 use axum::{
     extract::State,
     http::StatusCode,
-    response::{IntoResponse, Response},
+    response::{sse, IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
+use futures_util::stream;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -144,26 +145,20 @@ pub struct ErrorDetail {
     pub r#type: String,
 }
 
-/// Application state
-pub struct AppState {
-    pub engine: Arc<RwLock<LlamaEngine>>,
-}
-
 /// Create HTTP API server
 pub fn create_router(engine: Arc<RwLock<LlamaEngine>>) -> Router {
-    let state = Arc::new(AppState { engine });
-
     Router::new()
         .route("/health", get(health_check))
         .route("/v1/models", get(list_models))
         .route("/v1/chat/completions", post(chat_completions))
         .route("/v1/completions", post(completions))
-        .with_state(state)
+        .route("/v1/messages", post(super::anthropic_server::messages_handler))
+        .with_state(engine)
 }
 
 /// Health check
-async fn health_check(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
-    let engine = state.engine.read().await;
+async fn health_check(State(engine): State<Arc<RwLock<LlamaEngine>>>) -> Json<HealthResponse> {
+    let engine = engine.read().await;
     let model_loaded = engine.is_ready().await;
 
     Json(HealthResponse {
@@ -173,8 +168,8 @@ async fn health_check(State(state): State<Arc<AppState>>) -> Json<HealthResponse
 }
 
 /// List models
-async fn list_models(State(state): State<Arc<AppState>>) -> Result<Json<ModelsResponse>, AppError> {
-    let engine = state.engine.read().await;
+async fn list_models(State(engine): State<Arc<RwLock<LlamaEngine>>>) -> Result<Json<ModelsResponse>, AppError> {
+    let engine = engine.read().await;
     let models = engine.list_local_models().await?;
 
     let data = models
@@ -198,16 +193,20 @@ async fn list_models(State(state): State<Arc<AppState>>) -> Result<Json<ModelsRe
 
 /// Chat completion
 async fn chat_completions(
-    State(state): State<Arc<AppState>>,
+    State(engine): State<Arc<RwLock<LlamaEngine>>>,
     Json(req): Json<ChatCompletionRequest>,
-) -> Result<Json<ChatCompletionResponse>, AppError> {
-    info!("Chat completion request: {} messages", req.messages.len());
+) -> Result<Response, AppError> {
+    info!(
+        "Chat completion request: {} messages, stream: {}",
+        req.messages.len(),
+        req.stream
+    );
 
     // Build prompt
     let prompt = build_chat_prompt(&req.messages);
 
     // Generate text
-    let engine = state.engine.read().await;
+    let engine = engine.read().await;
     let max_tokens = req.max_tokens.unwrap_or(100);
     let mut sampling = SamplingParams::default();
     if let Some(v) = req.temperature {
@@ -232,44 +231,88 @@ async fn chat_completions(
         sampling.min_keep = v;
     }
 
-    let (response_text, prompt_tokens, completion_tokens) = engine
-        .generate_with_cached_model_sampling(&prompt, max_tokens, &sampling)
-        .await?;
+    let model_name = req.model.unwrap_or_else(|| "llama.cpp".to_string());
+    let id = format!("chatcmpl-{}", uuid::Uuid::new_v4());
+    let created = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
 
-    let response = ChatCompletionResponse {
-        id: format!("chatcmpl-{}", uuid::Uuid::new_v4()),
-        object: "chat.completion".to_string(),
-        created: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs(),
-        model: req.model.unwrap_or_else(|| "llama.cpp".to_string()),
-        choices: vec![ChatChoice {
-            index: 0,
-            message: ChatMessage {
-                role: "assistant".to_string(),
-                content: response_text,
+    if req.stream {
+        // Streaming response using SSE - wrap non-streaming response in SSE format
+        let (response_text, prompt_tokens, completion_tokens) = engine
+            .generate_with_cached_model_sampling(&prompt, max_tokens, &sampling)
+            .await?;
+
+        let response = ChatCompletionResponse {
+            id: id.clone(),
+            object: "chat.completion".to_string(),
+            created,
+            model: model_name,
+            choices: vec![ChatChoice {
+                index: 0,
+                message: ChatMessage {
+                    role: "assistant".to_string(),
+                    content: response_text,
+                },
+                finish_reason: "stop".to_string(),
+            }],
+            usage: Usage {
+                prompt_tokens,
+                completion_tokens,
+                total_tokens: prompt_tokens + completion_tokens,
             },
-            finish_reason: "stop".to_string(),
-        }],
-        usage: Usage {
-            prompt_tokens,
-            completion_tokens,
-            total_tokens: prompt_tokens + completion_tokens,
-        },
-    };
+        };
 
-    Ok(Json(response))
+        // Return as SSE (proper format for OpenAI streaming)
+        let data = format!("data: {}\n\n", serde_json::to_string(&response).unwrap_or_default());
+        let data_done = "data: [DONE]\n\n".to_string();
+
+        use std::convert::Infallible;
+        let stream = stream::iter(vec![
+            Ok::<_, Infallible>(sse::Event::default().data(data)),
+            Ok::<_, Infallible>(sse::Event::default().data(data_done)),
+        ]);
+
+        Ok(sse::Sse::new(stream).into_response())
+    } else {
+        // Non-streaming response
+        let (response_text, prompt_tokens, completion_tokens) = engine
+            .generate_with_cached_model_sampling(&prompt, max_tokens, &sampling)
+            .await?;
+
+        let response = ChatCompletionResponse {
+            id,
+            object: "chat.completion".to_string(),
+            created,
+            model: model_name,
+            choices: vec![ChatChoice {
+                index: 0,
+                message: ChatMessage {
+                    role: "assistant".to_string(),
+                    content: response_text,
+                },
+                finish_reason: "stop".to_string(),
+            }],
+            usage: Usage {
+                prompt_tokens,
+                completion_tokens,
+                total_tokens: prompt_tokens + completion_tokens,
+            },
+        };
+
+        Ok(Json(response).into_response())
+    }
 }
 
 /// Text completion
 async fn completions(
-    State(state): State<Arc<AppState>>,
+    State(engine): State<Arc<RwLock<LlamaEngine>>>,
     Json(req): Json<CompletionRequest>,
 ) -> Result<Json<CompletionResponse>, AppError> {
     info!("Completion request: {}", req.prompt);
 
-    let engine = state.engine.read().await;
+    let engine = engine.read().await;
     let max_tokens = req.max_tokens.unwrap_or(100);
     let mut sampling = SamplingParams::default();
     if let Some(v) = req.temperature {
@@ -323,7 +366,7 @@ async fn completions(
 
 /// Build chat prompt using various popular formats
 /// You can set CHAT_TEMPLATE env var to: chatml, llama3, alpaca, or simple (default)
-fn build_chat_prompt(messages: &[ChatMessage]) -> String {
+pub(crate) fn build_chat_prompt(messages: &[ChatMessage]) -> String {
     let template = std::env::var("CHAT_TEMPLATE").unwrap_or_else(|_| "simple".to_string());
 
     match template.to_lowercase().as_str() {
@@ -335,7 +378,7 @@ fn build_chat_prompt(messages: &[ChatMessage]) -> String {
 }
 
 /// ChatML format (Qwen, GPT-4, etc.)
-fn build_chatml_prompt(messages: &[ChatMessage]) -> String {
+pub(crate) fn build_chatml_prompt(messages: &[ChatMessage]) -> String {
     let mut prompt = String::new();
     for msg in messages {
         prompt.push_str(&format!(
@@ -348,7 +391,7 @@ fn build_chatml_prompt(messages: &[ChatMessage]) -> String {
 }
 
 /// Llama 3 format
-fn build_llama3_prompt(messages: &[ChatMessage]) -> String {
+pub(crate) fn build_llama3_prompt(messages: &[ChatMessage]) -> String {
     let mut prompt = String::from("<|begin_of_text|>");
     for msg in messages {
         prompt.push_str(&format!(
@@ -361,7 +404,7 @@ fn build_llama3_prompt(messages: &[ChatMessage]) -> String {
 }
 
 /// Alpaca/Vicuna format (broad compatibility)
-fn build_alpaca_prompt(messages: &[ChatMessage]) -> String {
+pub(crate) fn build_alpaca_prompt(messages: &[ChatMessage]) -> String {
     let mut prompt = String::new();
     for msg in messages {
         match msg.role.as_str() {
@@ -376,7 +419,7 @@ fn build_alpaca_prompt(messages: &[ChatMessage]) -> String {
 }
 
 /// Simple format (most universal, works with almost any model)
-fn build_simple_prompt(messages: &[ChatMessage]) -> String {
+pub(crate) fn build_simple_prompt(messages: &[ChatMessage]) -> String {
     let mut prompt = String::new();
     for msg in messages {
         prompt.push_str(&format!(

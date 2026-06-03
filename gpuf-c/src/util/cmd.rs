@@ -116,6 +116,10 @@ pub struct Args {
     #[arg(long, default_value_t = 8192, help = "Context window size in tokens")]
     pub n_ctx: u32,
 
+    /// Batch size for prompt processing (default: 4096)
+    #[arg(long, default_value_t = 4096, help = "Batch size for prompt processing")]
+    pub n_batch: u32,
+
     #[arg(
         long,
         default_value = "layer",
@@ -210,6 +214,7 @@ impl Args {
                 standalone_llama: false, // Config file doesn't support standalone mode
                 llama_model_path: None,
                 n_ctx: config_data.client.n_ctx,
+                n_batch: self.n_batch,
                 n_gpu_layers: config_data.client.n_gpu_layers,
                 llama_split_mode,
                 llama_main_gpu: config_data.client.llama_main_gpu.unwrap_or(self.llama_main_gpu),

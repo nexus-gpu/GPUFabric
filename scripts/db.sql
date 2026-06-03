@@ -311,62 +311,8 @@ BEGIN
 END
 $$;
 
-UPDATE device_types
-SET
-    points_multiplier = (tflops / NULLIF((SELECT tflops FROM device_types WHERE device_id = 9860), 0)),
-    updated_at = NOW()
-WHERE points_multiplier = 1.0
-  AND tflops > 0
-  AND (SELECT tflops FROM device_types WHERE device_id = 9860) > 0;
-
-DROP MATERIALIZED VIEW IF EXISTS device_points_daily;
-DROP TABLE IF EXISTS device_points_daily;
-
-CREATE MATERIALIZED VIEW IF NOT EXISTS device_points_daily AS
-SELECT
-    s.client_id,
-    s.device_index,
-    s.date,
-    s.total_heartbeats,
-    di.device_id,
-    dt.device_name,
-    dt.tflops,
-    COALESCE(dt.points_multiplier, 1.0) AS multiplier,
-    s.base_hours,
-    (s.base_hours::NUMERIC * COALESCE(dt.points_multiplier, 1.0)) AS points,
-    NOW() AS refreshed_at
-FROM (
-    SELECT
-        dds.client_id,
-        dds.device_index,
-        dds.date,
-        dds.total_heartbeats,
-        ((dds.total_heartbeats::BIGINT * COALESCE(hcd.heartbeat_interval_secs, 120)::BIGINT) / 3600) AS base_hours
-    FROM device_daily_stats dds
-    LEFT JOIN heartbeat_config_daily hcd
-        ON hcd.date = dds.date
-) s
-LEFT JOIN device_info di
-    ON di.client_id = s.client_id
-   AND di.device_index = s.device_index
-LEFT JOIN device_types dt
-    ON dt.device_id = di.device_id;
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_device_points_daily_pk
-ON device_points_daily (client_id, device_index, date);
-
-CREATE INDEX IF NOT EXISTS idx_device_points_daily_date ON device_points_daily (date);
-CREATE INDEX IF NOT EXISTS idx_device_points_daily_client_id ON device_points_daily (client_id);
-CREATE INDEX IF NOT EXISTS idx_device_points_daily_device_index ON device_points_daily (device_index);
-
-CREATE OR REPLACE FUNCTION refresh_device_points_daily()
-RETURNS void
-LANGUAGE plpgsql
-AS $$
-BEGIN
-    REFRESH MATERIALIZED VIEW device_points_daily;
-END;
-$$;
+-- Device points daily migration and incremental refresh
+-- See: scripts/device_points_daily_incremental.sql
 
 -- Insert test data for client_models
 -- engine_type: 1=Ollama, 2=Vllm, 3=TensorRT, 4=ONNX, 5=None, 6=Llama

@@ -290,13 +290,13 @@ impl PhaseSplitter {
             ("final:", OutputPhase::Final),
             ("final", OutputPhase::Final),
             ("### Answer", OutputPhase::Final),
-            ("### 思考", OutputPhase::Analysis),
-            ("思考：", OutputPhase::Analysis),
-            ("分析：", OutputPhase::Analysis),
+            ("### Reasoning", OutputPhase::Analysis),
+            ("Reasoning:", OutputPhase::Analysis),
+            ("Analysis:", OutputPhase::Analysis),
             ("analysis:", OutputPhase::Analysis),
             ("analysis", OutputPhase::Analysis),
-            ("### 答案", OutputPhase::Final),
-            ("答案：", OutputPhase::Final),
+            ("### Answer", OutputPhase::Final),
+            ("Answer:", OutputPhase::Final),
         ] {
             if rest.starts_with(pat) {
                 if (pat == "analysis" || pat == "final")
@@ -332,9 +332,9 @@ impl PhaseSplitter {
             "<final>", "</final>",
             "### Final", "Final:", "### Answer",
             "final:", "final",
-            "### 思考", "思考：", "分析：",
+            "### Reasoning", "Reasoning:", "Analysis:",
             "analysis:", "analysis",
-            "### 答案", "答案：",
+            "### Answer", "Answer:",
         ];
         let max_len = markers.iter().map(|s| s.len()).max().unwrap_or(0);
 
