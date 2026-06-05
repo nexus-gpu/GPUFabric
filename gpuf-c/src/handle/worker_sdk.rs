@@ -31,7 +31,7 @@ fn emit_callback(callback: Option<extern "C" fn(*const c_char, *mut c_void)>, ms
     let Ok(cmsg) = std::ffi::CString::new(msg) else {
         return;
     };
-    unsafe { cb(cmsg.as_ptr(), std::ptr::null_mut()) };
+    cb(cmsg.as_ptr(), std::ptr::null_mut());
 }
 
 static WORKER_TCP_STREAM: OnceLock<Mutex<Option<Arc<Mutex<MobileControlStream>>>>> =
@@ -111,7 +111,7 @@ pub async fn perform_login_with_tls(
     if let Some(slot) = WORKER_TCP_STREAM.get() {
         if let Ok(mut guard) = slot.lock() {
             if let Some(existing) = guard.take() {
-                if let Ok(mut s) = existing.lock() {
+                if let Ok(s) = existing.lock() {
                     let _ = s.shutdown(std::net::Shutdown::Both);
                 }
             }
@@ -248,7 +248,7 @@ pub async fn start_worker_tasks_with_callback_ptr(
                     Err(_) => "HEARTBEAT - Send failed".to_string(),
                 };
                 if let Ok(cmsg) = std::ffi::CString::new(msg) {
-                    unsafe { cb(cmsg.as_ptr(), std::ptr::null_mut()) };
+                    cb(cmsg.as_ptr(), std::ptr::null_mut());
                 }
             }
 
@@ -587,7 +587,10 @@ fn build_chat_prompt_with_template(messages: &[common::ChatMessage]) -> String {
                 });
             }
 
-            // Try to apply model's built-in template (tmpl=nullptr)
+            // Try to apply model's built-in template (tmpl=nullptr).
+            // SAFETY: `c_messages` points to role/content CStrings owned by
+            // `c_roles`/`c_contents`, all of which live until the call returns.
+            // `buffer` is a valid writable allocation of `buffer.len()` bytes.
             let mut buffer = vec![0u8; 8192]; // 8KB buffer for template
             let result = unsafe {
                 crate::llama_chat_apply_template(
@@ -925,6 +928,10 @@ fn handle_inference_task(
                 return;
             }
 
+            // SAFETY: `user_data` is created from a live `TokenCallbackState`
+            // pointer immediately before calling `gpuf_start_generation_async`.
+            // The generation call is synchronous for this callback and returns
+            // before `cb_state` is dropped, so the pointer remains valid here.
             let state = unsafe { &mut *(user_data as *mut TokenCallbackState) };
 
             // Check if this task has been cancelled
@@ -939,6 +946,8 @@ fn handle_inference_task(
                 }
             }
 
+            // SAFETY: The generation callback contract provides `token` as a
+            // non-null, NUL-terminated C string for the duration of this call.
             let token_str = unsafe { std::ffi::CStr::from_ptr(token).to_str() };
             let Ok(token_str) = token_str else {
                 return;
@@ -1038,6 +1047,9 @@ fn handle_inference_task(
             cancelled: AtomicBool::new(false),
         };
 
+        // SAFETY: `ctx_ptr` is checked above and `prompt_c` remains alive for
+        // the full synchronous generation call. `cb_state` is passed as
+        // `user_data` and is not moved or dropped until the call returns.
         let rc = unsafe {
             gpuf_start_generation_async(
                 ctx_ptr,
