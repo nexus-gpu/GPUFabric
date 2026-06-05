@@ -27,6 +27,7 @@ This guide provides detailed instructions for building GPUFabric Mobile SDK, sup
 - **Xcode**: 14.0+
 - **iOS SDK**: 14.0+
 - **Rust iOS targets**: `aarch64-apple-ios`, `x86_64-apple-ios`
+- **Prebuilt llama.cpp iOS libraries**: expected under `target/llama-ios/<target>/`
 
 ### Optional Tools
 - **UPX**: For compressing .so files (recommended)
@@ -118,13 +119,19 @@ rustup target add aarch64-apple-ios-sim
 
 #### Step 2: Build iOS Libraries
 ```bash
-# Build iOS device libraries
-cargo build --target aarch64-apple-ios --release --features metal
-cargo build --target x86_64-apple-ios --release --features metal
+# Build the merged static libraries and XCFramework.
+# The script defaults to --no-default-features --features ios-sdk so it links
+# the prebuilt llama.cpp archives instead of pulling the default CPU/OpenMP feature.
+./generate_ios_sdk.sh
 
-# Build iOS simulator libraries
-cargo build --target aarch64-apple-ios-sim --release --features metal
+# Optional override for local experiments:
+FEATURES=ios-sdk BUILD_MODE=release ./generate_ios_sdk.sh
 ```
+
+The script writes generated output under `gpuf-c/build_ios/dist/` and temporary
+prebuilt llama output under `gpuf-c/build_llama_ios/`. These are local release
+artifacts and are intentionally ignored by Git; publish them through the release
+artifact process with `SHA256SUMS`, not by committing them.
 
 ## 📁 Output Files
 
@@ -141,13 +148,15 @@ target/
 
 ### iOS Output
 ```
-target/
-├── aarch64-apple-ios/release/
-│   └── libgpuf_c.a               # iOS ARM64 static library
-├── x86_64-apple-ios/release/
-│   └── libgpuf_c.a               # iOS x86_64 static library
-└── aarch64-apple-ios-sim/release/
-    └── libgpuf_c.a               # iOS simulator static library
+gpuf-c/build_ios/dist/
+├── gpuf_c_sdk.xcframework/       # iOS device + simulator XCFramework
+├── include/
+│   ├── gpuf_c.h
+│   └── gpuf_c_minimal.h
+├── libgpuf_c_device.a
+├── libgpuf_c_simulator.a
+├── libgpuf_c_simulator_merged.a
+└── SHA256SUMS
 ```
 
 ### Header Files
@@ -223,7 +232,8 @@ cargo ndk build --release
 
 # Feature selection
 --features vulkan    # GPU acceleration (Android)
---features metal     # GPU acceleration (iOS)  
+--features ios-sdk    # iOS SDK build that links prebuilt llama.cpp archives
+--features metal      # Direct Metal build for local experiments
 --features cpu       # CPU only (best compatibility)
 ```
 

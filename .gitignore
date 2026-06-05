@@ -41,6 +41,8 @@ gpuf-c/build_android/android_test
 
 # gpuf-c iOS build artifacts
 gpuf-c/build_ios/dist/
+gpuf-c/build_ios/package/
+gpuf-c/build_llama_ios/
 gpuf-c/examples/*/DerivedData/
 # Local credentials and generated analysis artifacts
 .claude/

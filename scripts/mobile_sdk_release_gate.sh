@@ -47,7 +47,7 @@ mobile_sources=(
 
 if command -v rg >/dev/null 2>&1; then
   if rg -n --glob '!**/DerivedData/**' \
-    '8\.140\.251\.142|hf_[A-Za-z0-9]{20,}|BEGIN .*PRIVATE KEY|sshpass -p|SharedPreferences|UserDefaults|NSUserDefaults|MODE_PRIVATE|putString\([^)]*(token|password|secret)|setValue\([^)]*(token|password|secret)' \
+    '8[.]140[.]251[.]142|hf_[[:alnum:]]{20,}|BEGIN[[:space:]].*PRIVATE[[:space:]]KEY|sshpass[[:space:]]+-p|SharedPreferences|UserDefaults|NSUserDefaults|MODE_PRIVATE|putString\([^)]*(token|password|secret)|setValue\([^)]*(token|password|secret)' \
     "${mobile_sources[@]}" >"$OUT_DIR/mobile-source-sensitive-grep.txt" 2>&1; then
     fail_gate "mobile source sensitive-pattern grep found forbidden matches"
   fi

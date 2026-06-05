@@ -57,6 +57,7 @@ The 2026-06-04 security remediation keeps the public native SDK signatures compa
 Required integration updates are configuration and release-process changes:
 
 - Verify SDK archives, `.so`, `.a`, `.aar`, and `.xcframework` artifacts against `SHA256SUMS` before copying them into an app.
+- For iOS, build release artifacts with `gpuf-c/generate_ios_sdk.sh`; it defaults to `FEATURES=ios-sdk` and `--no-default-features` so the SDK links prebuilt llama.cpp archives. Treat `gpuf-c/build_ios/dist/`, `gpuf-c/build_ios/package/`, and `gpuf-c/build_llama_ios/` as generated release outputs, not source files.
 - Configure remote worker `serverAddr` explicitly; the SDK no longer falls back to a hardcoded public server.
 - Do not store long-lived API tokens in SharedPreferences, UserDefaults, logs, or plaintext config files. Use Android Keystore/iOS Keychain in production wrappers.
 - Keep TLS certificate validation enabled. Self-signed deployments should use a CA bundle or pinning strategy, not disabled validation. Existing C/JNI `start_remote_worker` / `startRemoteWorker` calls remain available for plaintext compatibility. Production mobile wrappers should preflight CA/SNI/SHA256 pin inputs with `gpuf_validate_mobile_tls_policy` / `RemoteWorker.validateMobileTlsPolicy`, then call the additive TLS start API `start_remote_worker_with_tls` / `RemoteWorker.startRemoteWorkerWithTls`.

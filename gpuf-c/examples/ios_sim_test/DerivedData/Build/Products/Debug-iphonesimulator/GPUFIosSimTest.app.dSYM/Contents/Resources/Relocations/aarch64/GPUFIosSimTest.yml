@@ -1,5 +1,0 @@
----
-triple:          'arm64-apple-darwin'
-binary-path:     '/Users/jack/codedir/GPUFabric/gpuf-c/examples/ios_sim_test/DerivedData/Build/Products/Debug-iphonesimulator/GPUFIosSimTest.app/GPUFIosSimTest'
-relocations:     []
-...

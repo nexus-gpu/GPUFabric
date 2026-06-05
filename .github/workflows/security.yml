@@ -42,7 +42,7 @@ jobs:
       - name: Source security grep gate
         run: |
           ! rg -n --glob '!**/target/**' --glob '!**/DerivedData/**' \
-            '8\.140\.251\.142|hf_[A-Za-z0-9]{20,}|sshpass -p|BEGIN .*PRIVATE KEY|OLLAMA_HOST=0\.0\.0\.0|serde_yaml|serde_yml|Get-FileHash -Algorithm MD5|md5sum|verify_md5' \
+            '8[.]140[.]251[.]142|hf_[[:alnum:]]{20,}|sshpass[[:space:]]+-p|BEGIN[[:space:]].*PRIVATE[[:space:]]KEY|OLLAMA_HOST=0\.0\.0\.0|serde_yaml|serde_yml|Get-FileHash -Algorithm MD5|md5sum|verify_md5' \
             gpuf-c/src gpuf-c/docs gpuf-c/examples gpuf-c/install.sh gpuf-c/install_client.sh gpuf-c/install_client.ps1 gpuf-c/generate_sdk.sh gpuf-c/generate_ios_sdk.sh common/src gpuf-s/src
           ! rg -n --glob '!**/target/**' --glob '!**/DerivedData/**' 'static mut' \
             gpuf-c/src common/src gpuf-s/src

@@ -83,7 +83,7 @@ else
 fi
 
 BUILD_MODE="${BUILD_MODE:-release}"
-FEATURES="${FEATURES:-metal}"
+FEATURES="${FEATURES:-ios-sdk}"
 
 IOS_DEVICE_TARGET="aarch64-apple-ios"
 IOS_SIM_ARM64_TARGET="aarch64-apple-ios-sim"
@@ -158,9 +158,9 @@ rustup target add "$IOS_SIM_X64_TARGET" >/dev/null 2>&1 || true
 echo "🔧 Building iOS device static library ($IOS_DEVICE_TARGET)..."
 cd "$PROJECT_ROOT"
 if [ "$BUILD_MODE" = "release" ]; then
-    cargo rustc --target "$IOS_DEVICE_TARGET" --release --lib --crate-type=staticlib --features "$FEATURES"
+    cargo rustc --target "$IOS_DEVICE_TARGET" --release --lib --crate-type=staticlib --no-default-features --features "$FEATURES"
 else
-    cargo rustc --target "$IOS_DEVICE_TARGET" --lib --crate-type=staticlib --features "$FEATURES"
+    cargo rustc --target "$IOS_DEVICE_TARGET" --lib --crate-type=staticlib --no-default-features --features "$FEATURES"
 fi
 
 DEVICE_LIB="$WORKSPACE_ROOT/target/$IOS_DEVICE_TARGET/$BUILD_MODE/libgpuf_c.a"
@@ -171,9 +171,9 @@ fi
 
 echo "🔧 Building iOS simulator static library ($IOS_SIM_ARM64_TARGET)..."
 if [ "$BUILD_MODE" = "release" ]; then
-    cargo rustc --target "$IOS_SIM_ARM64_TARGET" --release --lib --crate-type=staticlib --features "$FEATURES"
+    cargo rustc --target "$IOS_SIM_ARM64_TARGET" --release --lib --crate-type=staticlib --no-default-features --features "$FEATURES"
 else
-    cargo rustc --target "$IOS_SIM_ARM64_TARGET" --lib --crate-type=staticlib --features "$FEATURES"
+    cargo rustc --target "$IOS_SIM_ARM64_TARGET" --lib --crate-type=staticlib --no-default-features --features "$FEATURES"
 fi
 
 SIM_ARM64_LIB="$WORKSPACE_ROOT/target/$IOS_SIM_ARM64_TARGET/$BUILD_MODE/libgpuf_c.a"
@@ -184,9 +184,9 @@ if rustup target list --installed | grep -q "^$IOS_SIM_X64_TARGET$"; then
     if [ -d "$LLAMA_IOS_SIM_X64_DIR" ]; then
         echo "🔧 Building iOS simulator static library ($IOS_SIM_X64_TARGET)..."
         if [ "$BUILD_MODE" = "release" ]; then
-            cargo rustc --target "$IOS_SIM_X64_TARGET" --release --lib --crate-type=staticlib --features "$FEATURES"
+            cargo rustc --target "$IOS_SIM_X64_TARGET" --release --lib --crate-type=staticlib --no-default-features --features "$FEATURES"
         else
-            cargo rustc --target "$IOS_SIM_X64_TARGET" --lib --crate-type=staticlib --features "$FEATURES"
+            cargo rustc --target "$IOS_SIM_X64_TARGET" --lib --crate-type=staticlib --no-default-features --features "$FEATURES"
         fi
         CANDIDATE="$WORKSPACE_ROOT/target/$IOS_SIM_X64_TARGET/$BUILD_MODE/libgpuf_c.a"
         if [ -f "$CANDIDATE" ]; then

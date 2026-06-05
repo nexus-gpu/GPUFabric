@@ -192,6 +192,8 @@ This checklist helps you track the implementation progress of the mobile SDK.
 - [x] Native SDK public function signatures kept compatible during security remediation
 - [x] Remote worker examples use `127.0.0.1` or `<your-server-host>` placeholders instead of hardcoded public endpoints
 - [x] SDK generation scripts emit SHA256 manifests for release artifacts
+- [x] iOS SDK build defaults to `FEATURES=ios-sdk` with `--no-default-features` for prebuilt llama.cpp archive linking
+- [x] iOS generated artifacts (`build_ios/dist/`, `build_ios/package/`, `build_llama_ios/`, `DerivedData/`) are ignored and removed from the Git index
 - [x] Android/iOS `start_remote_worker` Args construction remains source-compatible with new control TLS fields defaulted off
 - [x] Mobile SDK release gate script records platform evidence and enforces `GPUF_REQUIRE_MOBILE_EVIDENCE=1` before broad mobile distribution
 - [x] C/JNI mobile TLS policy helper validates CA bundle, server name, and SHA256 pin inputs with unit tests

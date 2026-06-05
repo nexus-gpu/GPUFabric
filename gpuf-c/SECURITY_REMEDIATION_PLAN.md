@@ -19,7 +19,7 @@
 
 | 风险点 | 当前命中 |
 |---|---|
-| 硬编码公网服务地址 | `src/handle/worker_sdk.rs` 存在 `8.140.251.142:17000` 回退；`docs/JNI_RemoteWorker_API_CN.md` 和 `examples/ios_sim_test/GPUFIosSimTest/ContentView.swift` 也包含该 IP 示例。 |
+| 硬编码公网服务地址 | `src/handle/worker_sdk.rs` 曾存在 `<legacy-public-endpoint>:17000` 回退；`docs/JNI_RemoteWorker_API_CN.md` 和 `examples/ios_sim_test/GPUFIosSimTest/ContentView.swift` 也曾包含旧公网端点示例。 |
 | 模型下载完整性 | `src/main.rs` 直接从 HuggingFace 下载默认 TinyLlama GGUF 并 `std::fs::write` 到最终路径；`src/util/model_downloader.rs` 的 `checksum` 是 `Option<String>`，未强制。 |
 | 下载落盘/删除保护 | downloader 会对 `output_path` 执行删除和直接写最终文件，未统一限制到 models dir，也未使用校验后原子 rename。 |
 | YAML 依赖 | `Cargo.toml` 使用 `serde_yaml = "0.9.34-deprecated"`；`src/util/config.rs` 仅用于 Docker compose YAML 序列化/反序列化。原计划建议的 `serde_yml` 不能采用，因为 RustSec/OSV 已发布 `RUSTSEC-2025-0068`，标记其 unsound 且 unmaintained。 |
@@ -48,6 +48,7 @@
 | 范围 | 当前状态 | 本地/CI 证据 |
 |---|---|---|
 | P0-1 到 P0-6 | 已实现 | 硬编码公网 IP、MD5 信任路径、deprecated YAML 依赖、裸模型下载、默认公网监听面已收敛；CI 包含 source grep、cargo audit/deny、secret scan gate。 |
+| P0-2 本地产物治理补充 | 已实现 | iOS SDK/Xcode 生成目录 `gpuf-c/build_ios/dist/`、`gpuf-c/build_ios/package/`、`gpuf-c/build_llama_ios/`、`gpuf-c/examples/**/DerivedData/` 已加入忽略规则；已跟踪的 iOS 构建产物从 Git index 移除，后续通过 release artifact + `SHA256SUMS` 分发。 |
 | P1-1 到 P1-8 | 已实现 | standalone API auth/limits、Docker/HF token hardening、P2P HMAC/replay、UDP reassembly 限制、模型路径校验、SSE lifecycle、safe command wrapper 均有 targeted tests 或 grep gate。 |
 | P2-1/P2-2 | 部分完成，平台证据仍为强制 release gate | C/JNI 已新增 `start_remote_worker_with_tls` / `startRemoteWorkerWithTls`，在旧协议外包 TLS，并支持 CA bundle、SNI/server name、SHA256 leaf pin；旧 `start_remote_worker` / `startRemoteWorker` 保持明文兼容。Android arm64 target compile 已在本地 NDK 25.1 下通过；仍需要 Android Keystore/iOS Keychain、权限审计、Android instrumentation、iOS target/simulator/device、ASAN/TSAN 和真机/模拟器 TLS/pinning 握手证据；`scripts/mobile_sdk_release_gate.sh` 已支持 `GPUF_REQUIRE_MOBILE_EVIDENCE=1`，正式移动 SDK release 缺平台证据会失败。 |
 | P2-3/P2-4/P2-6 | 部分完成 | `static mut` 源码 grep 清零；全局状态改锁/原子；TURN/P2P secret redacted/zeroize；`SecurityConfig` 和高危配置告警已落地。 |
@@ -74,7 +75,7 @@ SDK 兼容性结论：当前改动保持 `gpuf-c` 既有公开 C/JNI/移动 SDK 
 **验收**：
 
 ```bash
-rg -n "8\.140\.251\.142|17000" gpuf-c/src gpuf-c/docs gpuf-c/examples --glob '!**/DerivedData/**' --glob '!src/target/**'
+rg -n "8[.]140[.]251[.]142|17000" gpuf-c/src gpuf-c/docs gpuf-c/examples --glob '!**/DerivedData/**' --glob '!src/target/**'
 ```
 
 允许剩余 `17000` 只作为端口说明或 CLI 默认值，不允许和真实公网 IP 组合出现。新增 targeted test：未配置 server addr 时 `start_worker_tasks_with_callback_ptr` 返回错误或 callback fatal，不启动后台 handler。
@@ -88,7 +89,7 @@ rg -n "8\.140\.251\.142|17000" gpuf-c/src gpuf-c/docs gpuf-c/examples --glob '!*
 - `.gitignore` 明确加入 `.claude/`、`.agents/` 中本地授权文件、`gpuf-c/src/target/`、`gpuf-c/examples/**/DerivedData/`、本地 token/env 文件、临时下载 parts/tmp。
 - 执行 secret scan：至少覆盖 `gitleaks detect` 或 `trufflehog git file://...`，并记录版本和命令输出。
 - 对已进入 Git 历史或曾被复制到远程机器的 token/password 执行轮换；不能只删除文件。
-- CI 增加 secret scan gate，拦截 `hf_`、私钥、`sshpass -p`、云凭据、明文 TURN password、`.claude/`。
+- CI 增加 secret scan gate，拦截 HuggingFace token、私钥、`sshpass` 明文密码参数、云凭据、明文 TURN password、`.claude/`。
 
 **验收**：
 
@@ -403,7 +404,7 @@ cargo audit
 cargo deny check advisories
 GPUF_REQUIRE_ARTIFACTS=1 GPUF_REQUIRE_SIGNING=1 GPUF_SIGNING_TOOL=<cosign|minisign|gpg> scripts/security_release_evidence.sh security-release-evidence <artifact-dir>
 GPUF_REQUIRE_MOBILE_EVIDENCE=1 scripts/mobile_sdk_release_gate.sh security-release-evidence/mobile-sdk <mobile-evidence-dir>
-rg -n "8\.140\.251\.142|hf_[A-Za-z0-9]{20,}|sshpass -p|BEGIN .*PRIVATE KEY|OLLAMA_HOST=0\.0\.0\.0" gpuf-c/src gpuf-c/docs gpuf-c/examples gpuf-c/install.sh gpuf-c/install_client.sh gpuf-c/install_client.ps1 gpuf-c/generate_sdk.sh gpuf-c/generate_ios_sdk.sh .github --glob '!**/target/**' --glob '!**/DerivedData/**'
+rg -n "8[.]140[.]251[.]142|hf_[[:alnum:]]{20,}|sshpass[[:space:]]+-p|BEGIN[[:space:]].*PRIVATE[[:space:]]KEY|OLLAMA_HOST=0\.0\.0\.0" gpuf-c/src gpuf-c/docs gpuf-c/examples gpuf-c/install.sh gpuf-c/install_client.sh gpuf-c/install_client.ps1 gpuf-c/generate_sdk.sh gpuf-c/generate_ios_sdk.sh .github --glob '!**/target/**' --glob '!**/DerivedData/**'
 gitleaks detect --source . --redact
 ```
 

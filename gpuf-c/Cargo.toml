@@ -91,6 +91,9 @@ cocoa = "0.25"
 [features]
 default = ["cpu"]
 
+# iOS SDK links prebuilt llama.cpp static libraries from target/llama-ios.
+ios-sdk = []
+
 # CPU only
 cpu = ["llama-cpp-2/openmp"]
 
