@@ -187,6 +187,23 @@ This checklist helps you track the implementation progress of the mobile SDK.
 - [ ] Update main README
 - [ ] Release announcement
 
+## 🔒 Security Remediation Status (2026-06-05)
+
+- [x] Native SDK public function signatures kept compatible during security remediation
+- [x] Remote worker examples use `127.0.0.1` or `<your-server-host>` placeholders instead of hardcoded public endpoints
+- [x] SDK generation scripts emit SHA256 manifests for release artifacts
+- [x] Android/iOS `start_remote_worker` Args construction remains source-compatible with new control TLS fields defaulted off
+- [x] Mobile SDK release gate script records platform evidence and enforces `GPUF_REQUIRE_MOBILE_EVIDENCE=1` before broad mobile distribution
+- [x] C/JNI mobile TLS policy helper validates CA bundle, server name, and SHA256 pin inputs with unit tests
+- [x] Additive C/JNI mobile remote worker TLS transport documented: `start_remote_worker_with_tls` / `startRemoteWorkerWithTls`
+- [ ] Android Keystore storage for long-lived credentials
+- [ ] iOS Keychain storage for long-lived credentials
+- [x] Android arm64 target compile with NDK 25.1 (`cargo check -p gpuf-c --lib --target aarch64-linux-android`)
+- [ ] iOS target compile plus Android/iOS device/simulator TLS pinning handshake evidence
+- [ ] Android instrumentation lifecycle/security matrix
+- [ ] iOS simulator/device lifecycle/security matrix
+- [ ] ASAN/TSAN platform runs for callback and FFI lifecycle tests
+
 ## 📊 Progress Tracking
 
 ### Overall Progress
@@ -262,5 +279,5 @@ If you have questions:
 
 ---
 
-**Last Updated**: 2024-11-17
+**Last Updated**: 2026-06-04
 **Maintainer**: GPUFabric Team

@@ -95,6 +95,54 @@ INCLUDE_DIR="$DIST_DIR/include"
 
 mkdir -p "$BUILD_DIR" "$DIST_DIR" "$INCLUDE_DIR"
 
+sha256_manifest_line() {
+    local base_dir="$1"
+    local rel_path="$2"
+
+    if command -v sha256sum >/dev/null 2>&1; then
+        (cd "$base_dir" && sha256sum "$rel_path")
+        return 0
+    fi
+
+    if command -v shasum >/dev/null 2>&1; then
+        (cd "$base_dir" && shasum -a 256 "$rel_path")
+        return 0
+    fi
+
+    if command -v openssl >/dev/null 2>&1; then
+        local hash
+        hash=$(cd "$base_dir" && openssl dgst -sha256 "$rel_path" | awk '{print $NF}')
+        printf '%s  %s\n' "$hash" "$rel_path"
+        return 0
+    fi
+
+    echo "❌ No SHA256 tool available (need sha256sum, shasum, or openssl)"
+    exit 1
+}
+
+write_sha256_manifest() {
+    local manifest="$1"
+    shift
+
+    : > "$manifest"
+    for item in "$@"; do
+        if [ -f "$item" ]; then
+            sha256_manifest_line "$(dirname "$item")" "$(basename "$item")" >> "$manifest"
+        elif [ -d "$item" ]; then
+            local parent
+            local dir_name
+            parent="$(dirname "$item")"
+            dir_name="$(basename "$item")"
+            while IFS= read -r -d '' rel_path; do
+                sha256_manifest_line "$parent" "$rel_path" >> "$manifest"
+            done < <(cd "$parent" && find "$dir_name" -type f -print0 | sort -z)
+        else
+            echo "❌ Cannot hash missing release artifact: $item"
+            exit 1
+        fi
+    done
+}
+
 if [ -f "$PROJECT_ROOT/gpuf_c_minimal.h" ]; then
     cp "$PROJECT_ROOT/gpuf_c_minimal.h" "$INCLUDE_DIR/"
 fi
@@ -225,6 +273,15 @@ xcodebuild -create-xcframework \
     -library "$MERGED_SIM_LIB" -headers "$INCLUDE_DIR" \
     -output "$XCFRAMEWORK_OUT"
 
+write_sha256_manifest \
+    "$DIST_DIR/SHA256SUMS" \
+    "$MERGED_DEVICE_LIB" \
+    "$MERGED_SIM_LIB" \
+    "$XCFRAMEWORK_OUT"
+sha256_manifest_line "$DIST_DIR" "libgpuf_c_device.a" > "$DIST_DIR/libgpuf_c_device.a.sha256"
+sha256_manifest_line "$DIST_DIR" "libgpuf_c_simulator_merged.a" > "$DIST_DIR/libgpuf_c_simulator_merged.a.sha256"
+
 echo "✅ iOS SDK build completed!"
 echo "📦 XCFramework: $XCFRAMEWORK_OUT"
 echo "📁 Headers: $INCLUDE_DIR"
+echo "🔒 SHA256 manifest: $DIST_DIR/SHA256SUMS"

@@ -19,8 +19,9 @@ use redis::Client as RedisClient;
 use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Postgres};
 use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::net::{tcp::OwnedWriteHalf, TcpStream};
+use std::sync::{Arc, Once};
+use tokio::io::AsyncWrite;
+use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use tracing::{error, info};
@@ -29,9 +30,24 @@ pub type UserDb = Arc<Mutex<HashMap<String, User>>>;
 pub type TokenDb = Arc<Mutex<HashMap<String, String>>>;
 pub type ActiveClients = Arc<Mutex<HashMap<ClientId, ClientInfo>>>;
 pub type PendingConnections = Arc<Mutex<HashMap<ProxyConnId, (TcpStream, BytesMut)>>>;
+pub type ControlWriter = Box<dyn AsyncWrite + Send + Unpin>;
+
+pub fn install_rustls_crypto_provider_once() {
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        #[cfg(feature = "aws_lc_rs")]
+        {
+            let _ = tokio_rustls::rustls::crypto::aws_lc_rs::default_provider().install_default();
+        }
+        #[cfg(feature = "ring")]
+        {
+            let _ = tokio_rustls::rustls::crypto::ring::default_provider().install_default();
+        }
+    });
+}
 
 pub struct ClientInfo {
-    pub writer: Arc<Mutex<OwnedWriteHalf>>,
+    pub writer: Arc<Mutex<ControlWriter>>,
     pub authed: bool,
     #[allow(dead_code)] // Client protocol version
     pub version: u32,
@@ -74,6 +90,7 @@ pub struct ServerConfig {
     pub proxy_port: u16,
     pub public_port: u16,
     pub api_port: u16,
+    pub control_tls: bool,
 }
 
 #[derive(Clone)]
@@ -172,6 +189,7 @@ pub async fn new_server_state(args: &cmd::Args) -> Result<ServerState, anyhow::E
             proxy_port: args.proxy_port,
             public_port: args.public_port,
             api_port: args.api_port,
+            control_tls: args.control_tls,
         },
         buffer_pool: Arc::new(BufferPool::new(8 * 1024, 16)),
         db_pool: db_pool.clone(),

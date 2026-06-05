@@ -58,7 +58,11 @@ pub async fn insert_client(
         error!("Invalid user_id or client_id");
         return Err(StatusCode::BAD_REQUEST);
     }
-    info!("Inserting client: {:?}", payload);
+    info!(
+        "Inserting client for user_id_len={} client_id_len={}",
+        payload.user_id.len(),
+        payload.client_id.len()
+    );
 
     let client_id = match payload.client_id.parse::<ClientId>() {
         Ok(client_id) => client_id,
@@ -369,8 +373,11 @@ pub async fn get_model_download_progress(
             }
 
             info!(
-                "Model download progress for client {}: {:?}",
-                query.client_id, response
+                "Model download progress fetched (client_id_len={}, model_present={}, status_present={}, error_present={})",
+                query.client_id.len(),
+                response.model_name.is_some(),
+                response.status.is_some(),
+                response.error.is_some()
             );
             Ok(Json(ApiResponse::success(response)))
         }

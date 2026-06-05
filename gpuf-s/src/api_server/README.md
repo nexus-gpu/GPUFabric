@@ -1,3 +1,20 @@
+# gpuf-s API Server
+
+## Security Defaults
+
+The standalone management API binds to loopback by default:
+
+```bash
+cargo run --release -p gpuf-s --bin api_server -- \
+  --bind-addr 127.0.0.1 \
+  --port 18081 \
+  --database-url "$DATABASE_URL" \
+  --redis-url "redis://127.0.0.1:6379"
+```
+
+Use `--bind-addr 0.0.0.0` only behind a reverse proxy, firewall, TLS, and deployment access control. Frontend integration details live in `../../../docs/api_server.md` and `../../../gui/doc.md`.
+This management API is independent of gpuf-s worker control TLS. Remote worker deployments should enable `gpuf-s --control-tls` separately on the main server process. Mobile native TLS worker startup is exposed through the gpuf-c SDK and does not change frontend REST integration.
+
 ## API Documentation
 
 The server provides a comprehensive RESTful API for monitoring and management:

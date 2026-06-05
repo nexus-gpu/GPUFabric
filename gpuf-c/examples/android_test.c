@@ -51,7 +51,7 @@ int main() {
     // Test 2: Start remote worker
     printf("\n📡 Test 2: Starting remote worker...\n");
     result = start_remote_worker(
-        "8.140.251.142",  // server_addr (remote server in China)
+        "127.0.0.1",  // server_addr placeholder; configure explicitly for integration tests
         17000,        // control_port
         17001,        // proxy_port
         "TCP",        // worker_type
@@ -134,7 +134,7 @@ int main() {
     // Test 7: Continuous monitoring for inference requests
     printf("\n🔍 Test 7: Continuous monitoring for remote inference requests...\n");
     printf("📡 Android device is now ready to receive inference tasks!\n");
-    printf("🌐 Send requests to: http://8.140.251.142:8081/v1/completions\n");
+    printf("🌐 Send requests to: http://<your-server-host>:8081/v1/completions\n");
     printf("⏱️  Monitoring for 1 hour (3600 seconds)...\n");
     printf("📊 Status updates every 30 seconds:\n\n");
     
@@ -173,7 +173,7 @@ int main() {
     // Test 2: Start remote worker
     printf("\n📡 Test 2: Starting remote worker...\n");
     result = start_remote_worker(
-        "8.140.251.142",  // server_addr (remote server in China)
+        "127.0.0.1",  // server_addr placeholder; configure explicitly for integration tests
         17000,        // control_port
         17001,        // proxy_port
         "TCP",        // worker_type

@@ -9,21 +9,27 @@ use bytes::BytesMut;
 use std::collections::HashMap;
 
 use anyhow::{anyhow, Result};
-use common::{format_bytes, os_type_str, CommandV2, DownloadStatus, Model, OsType, PodModel};
+use common::{
+    format_bytes, os_type_str, CommandV2, DataPlaneSecret, DownloadStatus, Model, OsType, PodModel,
+    RedactedString,
+};
 use redis::AsyncCommands;
 use redis::Client as RedisClient;
 use sqlx::{Pool, Postgres};
 use std::sync::Arc;
 
-use tokio::net::{tcp::OwnedWriteHalf, TcpListener};
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::net::TcpListener;
 
 use bincode::config;
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use std::time::Duration;
+use tokio_rustls::{rustls::server::ServerConfig as RustlsServerConfig, TlsAcceptor};
 use tracing::{debug, error, info, warn};
 
 use base64::Engine;
 use hmac::{Hmac, Mac};
+use rand::RngCore;
 use sha1::Sha1;
 
 #[cfg(unix)]
@@ -36,9 +42,28 @@ use tokio::net::TcpStream;
 
 impl ServerState {
     pub async fn handle_client_connections(self: Arc<Self>, listener: TcpListener) -> Result<()> {
+        let acceptor = if self.config.control_tls {
+            install_rustls_crypto_provider_once();
+            let server_config = RustlsServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(self.cert_chain.to_vec(), self.priv_key.clone_key())?;
+            Some(TlsAcceptor::from(Arc::new(server_config)))
+        } else {
+            None
+        };
+
         loop {
             let (stream, addr) = listener.accept().await?;
-            info!("New control connection from: {}", addr);
+            info!(
+                "New control connection from: {} (tls={})",
+                addr,
+                acceptor.is_some()
+            );
+            if let Err(_e) = set_keepalive(&stream) {
+                error!("handle_single_client set_keepalive err");
+                continue;
+            }
+
             let active_clients_clone = self.active_clients.clone();
             let db_pool_clone = self.db_pool.clone();
             let redis_client_clone = self.redis_client.clone();
@@ -46,9 +71,36 @@ impl ServerState {
             let hot_models = self.hot_models.clone();
             let producer: Arc<FutureProducer> = self.producer.clone();
             let server_state_clone = self.clone();
+            let acceptor = acceptor.clone();
             tokio::spawn(async move {
+                let streams: Result<(
+                    Box<dyn AsyncRead + Send + Unpin>,
+                    Box<dyn AsyncWrite + Send + Unpin>,
+                )> = if let Some(acceptor) = acceptor {
+                    match acceptor.accept(stream).await {
+                        Ok(tls_stream) => {
+                            let (reader, writer) = tokio::io::split(tls_stream);
+                            Ok((Box::new(reader), Box::new(writer)))
+                        }
+                        Err(e) => Err(anyhow!("control TLS accept failed: {}", e)),
+                    }
+                } else {
+                    let (reader, writer) = stream.into_split();
+                    Ok((Box::new(reader), Box::new(writer)))
+                };
+
+                let (reader, writer) = match streams {
+                    Ok(streams) => streams,
+                    Err(e) => {
+                        error!("Error preparing control stream {}: {}", addr, e);
+                        return;
+                    }
+                };
+
                 if let Err(e) = handle_single_client(
-                    stream,
+                    reader,
+                    writer,
+                    addr,
                     active_clients_clone,
                     client_models,
                     hot_models,
@@ -93,7 +145,9 @@ fn set_keepalive(_stream: &TcpStream) -> std::io::Result<()> {
 }
 
 async fn handle_single_client(
-    stream: TcpStream,
+    mut reader: Box<dyn AsyncRead + Send + Unpin>,
+    writer: Box<dyn AsyncWrite + Send + Unpin>,
+    addr: std::net::SocketAddr,
     active_clients: ActiveClients,
     _client_models: Arc<ClientModelClass>,
     hot_models: Arc<HotModelClass>,
@@ -102,13 +156,7 @@ async fn handle_single_client(
     redis_client: Arc<RedisClient>,
     server_state: Arc<crate::handle::ServerState>,
 ) -> Result<()> {
-    if let Err(_e) = set_keepalive(&stream) {
-        error!("handle_single_client set_keepalive err");
-        return Ok(());
-    }
-    let (mut reader, writer) = stream.into_split();
     let writer = Arc::new(Mutex::new(writer));
-    let addr = reader.peer_addr().expect("Failed to get peer address");
 
     let mut authed = false;
     let mut session_client_id = ClientId([0; 16]);
@@ -126,7 +174,10 @@ async fn handle_single_client(
                 device_total_tflops,
                 devices_info,
             })) => {
-                info!("Registration attempt for client_id: {:?}", id);
+                info!(
+                    "Registration attempt for client {}",
+                    ClientId(id).log_label()
+                );
                 debug!(
                     "Registration attempt for devices_info: {:?} device_total_tflops {}",
                     devices_info, device_total_tflops
@@ -179,7 +230,10 @@ async fn handle_single_client(
                 device_count,
                 devices_info,
             })) => {
-                info!("Heartbeat received from client {}", hex::encode(id));
+                info!(
+                    "Heartbeat received from client {}",
+                    ClientId(id).log_label()
+                );
                 handle_heartbeat(
                     &producer,
                     &ClientId(id),
@@ -199,7 +253,7 @@ async fn handle_single_client(
             })) => {
                 info!(
                     "Model status received from client {} pod num {}",
-                    hex::encode(id),
+                    ClientId(id).log_label(),
                     auto_models_device.len()
                 );
 
@@ -246,7 +300,7 @@ async fn handle_single_client(
                 info!(
                     "Received inference result for task {} from device {}",
                     task_id,
-                    hex::encode(&session_client_id.0)
+                    session_client_id.log_label()
                 );
                 // Route result to inference scheduler to complete HTTP response
                 server_state
@@ -309,27 +363,27 @@ async fn handle_single_client(
 
                 if !is_noisy_pending {
                     info!(
-                        "Model download progress from client {}: model={}, progress={:.1}%, downloaded={}/{}, speed={}/s, status={:?}, error={:?}",
-                        ClientId(id),
+                        "Model download progress from client {}: model={}, progress={:.1}%, downloaded={}/{}, speed={}/s, status={:?}, error_present={}",
+                        ClientId(id).log_label(),
                         model_name,
                         percentage,
                         format_bytes!(downloaded_bytes),
                         format_bytes!(total_bytes),
                         format_bytes!(speed_bps),
                         status,
-                        error
+                        error.is_some()
                     );
                 } else {
                     debug!(
-                        "Model download progress from client {}: model={}, progress={:.1}%, downloaded={}/{}, speed={}/s, status={:?}, error={:?}",
-                        ClientId(id),
+                        "Model download progress from client {}: model={}, progress={:.1}%, downloaded={}/{}, speed={}/s, status={:?}, error_present={}",
+                        ClientId(id).log_label(),
                         model_name,
                         percentage,
                         format_bytes!(downloaded_bytes),
                         format_bytes!(total_bytes),
                         format_bytes!(speed_bps),
                         status,
-                        error
+                        error.is_some()
                     );
                 }
 
@@ -412,6 +466,9 @@ async fn handle_single_client(
                 let password =
                     base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes());
 
+                let mut data_plane_secret = [0u8; 32];
+                rand::rngs::OsRng.fill_bytes(&mut data_plane_secret);
+
                 let stun_urls = vec![format!("stun:{}:{}", turn_host, stun_port)];
                 let turn_urls = vec![format!(
                     "turn:{}:{}?transport=udp",
@@ -424,7 +481,8 @@ async fn handle_single_client(
                     stun_urls: stun_urls.clone(),
                     turn_urls: turn_urls.clone(),
                     turn_username: username.clone(),
-                    turn_password: password.clone(),
+                    turn_password: RedactedString::from(password.clone()),
+                    data_plane_secret: DataPlaneSecret(data_plane_secret),
                     expires_at,
                     force_tls: false,
                 });
@@ -435,7 +493,8 @@ async fn handle_single_client(
                     stun_urls,
                     turn_urls,
                     turn_username: username,
-                    turn_password: password,
+                    turn_password: RedactedString::from(password),
+                    data_plane_secret: DataPlaneSecret(data_plane_secret),
                     expires_at,
                     force_tls: false,
                 });
@@ -516,13 +575,13 @@ async fn handle_login(
     os_type: OsType,
     devices_info: Vec<DevicesInfo>,
     system_info: SystemInfo,
-    writer: &Arc<Mutex<OwnedWriteHalf>>,
+    writer: &Arc<Mutex<ControlWriter>>,
     authed: &mut bool,
 ) -> Result<CommandV1> {
-    info!("Registration attempt for client_id: {}", client_id);
+    info!("Registration attempt for client {}", client_id.log_label());
     let mut clients = active_clients.lock().await;
     if clients.contains_key(&client_id) {
-        warn!("Client ID {:?} already registered.", client_id);
+        warn!("Client {} already registered.", client_id.log_label());
         return Err(anyhow!("Client ID already registered"));
     }
     debug!("Login os_type: {:?}", &os_type_str(&os_type).unwrap());
@@ -536,7 +595,7 @@ async fn handle_login(
     .await?;
 
     let validate_result = if is_valid {
-        info!("Client {} registered successfully", client_id);
+        info!("Client {} registered successfully", client_id.log_label());
         *authed = true;
 
         // Only recommend models if auto_models is enabled
@@ -560,8 +619,16 @@ async fn handle_login(
     };
 
     debug!(
-        "Client {} No compatible models {:#?}",
-        client_id, validate_result
+        "Client {} login result success={} pod_count={}",
+        client_id.log_label(),
+        matches!(
+            validate_result,
+            CommandV1::LoginResult { success: true, .. }
+        ),
+        match &validate_result {
+            CommandV1::LoginResult { pods_model, .. } => pods_model.len(),
+            _ => 0,
+        }
     );
 
     clients.insert(
@@ -668,7 +735,7 @@ async fn handle_heartbeat(
     device_count: u32,
     total_tflops: u32,
 ) {
-    debug!("Sending heartbeat to consumer client_id {} cpu_usage {}%  memory_usage {}% disk_usage {}% device_memtotal_gb {} GB device_count {} total_tflops {} tflops", client_id, system_info.cpu_usage, system_info.memory_usage, system_info.disk_usage, device_memtotal_gb, device_count, total_tflops);
+    debug!("Sending heartbeat to consumer client {} cpu_usage {}% memory_usage {}% disk_usage {}% device_memtotal_gb {} GB device_count {} total_tflops {} tflops", client_id.log_label(), system_info.cpu_usage, system_info.memory_usage, system_info.disk_usage, device_memtotal_gb, device_count, total_tflops);
 
     let heartbeat_message = HeartbeatMessage {
         client_id: client_id.clone(),
@@ -731,7 +798,7 @@ async fn update_model_download_progress_in_redis(
         } else {
             info!(
                 "Deleted model download progress from Redis for client {}",
-                client_id
+                client_id.log_label()
             );
         }
         return;

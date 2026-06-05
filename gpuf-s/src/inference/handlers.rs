@@ -193,7 +193,7 @@ pub async fn handle_completion(
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
 
-    debug!("Request-ID: {:?}", request_id);
+    debug!("Request-ID present: {}", request_id.is_some());
 
     let target_client_id = match headers
         .get("x-target-client-id")
@@ -464,7 +464,7 @@ pub async fn handle_chat_completion(
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
 
-    debug!("Request-ID: {:?}", request_id);
+    debug!("Request-ID present: {}", request_id.is_some());
 
     let target_client_id = match headers
         .get("x-target-client-id")
@@ -524,7 +524,7 @@ pub async fn handle_chat_completion(
             .as_ref()
             .map(std::slice::from_ref)
             .unwrap_or(auth.client_ids.as_slice());
-        debug!("Allowed IDs: {:?}", allowed_ids);
+        debug!("Allowed client count: {}", allowed_ids.len());
         let stream_res = gateway
             .scheduler
             .execute_chat_inference_stream(

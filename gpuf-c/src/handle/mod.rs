@@ -1,8 +1,8 @@
 pub mod android_sdk;
-pub mod worker_sdk;
 pub mod handle_tcp;
 pub mod handle_udp;
 pub mod handle_ws;
+pub mod worker_sdk;
 use crate::util::cmd::{Args, EngineType, WorkerType};
 use crate::util::log_icon;
 use crate::util::network_info::SessionNetworkMonitor;
@@ -20,8 +20,7 @@ use std::future::Future;
 #[allow(unused_imports)]
 use std::marker::PhantomData;
 use std::sync::Arc;
-use tokio::io::{ReadHalf, WriteHalf};
-use tokio::net::TcpStream;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_tungstenite::{tungstenite::Message, WebSocketStream};
 // LLM engine is not available in lightweight Android version
 #[cfg(not(target_os = "android"))]
@@ -37,10 +36,21 @@ pub trait WorkerHandle: Send + Sync {
     fn heartbeat_task(&self) -> impl Future<Output = Result<()>> + Send;
 }
 
+pub type ControlReader = Box<dyn AsyncRead + Send + Unpin>;
+pub type ControlWriter = Box<dyn AsyncWrite + Send + Unpin>;
+
+#[cfg(not(target_os = "android"))]
+pub fn install_rustls_crypto_provider_once() {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        let _ = tokio_rustls::rustls::crypto::ring::default_provider().install_default();
+    });
+}
+
 pub struct ClientWorker {
     addr: std::net::IpAddr,
-    reader: Arc<Mutex<ReadHalf<TcpStream>>>,
-    writer: Arc<Mutex<WriteHalf<TcpStream>>>,
+    reader: Arc<Mutex<ControlReader>>,
+    writer: Arc<Mutex<ControlWriter>>,
     system_info: Arc<SystemInfo>,
     devices_info: Arc<Vec<DevicesInfo>>,
     device_memtotal_gb: u32,
@@ -121,7 +131,10 @@ impl WorkerHandle for AutoWorker {
 }
 
 pub async fn new_worker(args: Args) -> AutoWorker {
-    info!("{} new_worker: Starting worker creation...", log_icon("🔧", "[INIT]"));
+    info!(
+        "{} new_worker: Starting worker creation...",
+        log_icon("🔧", "[INIT]")
+    );
     // TODO: IPC shared memory should be selected
     loop {
         info!(
@@ -131,7 +144,10 @@ pub async fn new_worker(args: Args) -> AutoWorker {
         );
         match args.worker_type {
             WorkerType::TCP => {
-                info!("{} new_worker: Creating TCP worker...", log_icon("📡", "[TCP]"));
+                info!(
+                    "{} new_worker: Creating TCP worker...",
+                    log_icon("📡", "[TCP]")
+                );
                 match TCPWorker::new(args.clone()).await {
                     Ok(worker) => {
                         info!(
@@ -149,7 +165,10 @@ pub async fn new_worker(args: Args) -> AutoWorker {
                 }
             }
             WorkerType::WS => {
-                info!("{} new_worker: Creating WS worker...", log_icon("🌐", "[WS]"));
+                info!(
+                    "{} new_worker: Creating WS worker...",
+                    log_icon("🌐", "[WS]")
+                );
                 match WSWorker::new(args.clone()).await {
                     Ok(worker) => {
                         info!(

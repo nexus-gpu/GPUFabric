@@ -1,6 +1,6 @@
 -- Update device_types with accurate TFLOPS values
 -- Run this on your PostgreSQL database to update existing records
--- Test environment: postgres://postgres_test:pwd_postgres_aliyun_test1234@8.140.251.142:5432/aliyun_test
+-- Example: psql "$DATABASE_URL" -f scripts/update_device_tflops.sql
 
 -- Apple devices
 UPDATE device_types SET tflops = 2.6 WHERE device_id = 1;

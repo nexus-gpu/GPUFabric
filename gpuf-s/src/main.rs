@@ -13,7 +13,7 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 #[cfg(target_os = "linux")]
 use tokio::signal::unix::{signal, SignalKind};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 #[cfg(debug_assertions)]
 #[global_allocator]
@@ -34,9 +34,14 @@ async fn main() -> Result<()> {
     let proxy_listener = TcpListener::bind(format!("0.0.0.0:{}", args.proxy_port)).await?;
     let public_listener = TcpListener::bind(format!("0.0.0.0:{}", args.public_port)).await?;
     info!(
-        "gpuf-server listening on ports: Control={}, Proxy={}, Public={}, API={}",
-        args.control_port, args.proxy_port, args.public_port, args.api_port
+        "gpuf-server listening on ports: Control={} (tls={}), Proxy={}, Public={}, API={}",
+        args.control_port, args.control_tls, args.proxy_port, args.public_port, args.api_port
     );
+    if !args.control_tls {
+        warn!(
+            "SECURITY: gpuf-s control listener is plaintext TCP; use --control-tls before exposing it outside a trusted network"
+        );
+    }
     // Create a channel to signal when to drop ServerState
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 

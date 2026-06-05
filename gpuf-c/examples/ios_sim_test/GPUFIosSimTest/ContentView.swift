@@ -67,7 +67,7 @@ private func startRemoteWorkerOnce() -> String {
 private func startRemoteWorkerWithModelPath(_ modelPath: String) -> String {
     remoteWorkerLogger.info("Model path: \(modelPath, privacy: .public)")
 
-    let serverAddr = "8.140.251.142"
+    let serverAddr = "<your-server-host>"
     let controlPort: Int32 = 17000
     let proxyPort: Int32 = 17001
     let workerType = "TCP"

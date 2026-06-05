@@ -26,7 +26,6 @@ tracing-subscriber = { workspace = true }
 hex = { workspace = true }
 toml = "0.7"
 dirs = "6.0.0"
-serde_yaml = "0.9.34-deprecated"
 sysinfo = "0.37.0"
 axum = { version = "0.7", features = ["json"] }
 uuid = "1.18.0"

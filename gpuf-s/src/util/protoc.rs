@@ -10,6 +10,13 @@ use serde::{de, ser::SerializeTuple, Deserialize, Deserializer, Serialize, Seria
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, bincode::Encode, bincode::Decode)]
 pub struct ClientId(pub [u8; 16]);
 
+impl ClientId {
+    pub fn log_label(&self) -> String {
+        let encoded = hex::encode(self.0);
+        format!("{}...{}", &encoded[..6], &encoded[encoded.len() - 4..])
+    }
+}
+
 impl ToBytes for ClientId {
     fn to_bytes(&self) -> &[u8] {
         &self.0

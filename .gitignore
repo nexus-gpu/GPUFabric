@@ -5,6 +5,8 @@
 *.venv
 *.vscode
 *.windsurf
+*.qoder
+*.claude
 *.srl
 .cargo/config.toml
 *.oss
@@ -26,7 +28,9 @@ gpuf-android-sdk
 config/
 ./config/
 /target
-
+agent_artifacts/
+agent_flow.yaml
+analysis_flow.mmd
 # Android test app build artifacts
 android_test_app/.gradle/
 android_test_app/build/
@@ -38,3 +42,18 @@ gpuf-c/build_android/android_test
 # gpuf-c iOS build artifacts
 gpuf-c/build_ios/dist/
 gpuf-c/examples/*/DerivedData/
+# Local credentials and generated analysis artifacts
+.claude/
+.agents/
+.env
+.env.*
+*.token
+*.secret
+gpuf-c/src/target/
+gpuf-c/**/*.parts/
+gpuf-c/*.tmp
+gpuf-c/**/*.tmp
+gpuf-c/**/*.tmp.*
+SECURITY_REMEDIATION_PLAN.md
+!gpuf-c/SECURITY_REMEDIATION_PLAN.md
+security-release-evidence/

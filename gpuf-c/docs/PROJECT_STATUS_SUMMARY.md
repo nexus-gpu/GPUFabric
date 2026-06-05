@@ -189,7 +189,7 @@ Problem Causes:
 ### 2. Development Environment Setup
 ```bash
 # Quick start
-cd /home/jack/codedir/GPUFabric/gpuf-c
+cd <repo>/gpuf-c
 ./generate_sdk.sh
 cd examples && ./build_and_test_multimodal.sh
 ```

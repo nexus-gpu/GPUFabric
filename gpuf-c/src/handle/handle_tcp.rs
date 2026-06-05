@@ -1,11 +1,12 @@
 use super::*;
+use crate::handle::handle_udp::{P2PReplayWindow, P2PUdpReassemblyState};
 // LLM engine is not available in lightweight Android version
 #[cfg(not(target_os = "android"))]
 use crate::llm_engine::{self, llama_engine::LlamaEngine};
 use crate::util::system_info::{
     collect_device_info, collect_system_info, get_engine_models, pull_ollama_model,
 };
-use crate::util::log_icon;
+use crate::util::{log_icon, security_metrics};
 use anyhow::{anyhow, Result};
 use common::{
     format_bytes, format_duration, join_streams, read_command, write_command, Command, CommandV1,
@@ -23,8 +24,8 @@ use std::collections::{HashSet, VecDeque};
 use std::fs::File;
 use std::io::BufReader;
 use std::net::ToSocketAddrs;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::net::UdpSocket;
@@ -129,6 +130,15 @@ impl Default for PhaseSplitter {
     }
 }
 
+#[derive(Clone)]
+struct P2PConnectionRuntimeConfig {
+    turn_urls: Vec<String>,
+    turn_username: String,
+    turn_password: String,
+    _peer_hex: String,
+    data_plane_secret: [u8; 32],
+}
+
 impl PhaseSplitter {
     fn next_marker(rest: &str) -> Option<(usize, OutputPhase, usize)> {
         let mut best: Option<(usize, OutputPhase, usize)> = None;
@@ -144,7 +154,13 @@ impl PhaseSplitter {
                 let cand = (idx, to_phase, tag.len());
                 best = Some(match best {
                     None => cand,
-                    Some(cur) => if cand.0 < cur.0 { cand } else { cur },
+                    Some(cur) => {
+                        if cand.0 < cur.0 {
+                            cand
+                        } else {
+                            cur
+                        }
+                    }
                 });
             }
         }
@@ -155,7 +171,13 @@ impl PhaseSplitter {
                 let cand = (idx, OutputPhase::Final, tag.len());
                 best = Some(match best {
                     None => cand,
-                    Some(cur) => if cand.0 < cur.0 { cand } else { cur },
+                    Some(cur) => {
+                        if cand.0 < cur.0 {
+                            cand
+                        } else {
+                            cur
+                        }
+                    }
                 });
             }
         }
@@ -187,7 +209,13 @@ impl PhaseSplitter {
                     let cand = (0usize, to_phase, pat.len());
                     best = Some(match best {
                         None => cand,
-                        Some(cur) => if cand.0 < cur.0 { cand } else { cur },
+                        Some(cur) => {
+                            if cand.0 < cur.0 {
+                                cand
+                            } else {
+                                cur
+                            }
+                        }
                     });
                 }
             }
@@ -197,7 +225,13 @@ impl PhaseSplitter {
                 let cand = (idx + 1, to_phase, pat.len());
                 best = Some(match best {
                     None => cand,
-                    Some(cur) => if cand.0 < cur.0 { cand } else { cur },
+                    Some(cur) => {
+                        if cand.0 < cur.0 {
+                            cand
+                        } else {
+                            cur
+                        }
+                    }
                 });
             }
         }
@@ -209,15 +243,26 @@ impl PhaseSplitter {
         // Keep at most max_marker_len-1 chars as carry if it could be a prefix of any marker.
         // This allows markers to cross chunk boundaries.
         let markers = [
-            "<analysis>", "</analysis>",
-            "<think>", "</think>",
-            "<reasoning>", "</reasoning>",
-            "<final>", "</final>",
-            "### Final", "Final:", "### Answer",
-            "final:", "final",
-            "### Reasoning", "Reasoning:", "Analysis:",
-            "analysis:", "analysis",
-            "### Answer", "Answer:",
+            "<analysis>",
+            "</analysis>",
+            "<think>",
+            "</think>",
+            "<reasoning>",
+            "</reasoning>",
+            "<final>",
+            "</final>",
+            "### Final",
+            "Final:",
+            "### Answer",
+            "final:",
+            "final",
+            "### Reasoning",
+            "Reasoning:",
+            "Analysis:",
+            "analysis:",
+            "analysis",
+            "### Answer",
+            "Answer:",
         ];
         let max_len = markers.iter().map(|s| s.len()).max().unwrap_or(0);
 
@@ -318,9 +363,7 @@ fn derive_model_id_from_path(model_path: &str) -> String {
         .and_then(|s| s.to_str())
         .unwrap_or(model_path);
 
-    let base = file_name
-        .trim_end_matches(".gguf")
-        .trim_end_matches(".bin");
+    let base = file_name.trim_end_matches(".gguf").trim_end_matches(".bin");
 
     // Rule B: keep file name, but strip shard suffix like "-00001-of-00002".
     // This avoids exposing split file indices as the model id.
@@ -713,7 +756,7 @@ impl ClientWorker {
     }
 
     async fn send_command_v2_on_writer(
-        writer: Arc<Mutex<WriteHalf<TcpStream>>>,
+        writer: Arc<Mutex<ControlWriter>>,
         command: CommandV2,
     ) -> Result<()> {
         use common::{write_command, Command};
@@ -750,6 +793,7 @@ impl ClientWorker {
         let certs = load_root_cert(cert_chain_path)?;
         let mut roots = RootCertStore::empty();
         roots.add_parsable_certificates(certs);
+        install_rustls_crypto_provider_once();
         let config = ClientConfig::builder()
             .with_root_certificates(roots)
             .with_no_client_auth();
@@ -859,7 +903,13 @@ impl ClientWorker {
         attrs.push((&nonce_t, nonce.as_bytes().to_vec()));
         attrs.push((&xor_peer_t, addr_val));
 
-        let req = Self::stun_build_message(0x000a, txid, &attrs, Some((username, realm, password)), true);
+        let req = Self::stun_build_message(
+            0x000a,
+            txid,
+            &attrs,
+            Some((username, realm, password)),
+            true,
+        );
         tls.write_all(&req).await?;
         tls.flush().await?;
 
@@ -985,10 +1035,50 @@ impl ClientWorker {
         engine: Arc<Mutex<Option<AnyEngine>>>,
         mut stream: S,
         connection_id: [u8; 16],
+        data_plane_secret: [u8; 32],
     ) -> Result<()> {
         let mut buf = BytesMut::with_capacity(MAX_MESSAGE_SIZE);
+        let mut inbound_replay = P2PReplayWindow::new();
+        let mut outbound_seq: u64 = 1;
+        async fn write_signed_p2p_command<S: tokio::io::AsyncWrite + Unpin>(
+            stream: &mut S,
+            command: &Command,
+            connection_id: [u8; 16],
+            data_plane_secret: [u8; 32],
+            outbound_seq: &mut u64,
+        ) -> Result<()> {
+            let signed = ClientWorker::p2p_encode_data_plane_envelope(
+                command,
+                connection_id,
+                data_plane_secret,
+                *outbound_seq,
+                ClientWorker::p2p_now_secs(),
+            )?;
+            *outbound_seq = outbound_seq.wrapping_add(1);
+            write_command(stream, &signed).await?;
+            stream.flush().await?;
+            Ok(())
+        }
         loop {
-            let cmd = read_command(&mut stream, &mut buf).await?;
+            let signed_cmd = read_command(&mut stream, &mut buf).await?;
+            let cmd = match Self::p2p_decode_data_plane_envelope(
+                signed_cmd,
+                connection_id,
+                data_plane_secret,
+                &mut inbound_replay,
+            ) {
+                Ok(cmd) => cmd,
+                Err(e) => {
+                    let err = e.to_string();
+                    if err.contains("replay") {
+                        security_metrics::record_p2p_replay_rejection();
+                    } else {
+                        security_metrics::record_p2p_auth_rejection();
+                    }
+                    warn!("P2P TCP data-plane authentication rejected frame: {}", err);
+                    continue;
+                }
+            };
             match cmd {
                 Command::V2(CommandV2::P2PInferenceRequest {
                     connection_id: req_conn_id,
@@ -1027,8 +1117,14 @@ impl ClientWorker {
                             analysis_tokens: 0,
                             final_tokens: 0,
                         });
-                        write_command(&mut stream, &chunk).await?;
-                        stream.flush().await?;
+                        write_signed_p2p_command(
+                            &mut stream,
+                            &chunk,
+                            connection_id,
+                            data_plane_secret,
+                            &mut outbound_seq,
+                        )
+                        .await?;
                         continue;
                     };
 
@@ -1065,7 +1161,9 @@ impl ClientWorker {
                                 continue;
                             }
                             match phase {
-                                OutputPhase::Analysis => analysis_tokens = analysis_tokens.saturating_add(1),
+                                OutputPhase::Analysis => {
+                                    analysis_tokens = analysis_tokens.saturating_add(1)
+                                }
                                 OutputPhase::Final => final_tokens = final_tokens.saturating_add(1),
                                 OutputPhase::Unknown => {}
                             }
@@ -1085,8 +1183,14 @@ impl ClientWorker {
                                     analysis_tokens,
                                     final_tokens,
                                 });
-                                write_command(&mut stream, &chunk).await?;
-                                stream.flush().await?;
+                                write_signed_p2p_command(
+                                    &mut stream,
+                                    &chunk,
+                                    connection_id,
+                                    data_plane_secret,
+                                    &mut outbound_seq,
+                                )
+                                .await?;
                                 seq = seq.wrapping_add(1);
                                 buf_phase = phase;
                             }
@@ -1105,8 +1209,14 @@ impl ClientWorker {
                                     analysis_tokens,
                                     final_tokens,
                                 });
-                                write_command(&mut stream, &chunk).await?;
-                                stream.flush().await?;
+                                write_signed_p2p_command(
+                                    &mut stream,
+                                    &chunk,
+                                    connection_id,
+                                    data_plane_secret,
+                                    &mut outbound_seq,
+                                )
+                                .await?;
                                 seq = seq.wrapping_add(1);
                             }
                         }
@@ -1125,8 +1235,14 @@ impl ClientWorker {
                             analysis_tokens,
                             final_tokens,
                         });
-                        write_command(&mut stream, &chunk).await?;
-                        stream.flush().await?;
+                        write_signed_p2p_command(
+                            &mut stream,
+                            &chunk,
+                            connection_id,
+                            data_plane_secret,
+                            &mut outbound_seq,
+                        )
+                        .await?;
                         seq = seq.wrapping_add(1);
                     }
 
@@ -1139,8 +1255,14 @@ impl ClientWorker {
                         analysis_tokens,
                         final_tokens,
                     });
-                    write_command(&mut stream, &done).await?;
-                    stream.flush().await?;
+                    write_signed_p2p_command(
+                        &mut stream,
+                        &done,
+                        connection_id,
+                        data_plane_secret,
+                        &mut outbound_seq,
+                    )
+                    .await?;
                 }
 
                 Command::V2(CommandV2::P2PCancelInference {
@@ -1163,8 +1285,9 @@ impl ClientWorker {
         engine: Arc<Mutex<Option<AnyEngine>>>,
         stream: TcpStream,
         connection_id: [u8; 16],
+        data_plane_secret: [u8; 32],
     ) -> Result<()> {
-        Self::serve_p2p_io_with_engine(engine, stream, connection_id).await
+        Self::serve_p2p_io_with_engine(engine, stream, connection_id, data_plane_secret).await
     }
 
     #[cfg(not(target_os = "android"))]
@@ -1178,6 +1301,7 @@ impl ClientWorker {
         cert_chain_path: String,
         engine: Arc<Mutex<Option<AnyEngine>>>,
         connection_id: [u8; 16],
+        data_plane_secret: [u8; 32],
     ) {
         loop {
             let msg = match Self::stun_read_message(&mut tls).await {
@@ -1228,9 +1352,13 @@ impl ClientWorker {
                 Ok(data_stream) => {
                     let engine = Arc::clone(&engine);
                     tokio::spawn(async move {
-                        if let Err(e) =
-                            Self::serve_p2p_io_with_engine(engine, data_stream, connection_id)
-                                .await
+                        if let Err(e) = Self::serve_p2p_io_with_engine(
+                            engine,
+                            data_stream,
+                            connection_id,
+                            data_plane_secret,
+                        )
+                        .await
                         {
                             error!("TURN data-plane stream error: {}", e);
                         }
@@ -1243,13 +1371,14 @@ impl ClientWorker {
         }
     }
     pub async fn new(args: Args) -> Result<ClientWorker> {
-        let (device_info, device_memtotal_mb) = match collect_device_info(args.engine_type.to_common()).await {
-            Ok(info) => info,
-            Err(e) => {
-                error!("Failed to collect device info: {}", e);
-                return Err(anyhow!("Failed to collect device info"));
-            }
-        };
+        let (device_info, device_memtotal_mb) =
+            match collect_device_info(args.engine_type.to_common()).await {
+                Ok(info) => info,
+                Err(e) => {
+                    error!("Failed to collect device info: {}", e);
+                    return Err(anyhow!("Failed to collect device info"));
+                }
+            };
 
         if device_info.num == 0 {
             error!(" device is empty");
@@ -1295,12 +1424,10 @@ impl ClientWorker {
                 engine = Some(llvm_worker);
             } else if args.engine_type == EngineType::LLAMA {
                 // Check if engine is already initialized in global cache
-                let global_engine_cache = GLOBAL_ENGINE.get_or_init(|| {
-                    Arc::new(Mutex::new(None))
-                });
-                
+                let global_engine_cache = GLOBAL_ENGINE.get_or_init(|| Arc::new(Mutex::new(None)));
+
                 let mut cached_engine = global_engine_cache.lock().await;
-                
+
                 if let Some(existing_engine) = cached_engine.as_ref() {
                     // Reuse existing engine (reconnection scenario)
                     info!("Reusing existing LLAMA engine from cache (model already loaded)");
@@ -1312,7 +1439,7 @@ impl ClientWorker {
                                 status.current_model = Some(model_path.clone());
                                 status.is_loaded = true;
                                 status.loading_status = "Loaded".to_string();
-                                info!("Updated MODEL_STATUS for reconnection with local model path: {}", model_path);
+                                info!("Updated MODEL_STATUS for reconnection with local model path ({} bytes)", model_path.len());
                             }
                         }
                     }
@@ -1321,10 +1448,13 @@ impl ClientWorker {
                 } else {
                     // First time initialization - create and init engine
                     info!("First time initialization - creating and loading LLAMA engine");
-                    
+
                     let mut llama_worker = if let Some(model_path) = &args.llama_model_path {
                         // Use provided model path
-                        info!("Creating LLAMA engine with model: {}", model_path);
+                        info!(
+                            "Creating LLAMA engine with configured model path ({} bytes)",
+                            model_path.len()
+                        );
                         llm_engine::AnyEngine::Llama(LlamaEngine::with_config(
                             model_path.clone(),
                             args.n_ctx,
@@ -1358,7 +1488,10 @@ impl ClientWorker {
                                     status.current_model = Some(model_path.clone());
                                     status.is_loaded = true;
                                     status.loading_status = "Loaded".to_string();
-                                    info!("Updated MODEL_STATUS with local model path: {}", model_path);
+                                    info!(
+                                        "Updated MODEL_STATUS with local model path ({} bytes)",
+                                        model_path.len()
+                                    );
                                 }
                             }
 
@@ -1370,12 +1503,12 @@ impl ClientWorker {
                         }
                         Err(e) => error!("LLAMA init failed: {}", e),
                     }
-                    
+
                     // Store in global cache for future reconnections
                     *cached_engine = Some(llama_worker.clone());
                     engine = Some(llama_worker);
                 }
-                
+
                 // Drop the lock before starting HTTP server
                 drop(cached_engine);
 
@@ -1400,13 +1533,15 @@ impl ClientWorker {
                         AnyEngine::Llama(e) => e.clone(),
                         _ => unreachable!(),
                     };
-                    
+
                     // Wrap the shared engine in Arc<RwLock> for HTTP server
                     let engine_arc = Arc::new(RwLock::new(server_engine));
 
                     // Spawn server in background
                     tokio::spawn(async move {
-                        if let Err(e) = start_server(engine_arc, &local_addr_clone, local_port).await {
+                        if let Err(e) =
+                            start_server(engine_arc, &local_addr_clone, local_port).await
+                        {
                             error!("LLAMA HTTP server error: {}", e);
                             // Reset flag on error so it can be retried
                             HTTP_SERVER_STARTED.store(false, Ordering::SeqCst);
@@ -1434,12 +1569,10 @@ impl ClientWorker {
                 }
             } else if args.engine_type == EngineType::LLAMA {
                 // Check if engine is already initialized in global cache
-                let global_engine_cache = GLOBAL_ENGINE.get_or_init(|| {
-                    Arc::new(Mutex::new(None))
-                });
-                
+                let global_engine_cache = GLOBAL_ENGINE.get_or_init(|| Arc::new(Mutex::new(None)));
+
                 let mut cached_engine = global_engine_cache.lock().await;
-                
+
                 if let Some(existing_engine) = cached_engine.as_ref() {
                     // Reuse existing engine (reconnection scenario)
                     info!("Reusing existing LLAMA engine from cache (model already loaded)");
@@ -1451,7 +1584,7 @@ impl ClientWorker {
                                 status.current_model = Some(model_path.clone());
                                 status.is_loaded = true;
                                 status.loading_status = "Loaded".to_string();
-                                info!("Updated MODEL_STATUS for reconnection with local model path: {}", model_path);
+                                info!("Updated MODEL_STATUS for reconnection with local model path ({} bytes)", model_path.len());
                             }
                         }
                     }
@@ -1460,10 +1593,13 @@ impl ClientWorker {
                 } else {
                     // First time initialization - create and init engine
                     info!("First time initialization - creating and loading LLAMA engine");
-                    
+
                     let mut llama_worker = if let Some(model_path) = &args.llama_model_path {
                         // Use provided model path
-                        info!("Creating LLAMA engine with model: {}", model_path);
+                        info!(
+                            "Creating LLAMA engine with configured model path ({} bytes)",
+                            model_path.len()
+                        );
                         llm_engine::AnyEngine::Llama(LlamaEngine::with_config(
                             model_path.clone(),
                             args.n_ctx,
@@ -1497,7 +1633,10 @@ impl ClientWorker {
                                     status.current_model = Some(model_path.clone());
                                     status.is_loaded = true;
                                     status.loading_status = "Loaded".to_string();
-                                    info!("Updated MODEL_STATUS with local model path: {}", model_path);
+                                    info!(
+                                        "Updated MODEL_STATUS with local model path ({} bytes)",
+                                        model_path.len()
+                                    );
                                 }
                             }
 
@@ -1509,7 +1648,7 @@ impl ClientWorker {
                         }
                         Err(e) => error!("LLAMA init failed: {}", e),
                     }
-                    
+
                     // Store in global cache for future reconnections
                     *cached_engine = Some(llama_worker.clone());
                     engine = Some(llama_worker);
@@ -1527,11 +1666,10 @@ impl ClientWorker {
             )
         })?;
         let ip_addr = addr.ip();
-        let control_stream = TcpStream::connect(addr).await?;
+        let (reader, writer) = connect_control_stream(&args, addr).await?;
 
-        info!("Connected to control port.");
+        info!("Connected to control port (tls={}).", args.control_tls);
 
-        let (reader, writer) = tokio::io::split(control_stream);
         //network monitor
         let network_monitor = Arc::new(Mutex::new(
             SessionNetworkMonitor::new(None).expect("Failed to create network monitor"),
@@ -1615,10 +1753,17 @@ impl ClientWorker {
         let download_url = match &pod_model.download_url {
             Some(url) => url.clone(),
             None => {
-                info!("No download URL for model {}, skipping download", model_name);
+                info!(
+                    "No download URL for model {}, skipping download",
+                    model_name
+                );
                 return Ok(());
             }
         };
+        let checksum = pod_model
+            .checksum
+            .clone()
+            .ok_or_else(|| anyhow!("Model {} is missing required SHA256 checksum", model_name))?;
 
         // Get models directory (same level as executable)
         let models_dir = std::env::current_exe()
@@ -1657,8 +1802,11 @@ impl ClientWorker {
 
         // If model exists and is complete, load it directly without downloading
         if model_exists_and_complete {
-            info!("Model {} already exists locally, loading directly", model_name);
-            
+            info!(
+                "Model {} already exists locally, loading directly",
+                model_name
+            );
+
             // Update MODEL_STATUS
             if let Ok(mut status) = crate::MODEL_STATUS.lock() {
                 status.current_model = Some(model_path_str.clone());
@@ -1666,7 +1814,7 @@ impl ClientWorker {
                 status.is_loaded = false;
                 status.error_message = None;
             }
-            
+
             // Load model into engine (only on non-Android platforms)
             #[cfg(not(target_os = "android"))]
             {
@@ -1693,7 +1841,10 @@ impl ClientWorker {
             return Ok(());
         }
 
-        info!("Starting download for model: {} from {}", model_name, download_url);
+        info!(
+            "Starting download for model: {} from {}",
+            model_name, download_url
+        );
 
         // Check existing bytes for resume.
         // Note: parallel downloads store partial progress in a "<model>.parts" directory.
@@ -1731,7 +1882,8 @@ impl ClientWorker {
                 already_downloaded,
                 pod_model.expected_size.unwrap_or(0),
                 if pod_model.expected_size.unwrap_or(0) > 0 {
-                    (already_downloaded as f64 / pod_model.expected_size.unwrap_or(1) as f64) as f32 * 100.0
+                    (already_downloaded as f64 / pod_model.expected_size.unwrap_or(1) as f64) as f32
+                        * 100.0
                 } else {
                     0.0
                 },
@@ -1749,7 +1901,7 @@ impl ClientWorker {
             parallel_chunks: 4,
             chunk_size: 8 * 1024 * 1024,
             expected_size: pod_model.expected_size,
-            checksum: pod_model.checksum.clone(),
+            checksum: checksum.clone(),
             resume: true,
         };
 
@@ -1800,12 +1952,15 @@ impl ClientWorker {
         // Execute download with retry logic
         const MAX_RETRIES: u32 = 10;
         const RETRY_DELAY_SECS: u64 = 10;
-        
+
         let mut last_error = None;
         for attempt in 1..=MAX_RETRIES {
             match downloader.download().await {
                 Ok(_) => {
-                    info!("Model {} downloaded successfully to {:?}", model_name, model_path);
+                    info!(
+                        "Model {} downloaded successfully to {:?}",
+                        model_name, model_path
+                    );
                     self.send_download_progress(
                         &model_name,
                         pod_model.expected_size.unwrap_or(0),
@@ -1814,8 +1969,9 @@ impl ClientWorker {
                         0,
                         DownloadStatus::Completed,
                         None,
-                    ).await?;
-                    
+                    )
+                    .await?;
+
                     // Update MODEL_STATUS and load model into engine
                     let model_path_str = model_path.to_string_lossy().to_string();
                     if let Ok(mut status) = crate::MODEL_STATUS.lock() {
@@ -1824,7 +1980,7 @@ impl ClientWorker {
                         status.is_loaded = false;
                         status.error_message = None;
                     }
-                    
+
                     // Load model into engine (only on non-Android platforms)
                     #[cfg(not(target_os = "android"))]
                     {
@@ -1840,7 +1996,10 @@ impl ClientWorker {
                                     }
                                 }
                                 Err(e) => {
-                                    error!("Failed to load model {} into engine: {}", model_name, e);
+                                    error!(
+                                        "Failed to load model {} into engine: {}",
+                                        model_name, e
+                                    );
                                     if let Ok(mut status) = crate::MODEL_STATUS.lock() {
                                         status.loading_status = format!("Load failed: {}", e);
                                         status.error_message = Some(e.to_string());
@@ -1852,13 +2011,21 @@ impl ClientWorker {
                     return Ok(());
                 }
                 Err(e) => {
-                    warn!("Download attempt {}/{} failed for model {}: {}", attempt, MAX_RETRIES, model_name, e);
+                    warn!(
+                        "Download attempt {}/{} failed for model {}: {}",
+                        attempt, MAX_RETRIES, model_name, e
+                    );
                     last_error = Some(e);
-                    
+
                     if attempt < MAX_RETRIES {
-                        info!("Retrying download in {} seconds (attempt {}/{})...", RETRY_DELAY_SECS, attempt + 1, MAX_RETRIES);
+                        info!(
+                            "Retrying download in {} seconds (attempt {}/{})...",
+                            RETRY_DELAY_SECS,
+                            attempt + 1,
+                            MAX_RETRIES
+                        );
                         tokio::time::sleep(std::time::Duration::from_secs(RETRY_DELAY_SECS)).await;
-                        
+
                         // Recreate downloader for retry (it will resume from where it left off)
                         let config = crate::util::model_downloader::DownloadConfig {
                             url: download_url.clone(),
@@ -1866,7 +2033,7 @@ impl ClientWorker {
                             parallel_chunks: 4,
                             chunk_size: 8 * 1024 * 1024,
                             expected_size: pod_model.expected_size,
-                            checksum: pod_model.checksum.clone(),
+                            checksum: checksum.clone(),
                             resume: true,
                         };
                         downloader = crate::util::model_downloader::ModelDownloader::new(config);
@@ -1908,10 +2075,14 @@ impl ClientWorker {
                 }
             }
         }
-        
+
         // All retries failed
-        let final_error = last_error.unwrap_or_else(|| anyhow::anyhow!("Download failed after {} retries", MAX_RETRIES));
-        error!("Failed to download model {} after {} attempts: {}", model_name, MAX_RETRIES, final_error);
+        let final_error = last_error
+            .unwrap_or_else(|| anyhow::anyhow!("Download failed after {} retries", MAX_RETRIES));
+        error!(
+            "Failed to download model {} after {} attempts: {}",
+            model_name, MAX_RETRIES, final_error
+        );
         self.send_download_progress(
             &model_name,
             0,
@@ -1920,7 +2091,8 @@ impl ClientWorker {
             0,
             DownloadStatus::Failed,
             Some(final_error.to_string()),
-        ).await?;
+        )
+        .await?;
         Err(final_error)
     }
 
@@ -1950,62 +2122,53 @@ impl ClientWorker {
 
 type TCPWorker = ClientWorker;
 
+fn is_public_bind_addr(bind_addr: &str) -> bool {
+    bind_addr
+        .rsplit_once(':')
+        .map(|(host, _)| host.trim_matches(['[', ']']))
+        .and_then(|host| host.parse::<std::net::IpAddr>().ok())
+        .map(|ip| !ip.is_loopback())
+        .unwrap_or(false)
+}
+
 #[cfg(target_os = "macos")]
 #[allow(dead_code)]
 async fn check_and_restart_ollama() -> Result<()> {
     use std::process::Stdio;
     use tokio::process::Command;
 
-    // Check if Ollama is running
-    let check_status = Command::new("pgrep")
-        .arg("Ollama")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .await;
+    let check_status = crate::util::safe_command::run_command_limited_async(
+        "pgrep",
+        &["-x", "Ollama"],
+        Duration::from_secs(2),
+        4096,
+    )
+    .await;
 
-    match check_status {
-        Ok(status) if status.success() => {
-            // Ollama is running, kill it first
-            info!("Ollama is running, restarting...");
-            let _ = Command::new("pkill")
-                .arg("Ollama")
-                .status()
-                .await
-                .map_err(|e| {
-                    error!("Failed to kill Ollama process: {}", e);
-                    anyhow::anyhow!("Failed to kill Ollama process: {}", e)
-                })?;
+    if matches!(check_status, Ok(output) if output.status.success()) {
+        info!("Ollama is already running; leaving existing process in place");
+    } else {
+        let mut cmd = Command::new("ollama");
+        cmd.arg("serve")
+            .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin:/opt/homebrew/bin")
+            .env("OLLAMA_HOST", "127.0.0.1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
 
-            // Give it a moment to shut down
-            tokio::time::sleep(Duration::from_secs(2)).await;
-        }
-        _ => {
-            info!("Ollama is not running, will start it");
-        }
+        cmd.spawn().map_err(|e| {
+            error!("Failed to start Ollama: {}", e);
+            anyhow::anyhow!("Failed to start Ollama: {}", e)
+        })?;
     }
 
-    // Start Ollama with environment variables
-    let mut cmd = Command::new("ollama");
-    cmd.arg("serve")
-        .env("OLLAMA_HOST", "0.0.0.0")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-
-    // Start the process in the background
-    cmd.spawn().map_err(|e| {
-        error!("Failed to start Ollama: {}", e);
-        anyhow::anyhow!("Failed to start Ollama: {}", e)
-    })?;
-
-    // Wait for Ollama to be ready
     let max_retries = 10;
     let mut retry_count = 0;
     let client = reqwest::Client::new();
 
     while retry_count < max_retries {
         match client
-            .get("http://localhost:11434/api/tags")
+            .get("http://127.0.0.1:11434/api/tags")
             .timeout(Duration::from_secs(2))
             .send()
             .await
@@ -2107,7 +2270,10 @@ impl WorkerHandle for ClientWorker {
                                 .lock()
                                 .ok()
                                 .and_then(|s| s.current_model.clone());
-                            debug!("current_model_path {:?}", current_model_path);
+                            debug!(
+                                "current_model_path present={}",
+                                current_model_path.is_some()
+                            );
                             match current_model_path {
                                 Some(model_path) => {
                                     let model_id = derive_model_id_from_path(&model_path);
@@ -2124,14 +2290,14 @@ impl WorkerHandle for ClientWorker {
                         _ => Vec::new(),
                     };
                     debug!("Successfully fetched {:?} models from engine.", models);
-                    
+
                     // Only send device info if auto_models is enabled and no local model is specified
                     let auto_models_device = if auto_models && !has_local_model {
                         devices_info.clone().to_vec()
                     } else {
                         Vec::new()
                     };
-                    
+
                     let model_cmd = CommandV1::ModelStatus {
                         client_id: *client_id,
                         models,
@@ -2159,7 +2325,7 @@ impl WorkerHandle for ClientWorker {
             let client_id = Arc::new(self.client_id.clone());
             let network_monitor = Arc::clone(&self.network_monitor);
             let engine_type = self.engine_type; // Clone engine_type for use in spawn
-            // network_monitor.lock().await.update();
+                                                // network_monitor.lock().await.update();
             tokio::spawn(async move {
                 let mut interval = interval(Duration::from_secs(120)); // Send heartbeat every 120 seconds
 
@@ -2176,13 +2342,14 @@ impl WorkerHandle for ClientWorker {
                         };
 
                     // device_info should be real-time for monitoring
-                    let (device_info, device_memtotal_mb) = match collect_device_info(engine_type).await {
-                        Ok(info) => info,
-                        Err(e) => {
-                            error!("Failed to collect device info: {}", e);
-                            (DevicesInfo::default(), 0)
-                        }
-                    };
+                    let (device_info, device_memtotal_mb) =
+                        match collect_device_info(engine_type).await {
+                            Ok(info) => info,
+                            Err(e) => {
+                                error!("Failed to collect device info: {}", e);
+                                (DevicesInfo::default(), 0)
+                            }
+                        };
 
                     // TODO: device_info is remote device info
                     info!("heartbeat: cpu_usage {}% memory_usage {}% disk_usage {}% device_memtotal {}mb", cpu_usage, memory_usage, disk_usage, device_memtotal_mb);
@@ -2235,21 +2402,20 @@ impl WorkerHandle for ClientWorker {
     fn handler(&self) -> impl Future<Output = Result<()>> + Send {
         async move {
             let mut buf = BytesMut::with_capacity(MAX_MESSAGE_SIZE);
-            let mut p2p_turn_config: HashMap<[u8; 16], (Vec<String>, String, String, String)> =
-                HashMap::new();
-            // (turn_urls, username, password, peer_id as hex) - peer_id used only for debugging/selection
+            let mut p2p_turn_config: HashMap<[u8; 16], P2PConnectionRuntimeConfig> = HashMap::new();
             loop {
                 let cmd_result = read_command(&mut *self.reader.lock().await, &mut buf).await;
-                
+
                 // Handle connection errors gracefully
                 let cmd = match cmd_result {
                     Ok(cmd) => cmd,
                     Err(e) => {
                         // Check if this is an IO error indicating connection loss
                         if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
-                            if io_err.kind() == std::io::ErrorKind::UnexpectedEof 
+                            if io_err.kind() == std::io::ErrorKind::UnexpectedEof
                                 || io_err.kind() == std::io::ErrorKind::ConnectionReset
-                                || io_err.kind() == std::io::ErrorKind::BrokenPipe {
+                                || io_err.kind() == std::io::ErrorKind::BrokenPipe
+                            {
                                 warn!("Connection to server lost: {}. Exiting handler...", e);
                                 return Err(anyhow!("Connection closed by server"));
                             }
@@ -2258,7 +2424,7 @@ impl WorkerHandle for ClientWorker {
                         return Err(e);
                     }
                 };
-                
+
                 match cmd {
                     Command::V1(cmd_v1) => {
                         match cmd_v1 {
@@ -2291,18 +2457,24 @@ impl WorkerHandle for ClientWorker {
                                     // If server assigned models, ensure they are pulled/ready.
                                     // Skip if user specified a local model path OR auto_models is disabled
                                     if self.args.llama_model_path.is_some() {
-                                        info!("Skipping server-recommended models (using local model path: {:?})", self.args.llama_model_path);
+                                        info!("Skipping server-recommended models (using configured local model path)");
                                     } else if self.args.auto_models {
                                         for pod_model in &pods_model {
                                             // For Llama engine, use deal_with_pod_model which supports download URL
                                             if self.engine_type == common::EngineType::Llama {
                                                 // Download errors should not crash the handler - just log and continue
                                                 // The download will be retried on next PullModelResult
-                                                if let Err(e) = self.deal_with_pod_model(pod_model).await {
+                                                if let Err(e) =
+                                                    self.deal_with_pod_model(pod_model).await
+                                                {
                                                     error!("Failed to download/load model: {}. Will retry later.", e);
                                                 }
-                                            } else if let Some(ref model_name) = pod_model.model_name {
-                                                if let Err(e) = self.deal_with_model(model_name).await {
+                                            } else if let Some(ref model_name) =
+                                                pod_model.model_name
+                                            {
+                                                if let Err(e) =
+                                                    self.deal_with_model(model_name).await
+                                                {
                                                     error!("Failed to deal with model {}: {}. Will retry later.", model_name, e);
                                                 }
                                             }
@@ -2310,7 +2482,7 @@ impl WorkerHandle for ClientWorker {
                                     } else {
                                         info!("Skipping server-recommended models (auto_models is disabled)");
                                     }
-                                                                        // Start model reporting task immediately after login (choice A).
+                                    // Start model reporting task immediately after login (choice A).
                                     self.model_task().await?;
                                     self.heartbeat_task().await?;
                                     debug!("Successfully logged in.");
@@ -2325,23 +2497,25 @@ impl WorkerHandle for ClientWorker {
                                     error!("Pull model failed: {}", error.unwrap_or_default());
                                     return Err(anyhow!("Pull model failed"));
                                 }
-                                
+
                                 // Empty pods_model is OK - it means server has no recommendations
                                 if pods_model.is_empty() {
                                     debug!("Server returned no model recommendations");
                                     continue;
                                 }
-                                
+
                                 // Skip if user specified a local model path OR auto_models is disabled
                                 if self.args.llama_model_path.is_some() {
-                                    info!("Skipping PullModelResult (using local model path: {:?})", self.args.llama_model_path);
+                                    info!("Skipping PullModelResult (using configured local model path)");
                                 } else if self.args.auto_models {
                                     for pod_model in &pods_model {
                                         // For Llama engine, use deal_with_pod_model which supports download URL
                                         if self.engine_type == common::EngineType::Llama {
                                             // Download errors should not crash the handler - just log and continue
                                             // The download will be retried on next PullModelResult
-                                            if let Err(e) = self.deal_with_pod_model(pod_model).await {
+                                            if let Err(e) =
+                                                self.deal_with_pod_model(pod_model).await
+                                            {
                                                 error!("Failed to download/load model: {}. Will retry later.", e);
                                             }
                                         } else if let Some(ref model_name) = pod_model.model_name {
@@ -2642,7 +2816,7 @@ impl WorkerHandle for ClientWorker {
                                 }
                             }
                             _ => {
-                                warn!("Received unexpected CommandV1: {:?}", cmd_v1);
+                                warn!("Received unexpected CommandV1 variant; payload redacted");
                             }
                         }
                     }
@@ -2655,29 +2829,39 @@ impl WorkerHandle for ClientWorker {
                                 turn_urls,
                                 turn_username,
                                 turn_password,
+                                data_plane_secret,
                                 expires_at: _,
                                 force_tls: _,
                             } => {
+                                let turn_password = turn_password.into_inner();
+                                let data_plane_secret = data_plane_secret.into_inner();
                                 p2p_turn_config.insert(
                                     connection_id,
-                                    (
-                                        turn_urls.clone(),
-                                        turn_username.clone(),
-                                        turn_password.clone(),
-                                        hex::encode(peer_id),
-                                    ),
+                                    P2PConnectionRuntimeConfig {
+                                        turn_urls: turn_urls.clone(),
+                                        turn_username: turn_username.clone(),
+                                        turn_password: turn_password.clone(),
+                                        _peer_hex: hex::encode(peer_id),
+                                        data_plane_secret,
+                                    },
                                 );
 
                                 // Mode 1: gpuf-c acts as server for P2P data-plane.
                                 // Start a UDP socket for P2P data-plane.
-                                let bind_addr = format!("0.0.0.0:{}", self.args.p2p_udp_port);
-                                let socket = match UdpSocket::bind(&bind_addr).await {
-                                    Ok(s) => Arc::new(s),
-                                    Err(e) => {
-                                        warn!("P2P UDP bind failed on {}: {}. Falling back to random port.", bind_addr, e);
-                                        Arc::new(UdpSocket::bind("0.0.0.0:0").await?)
-                                    }
-                                };
+                                let bind_addr = self.args.p2p_udp_bind_addr();
+                                if is_public_bind_addr(&bind_addr) {
+                                    security_metrics::record_public_listen_use();
+                                }
+                                if is_public_bind_addr(&bind_addr) && !self.args.p2p_public_listen {
+                                    return Err(anyhow!(
+                                        "Refusing P2P UDP public bind {} without --p2p-public-listen",
+                                        bind_addr
+                                    ));
+                                }
+                                let socket =
+                                    Arc::new(UdpSocket::bind(&bind_addr).await.map_err(|e| {
+                                        anyhow!("P2P UDP bind failed on {}: {}", bind_addr, e)
+                                    })?);
                                 let local_port = socket.local_addr()?.port();
                                 let advertise_ip = self.get_advertise_ip().await?;
 
@@ -2685,12 +2869,10 @@ impl WorkerHandle for ClientWorker {
                                 {
                                     let engine = Arc::clone(&self.engine);
                                     let socket = Arc::clone(&socket);
+                                    let data_plane_secret_copy = data_plane_secret;
                                     tokio::spawn(async move {
                                         let mut next_msg_id: u32 = 1;
-                                        let mut inflight: std::collections::HashMap<
-                                            u32,
-                                            std::collections::HashMap<u16, Vec<u8>>,
-                                        > = std::collections::HashMap::new();
+                                        let mut reassembly = P2PUdpReassemblyState::new();
                                         let mut buf = vec![0u8; 64 * 1024];
                                         loop {
                                             let (n, from) = match socket.recv_from(&mut buf).await {
@@ -2701,30 +2883,65 @@ impl WorkerHandle for ClientWorker {
                                                 }
                                             };
 
-                                            let Some((flags, msg_id, frag_idx, frag_cnt)) =
+                                            if reassembly.is_source_banned(from) {
+                                                continue;
+                                            }
+
+                                            let Some((flags, msg_id, frag_idx, frag_cnt, ts, tag)) =
                                                 Self::p2p_udp_parse_header(&buf[..n])
                                             else {
+                                                security_metrics::record_p2p_auth_rejection();
+                                                reassembly.record_invalid_source(from);
                                                 continue;
                                             };
 
                                             if (flags & Self::P2P_UDP_FLAG_ACK) != 0 {
-                                                // acks are consumed by sender path
                                                 continue;
                                             }
 
-                                            // For now, ACK every fragment with msg_id.
-                                            Self::p2p_udp_send_ack(&socket, from, msg_id)
-                                                .await;
-
                                             let payload = &buf[Self::P2P_UDP_HEADER_LEN..n];
-                                            let entry = inflight.entry(msg_id).or_default();
-                                            entry.insert(frag_idx, payload.to_vec());
-                                            let Some(full) =
-                                                Self::p2p_udp_try_reassemble(entry, frag_cnt)
-                                            else {
+                                            if let Err(e) = Self::p2p_udp_validate_fragment(
+                                                &data_plane_secret_copy,
+                                                &connection_id,
+                                                flags,
+                                                msg_id,
+                                                frag_idx,
+                                                frag_cnt,
+                                                ts,
+                                                payload,
+                                                &tag,
+                                                Self::p2p_now_secs(),
+                                            ) {
+                                                security_metrics::record_p2p_auth_rejection();
+                                                warn!("P2P UDP authentication rejected packet from {}: {}", from, e);
+                                                reassembly.record_invalid_source(from);
+                                                continue;
+                                            }
+
+                                            let full = match reassembly.accept_fragment(
+                                                from, msg_id, frag_idx, frag_cnt, payload,
+                                            ) {
+                                                Ok(v) => {
+                                                    Self::p2p_udp_send_ack(
+                                                        &socket,
+                                                        from,
+                                                        connection_id,
+                                                        data_plane_secret_copy,
+                                                        msg_id,
+                                                    )
+                                                    .await;
+                                                    v
+                                                }
+                                                Err(e) => {
+                                                    security_metrics::record_p2p_reassembly_rejection();
+                                                    warn!("P2P UDP reassembly rejected packet from {}: {}", from, e);
+                                                    reassembly.record_invalid_source(from);
+                                                    continue;
+                                                }
+                                            };
+                                            let Some(full) = full else {
                                                 continue;
                                             };
-                                            inflight.remove(&msg_id);
 
                                             let cmd = match Self::udp_decode_command(&full) {
                                                 Ok(c) => c,
@@ -2790,12 +3007,20 @@ impl WorkerHandle for ClientWorker {
                                                             },
                                                         );
                                                         if let Ok(pkt) =
-                                                            Self::p2p_udp_encode_command_payload(&chunk)
+                                                            Self::p2p_udp_encode_command_payload(
+                                                                &chunk,
+                                                            )
                                                         {
                                                             let msg_id = next_msg_id;
-                                                            next_msg_id = next_msg_id.wrapping_add(1);
+                                                            next_msg_id =
+                                                                next_msg_id.wrapping_add(1);
                                                             let _ = Self::p2p_udp_send_reliable(
-                                                                &socket, from, msg_id, &pkt,
+                                                                &socket,
+                                                                from,
+                                                                connection_id,
+                                                                data_plane_secret_copy,
+                                                                msg_id,
+                                                                &pkt,
                                                             )
                                                             .await;
                                                         }
@@ -2816,14 +3041,17 @@ impl WorkerHandle for ClientWorker {
                                                         final_tokens: 0,
                                                     });
                                                     if let Ok(pkt) =
-                                                        Self::p2p_udp_encode_command_payload(
-                                                            &chunk,
-                                                        )
+                                                        Self::p2p_udp_encode_command_payload(&chunk)
                                                     {
                                                         let msg_id = next_msg_id;
                                                         next_msg_id = next_msg_id.wrapping_add(1);
                                                         let _ = Self::p2p_udp_send_reliable(
-                                                            &socket, from, msg_id, &pkt,
+                                                            &socket,
+                                                            from,
+                                                            connection_id,
+                                                            data_plane_secret_copy,
+                                                            msg_id,
+                                                            &pkt,
                                                         )
                                                         .await;
                                                     }
@@ -2855,14 +3083,17 @@ impl WorkerHandle for ClientWorker {
                                                             final_tokens: 0,
                                                         });
                                                     if let Ok(pkt) =
-                                                        Self::p2p_udp_encode_command_payload(
-                                                            &chunk,
-                                                        )
+                                                        Self::p2p_udp_encode_command_payload(&chunk)
                                                     {
                                                         let msg_id = next_msg_id;
                                                         next_msg_id = next_msg_id.wrapping_add(1);
                                                         let _ = Self::p2p_udp_send_reliable(
-                                                            &socket, from, msg_id, &pkt,
+                                                            &socket,
+                                                            from,
+                                                            connection_id,
+                                                            data_plane_secret_copy,
+                                                            msg_id,
+                                                            &pkt,
                                                         )
                                                         .await;
                                                     }
@@ -2891,12 +3122,20 @@ impl WorkerHandle for ClientWorker {
                                                             },
                                                         );
                                                         if let Ok(pkt) =
-                                                            Self::p2p_udp_encode_command_payload(&chunk)
+                                                            Self::p2p_udp_encode_command_payload(
+                                                                &chunk,
+                                                            )
                                                         {
                                                             let msg_id = next_msg_id;
-                                                            next_msg_id = next_msg_id.wrapping_add(1);
+                                                            next_msg_id =
+                                                                next_msg_id.wrapping_add(1);
                                                             let _ = Self::p2p_udp_send_reliable(
-                                                                &socket, from, msg_id, &pkt,
+                                                                &socket,
+                                                                from,
+                                                                connection_id,
+                                                                data_plane_secret_copy,
+                                                                msg_id,
+                                                                &pkt,
                                                             )
                                                             .await;
                                                         }
@@ -2941,14 +3180,17 @@ impl WorkerHandle for ClientWorker {
                                                             final_tokens: 0,
                                                         });
                                                     if let Ok(pkt) =
-                                                        Self::p2p_udp_encode_command_payload(
-                                                            &chunk,
-                                                        )
+                                                        Self::p2p_udp_encode_command_payload(&chunk)
                                                     {
                                                         let msg_id = next_msg_id;
                                                         next_msg_id = next_msg_id.wrapping_add(1);
                                                         let _ = Self::p2p_udp_send_reliable(
-                                                            &socket, from, msg_id, &pkt,
+                                                            &socket,
+                                                            from,
+                                                            connection_id,
+                                                            data_plane_secret_copy,
+                                                            msg_id,
+                                                            &pkt,
                                                         )
                                                         .await;
                                                     }
@@ -2971,7 +3213,12 @@ impl WorkerHandle for ClientWorker {
                                                 let msg_id = next_msg_id;
                                                 next_msg_id = next_msg_id.wrapping_add(1);
                                                 let _ = Self::p2p_udp_send_reliable(
-                                                    &socket, from, msg_id, &pkt,
+                                                    &socket,
+                                                    from,
+                                                    connection_id,
+                                                    data_plane_secret_copy,
+                                                    msg_id,
+                                                    &pkt,
                                                 )
                                                 .await;
                                             }
@@ -3010,6 +3257,7 @@ impl WorkerHandle for ClientWorker {
                                     let source_client_id_copy = self.client_id;
                                     let peer_id_copy = peer_id;
                                     let connection_id_copy = connection_id;
+                                    let data_plane_secret_copy = data_plane_secret;
                                     let turn_url = turn_url.clone();
                                     let username = turn_username.clone();
                                     let password = turn_password.clone();
@@ -3034,10 +3282,8 @@ impl WorkerHandle for ClientWorker {
                                                     candidates: vec![relay_candidate],
                                                 };
                                                 if let Err(e) =
-                                                    Self::send_command_v2_on_writer(
-                                                        writer, cmd,
-                                                    )
-                                                    .await
+                                                    Self::send_command_v2_on_writer(writer, cmd)
+                                                        .await
                                                 {
                                                     error!(
                                                         "Failed to send TURN relay candidate: {}",
@@ -3047,10 +3293,7 @@ impl WorkerHandle for ClientWorker {
 
                                                 let mut permitted: HashSet<std::net::SocketAddr> =
                                                     HashSet::new();
-                                                let mut inflight: HashMap<
-                                                    u32,
-                                                    HashMap<u16, Vec<u8>>,
-                                                > = HashMap::new();
+                                                let mut reassembly = P2PUdpReassemblyState::new();
                                                 let mut inbox: VecDeque<(
                                                     std::net::SocketAddr,
                                                     Vec<u8>,
@@ -3099,54 +3342,86 @@ impl WorkerHandle for ClientWorker {
                                                         }
                                                     }
 
+                                                    if reassembly.is_source_banned(peer) {
+                                                        continue;
+                                                    }
+
                                                     if let Some((
                                                         flags,
                                                         msg_id,
                                                         frag_idx,
                                                         frag_cnt,
+                                                        ts,
+                                                        tag,
                                                     )) = Self::p2p_udp_parse_header(&data)
                                                     {
-                                                        if (flags & Self::P2P_UDP_FLAG_ACK)
-                                                            != 0
-                                                        {
-                                                            continue;
-                                                        }
-                                                        // ACK over TURN by sending an indication carrying only header.
-                                                        let hdr = Self::p2p_udp_make_header(
-                                                            Self::P2P_UDP_FLAG_ACK,
-                                                            msg_id,
-                                                            0,
-                                                            0,
-                                                        );
-                                                        let _ = Self::turn_send_indication(
-                                                            &turn_sock, peer, &hdr,
-                                                        )
-                                                        .await;
-
-                                                        if data.len() < Self::P2P_UDP_HEADER_LEN {
+                                                        if (flags & Self::P2P_UDP_FLAG_ACK) != 0 {
                                                             continue;
                                                         }
                                                         let payload =
                                                             &data[Self::P2P_UDP_HEADER_LEN..];
-                                                        let entry =
-                                                            inflight.entry(msg_id).or_default();
-                                                        entry.insert(frag_idx, payload.to_vec());
-                                                        let Some(full) =
-                                                            Self::p2p_udp_try_reassemble(
-                                                                entry, frag_cnt,
+                                                        if let Err(e) =
+                                                            Self::p2p_udp_validate_fragment(
+                                                                &data_plane_secret_copy,
+                                                                &connection_id_copy,
+                                                                flags,
+                                                                msg_id,
+                                                                frag_idx,
+                                                                frag_cnt,
+                                                                ts,
+                                                                payload,
+                                                                &tag,
+                                                                Self::p2p_now_secs(),
                                                             )
-                                                        else {
+                                                        {
+                                                            security_metrics::record_p2p_auth_rejection();
+                                                            warn!(
+                                                                "TURN/UDP authentication rejected packet from {}: {}",
+                                                                peer, e
+                                                            );
+                                                            reassembly.record_invalid_source(peer);
+                                                            continue;
+                                                        }
+
+                                                        let full = match reassembly.accept_fragment(
+                                                            peer, msg_id, frag_idx, frag_cnt,
+                                                            payload,
+                                                        ) {
+                                                            Ok(v) => {
+                                                                let hdr = Self::p2p_udp_ack_packet(
+                                                                    connection_id_copy,
+                                                                    data_plane_secret_copy,
+                                                                    msg_id,
+                                                                );
+                                                                let _ = Self::turn_send_indication(
+                                                                    &turn_sock, peer, &hdr,
+                                                                )
+                                                                .await;
+                                                                v
+                                                            }
+                                                            Err(e) => {
+                                                                security_metrics::record_p2p_reassembly_rejection();
+                                                                warn!(
+                                                                    "TURN/UDP reassembly rejected packet from {}: {}",
+                                                                    peer, e
+                                                                );
+                                                                reassembly
+                                                                    .record_invalid_source(peer);
+                                                                continue;
+                                                            }
+                                                        };
+                                                        let Some(full) = full else {
                                                             continue;
                                                         };
-                                                        inflight.remove(&msg_id);
 
                                                         let cmd =
-                                                            match Self::udp_decode_command(
-                                                                &full,
-                                                            ) {
+                                                            match Self::udp_decode_command(&full) {
                                                                 Ok(c) => c,
                                                                 Err(e) => {
-                                                                    warn!("TURN/UDP decode failed: {}", e);
+                                                                    warn!(
+                                                                    "TURN/UDP decode failed: {}",
+                                                                    e
+                                                                );
                                                                     continue;
                                                                 }
                                                             };
@@ -3211,6 +3486,8 @@ impl WorkerHandle for ClientWorker {
                                                                         let _ = Self::turn_send_reliable_over_indication(
                                                                             &turn_sock,
                                                                             peer,
+                                                                            connection_id_copy,
+                                                                            data_plane_secret_copy,
                                                                             msg_id,
                                                                             &pkt,
                                                                             &mut inbox,
@@ -3243,6 +3520,8 @@ impl WorkerHandle for ClientWorker {
                                                                     let _ = Self::turn_send_reliable_over_indication(
                                                                         &turn_sock,
                                                                         peer,
+                                                                        connection_id_copy,
+                                                                        data_plane_secret_copy,
                                                                         msg_id,
                                                                         &pkt,
                                                                         &mut inbox,
@@ -3286,6 +3565,8 @@ impl WorkerHandle for ClientWorker {
                                                                     let _ = Self::turn_send_reliable_over_indication(
                                                                         &turn_sock,
                                                                         peer,
+                                                                        connection_id_copy,
+                                                                        data_plane_secret_copy,
                                                                         msg_id,
                                                                         &pkt,
                                                                         &mut inbox,
@@ -3325,6 +3606,8 @@ impl WorkerHandle for ClientWorker {
                                                                         let _ = Self::turn_send_reliable_over_indication(
                                                                             &turn_sock,
                                                                             peer,
+                                                                            connection_id_copy,
+                                                                            data_plane_secret_copy,
                                                                             msg_id,
                                                                             &pkt,
                                                                             &mut inbox,
@@ -3384,6 +3667,8 @@ impl WorkerHandle for ClientWorker {
                                                                     let _ = Self::turn_send_reliable_over_indication(
                                                                         &turn_sock,
                                                                         peer,
+                                                                        connection_id_copy,
+                                                                        data_plane_secret_copy,
                                                                         msg_id,
                                                                         &pkt,
                                                                         &mut inbox,
@@ -3406,13 +3691,18 @@ impl WorkerHandle for ClientWorker {
                                                             },
                                                         );
                                                         if let Ok(pkt) =
-                                                            Self::p2p_udp_encode_command_payload(&done)
+                                                            Self::p2p_udp_encode_command_payload(
+                                                                &done,
+                                                            )
                                                         {
                                                             let msg_id = next_msg_id;
-                                                            next_msg_id = next_msg_id.wrapping_add(1);
+                                                            next_msg_id =
+                                                                next_msg_id.wrapping_add(1);
                                                             let _ = Self::turn_send_reliable_over_indication(
                                                                 &turn_sock,
                                                                 peer,
+                                                                connection_id_copy,
+                                                                data_plane_secret_copy,
                                                                 msg_id,
                                                                 &pkt,
                                                                 &mut inbox,
@@ -3473,6 +3763,13 @@ impl WorkerHandle for ClientWorker {
 
                                             #[cfg(not(target_os = "android"))]
                                             {
+                                                let Some(data_plane_secret) = p2p_turn_config
+                                                    .get(&connection_id)
+                                                    .map(|c| c.data_plane_secret)
+                                                else {
+                                                    warn!("Missing P2P data-plane secret for direct stream");
+                                                    continue;
+                                                };
                                                 let engine = Arc::clone(&self.engine);
                                                 tokio::spawn(async move {
                                                     if let Err(e) =
@@ -3480,6 +3777,7 @@ impl WorkerHandle for ClientWorker {
                                                             engine,
                                                             stream,
                                                             connection_id,
+                                                            data_plane_secret,
                                                         )
                                                         .await
                                                     {
@@ -3499,10 +3797,13 @@ impl WorkerHandle for ClientWorker {
                                 if let Some(e) = last_err {
                                     #[cfg(not(target_os = "android"))]
                                     {
-                                        if let Some((turn_urls, username, password, _peer_hex)) =
+                                        if let Some(turn_config) =
                                             p2p_turn_config.get(&connection_id).cloned()
                                         {
-                                            if let Some(turn_url) = turn_urls.first() {
+                                            let username = turn_config.turn_username;
+                                            let password = turn_config.turn_password;
+                                            let data_plane_secret = turn_config.data_plane_secret;
+                                            if let Some(turn_url) = turn_config.turn_urls.first() {
                                                 match Self::turn_allocate_tcp(
                                                     turn_url,
                                                     &username,
@@ -3555,7 +3856,7 @@ impl WorkerHandle for ClientWorker {
 
                                                                             let engine = Arc::clone(&self.engine);
                                                                             tokio::spawn(async move {
-                                                                                if let Err(e) = Self::serve_p2p_io_with_engine(engine, data_stream, connection_id).await {
+                                                                                if let Err(e) = Self::serve_p2p_io_with_engine(engine, data_stream, connection_id, data_plane_secret).await {
                                                                                     error!("TURN data-plane stream error: {}", e);
                                                                                 }
                                                                             });
@@ -3597,6 +3898,57 @@ impl WorkerHandle for ClientWorker {
                 }
             }
         }
+    }
+}
+
+async fn connect_control_stream(
+    args: &Args,
+    addr: std::net::SocketAddr,
+) -> Result<(ControlReader, ControlWriter)> {
+    let tcp_stream = TcpStream::connect(addr).await?;
+
+    if !args.control_tls {
+        if !addr.ip().is_loopback() {
+            warn!(
+                "SECURITY: gpuf-s control connection to {} is plaintext TCP; enable --control-tls before remote production deployment",
+                args.server_addr
+            );
+        }
+        let (reader, writer) = tcp_stream.into_split();
+        return Ok((Box::new(reader), Box::new(writer)));
+    }
+
+    #[cfg(target_os = "android")]
+    {
+        drop(tcp_stream);
+        return Err(anyhow!(
+            "control TLS in handle_tcp is not available for Android target; use the mobile TLS SDK entrypoint"
+        ));
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        let certs = load_root_cert(&args.cert_chain_path)?;
+        let mut root_store = RootCertStore::empty();
+        for cert in certs {
+            root_store.add(cert)?;
+        }
+
+        install_rustls_crypto_provider_once();
+        let config = ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+        let connector = TlsConnector::from(Arc::new(config));
+        let server_name_raw = args
+            .control_tls_server_name
+            .as_deref()
+            .unwrap_or(args.server_addr.as_str())
+            .to_string();
+        let server_name = ServerName::try_from(server_name_raw.clone())
+            .map_err(|_| anyhow!("Invalid control TLS server name: {}", server_name_raw))?;
+        let tls_stream = connector.connect(server_name, tcp_stream).await?;
+        let (reader, writer) = tokio::io::split(tls_stream);
+        Ok((Box::new(reader), Box::new(writer)))
     }
 }
 
@@ -3683,6 +4035,7 @@ pub async fn create_proxy_connection(
         proxy_conn_id
     );
 
+    install_rustls_crypto_provider_once();
     let config = ClientConfig::builder()
         .with_root_certificates(root_store)
         .with_no_client_auth();
@@ -3850,5 +4203,190 @@ pub async fn create_proxy_connection(
             );
             return Err(e.into());
         }
+    }
+}
+
+#[cfg(all(test, not(target_os = "android")))]
+mod control_stream_tests {
+    use super::*;
+    use clap::Parser;
+    use std::fs::File;
+    use std::io::BufReader;
+    use std::path::PathBuf;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+    use tokio_rustls::{
+        rustls::{pki_types::PrivateKeyDer, server::ServerConfig as RustlsServerConfig},
+        TlsAcceptor,
+    };
+
+    fn workspace_file(name: &str) -> String {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join(name)
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    fn load_test_private_key(path: &str) -> Result<PrivateKeyDer<'static>> {
+        let f = File::open(path)?;
+        let mut reader = BufReader::new(f);
+        rustls_pemfile::private_key(&mut reader)?
+            .ok_or_else(|| anyhow!("no private key found in {}", path))
+    }
+
+    #[tokio::test]
+    async fn control_tls_connects_to_local_tls_listener() -> Result<()> {
+        install_rustls_crypto_provider_once();
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await?;
+            let cert_chain = load_root_cert(&workspace_file("cert.pem"))?;
+            let private_key = load_test_private_key(&workspace_file("key.pem"))?;
+            let config = RustlsServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(cert_chain, private_key)?;
+            let acceptor = TlsAcceptor::from(Arc::new(config));
+            let mut tls_stream = acceptor.accept(stream).await?;
+            tls_stream.write_all(b"ok").await?;
+            tls_stream.flush().await?;
+            Ok::<(), anyhow::Error>(())
+        });
+
+        let port = addr.port().to_string();
+        let args = Args::try_parse_from([
+            "gpuf-c",
+            "--standalone-llama",
+            "--server-addr",
+            "127.0.0.1",
+            "--control-port",
+            port.as_str(),
+            "--cert-chain-path",
+            workspace_file("ca-cert.pem").as_str(),
+            "--control-tls",
+            "--control-tls-server-name",
+            "localhost",
+        ])?;
+
+        let (mut reader, _writer) = connect_control_stream(&args, addr).await?;
+        let mut buf = [0u8; 2];
+        reader.read_exact(&mut buf).await?;
+        assert_eq!(&buf, b"ok");
+        server.await??;
+        Ok(())
+    }
+
+    async fn run_control_tls_fixture(
+        cert_path: String,
+        should_write: bool,
+    ) -> Result<std::net::SocketAddr> {
+        install_rustls_crypto_provider_once();
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await?;
+            let cert_chain = load_root_cert(&cert_path)?;
+            let private_key = load_test_private_key(&workspace_file("key.pem"))?;
+            let config = RustlsServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(cert_chain, private_key)?;
+            let acceptor = TlsAcceptor::from(Arc::new(config));
+            match acceptor.accept(stream).await {
+                Ok(mut tls_stream) => {
+                    if should_write {
+                        tls_stream.write_all(b"ok").await?;
+                        tls_stream.flush().await?;
+                    }
+                }
+                Err(_) => {}
+            }
+            Ok::<(), anyhow::Error>(())
+        });
+        Ok(addr)
+    }
+
+    fn control_tls_test_args(port: u16) -> Result<Args> {
+        let port = port.to_string();
+        Ok(Args::try_parse_from([
+            "gpuf-c",
+            "--standalone-llama",
+            "--server-addr",
+            "127.0.0.1",
+            "--control-port",
+            port.as_str(),
+            "--cert-chain-path",
+            workspace_file("ca-cert.pem").as_str(),
+            "--control-tls",
+            "--control-tls-server-name",
+            "localhost",
+        ])?)
+    }
+
+    #[tokio::test]
+    async fn control_tls_accepts_rotated_cert_signed_by_same_ca() -> Result<()> {
+        let addr = run_control_tls_fixture(
+            workspace_file("gpuf-c/tests/fixtures/control-rotated-cert.pem"),
+            true,
+        )
+        .await?;
+        let args = control_tls_test_args(addr.port())?;
+
+        let (mut reader, _writer) = connect_control_stream(&args, addr).await?;
+        let mut buf = [0u8; 2];
+        reader.read_exact(&mut buf).await?;
+        assert_eq!(&buf, b"ok");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn control_tls_rejects_expired_server_certificate() -> Result<()> {
+        let addr = run_control_tls_fixture(
+            workspace_file("gpuf-c/tests/fixtures/control-expired-cert.pem"),
+            false,
+        )
+        .await?;
+        let args = control_tls_test_args(addr.port())?;
+
+        let result = connect_control_stream(&args, addr).await;
+        assert!(
+            result.is_err(),
+            "expired control TLS certificate was accepted"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn control_plaintext_connects_by_default() -> Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await?;
+            stream.write_all(b"ok").await?;
+            stream.flush().await?;
+            Ok::<(), anyhow::Error>(())
+        });
+
+        let port = addr.port().to_string();
+        let args = Args::try_parse_from([
+            "gpuf-c",
+            "--standalone-llama",
+            "--server-addr",
+            "127.0.0.1",
+            "--control-port",
+            port.as_str(),
+            "--cert-chain-path",
+            workspace_file("ca-cert.pem").as_str(),
+        ])?;
+        assert!(!args.control_tls);
+
+        let (mut reader, _writer) = connect_control_stream(&args, addr).await?;
+        let mut buf = [0u8; 2];
+        reader.read_exact(&mut buf).await?;
+        assert_eq!(&buf, b"ok");
+        server.await??;
+        Ok(())
     }
 }

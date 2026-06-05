@@ -66,11 +66,7 @@ async fn process_batch(messages: Vec<OwnedMessage>, db_pool: Pool<Postgres>) -> 
                     }
                 };
 
-                // Log raw payload for debugging
-                debug!(
-                    "Raw payload: {:?}",
-                    std::str::from_utf8(payload).unwrap_or("[invalid utf8]")
-                );
+                debug!("Heartbeat payload received ({} bytes)", payload.len());
                 let cfg = bincode::config::standard()
                     .with_fixed_int_encoding()
                     .with_little_endian();
@@ -92,7 +88,7 @@ async fn process_batch(messages: Vec<OwnedMessage>, db_pool: Pool<Postgres>) -> 
                     }
                 };
 
-                info!("Heartbeat received from client {} total_tflops {} cpu_usage {}% memory_usage {}% disk_usage {}% network_up {} network_down {}", heartbeat.client_id, heartbeat.total_tflops, heartbeat.system_info.cpu_usage, heartbeat.system_info.memory_usage, heartbeat.system_info.disk_usage,  format_bytes!(heartbeat.system_info.network_tx),format_bytes!(heartbeat.system_info.network_rx));
+                info!("Heartbeat received from client {} total_tflops {} cpu_usage {}% memory_usage {}% disk_usage {}% network_up {} network_down {}", heartbeat.client_id.log_label(), heartbeat.total_tflops, heartbeat.system_info.cpu_usage, heartbeat.system_info.memory_usage, heartbeat.system_info.disk_usage, format_bytes!(heartbeat.system_info.network_tx), format_bytes!(heartbeat.system_info.network_rx));
                 // Update last seen timestamp with safe type conversion
                 if let Err(e) = insert_heartbeat(
                     &mut transaction,
@@ -107,8 +103,9 @@ async fn process_batch(messages: Vec<OwnedMessage>, db_pool: Pool<Postgres>) -> 
                 .await
                 {
                     error!(
-                        "Failed to update heartbeat for client {:?}: {}",
-                        heartbeat.client_id, e
+                        "Failed to update heartbeat for client {}: {}",
+                        heartbeat.client_id.log_label(),
+                        e
                     );
                     let _ = transaction.rollback().await;
                     continue;
@@ -128,7 +125,8 @@ async fn process_batch(messages: Vec<OwnedMessage>, db_pool: Pool<Postgres>) -> 
                 {
                     error!(
                         "Failed to update client heartbeat for client {}: {}",
-                        heartbeat.client_id, e
+                        heartbeat.client_id.log_label(),
+                        e
                     );
                     let _ = transaction.rollback().await;
                     continue;
@@ -143,7 +141,8 @@ async fn process_batch(messages: Vec<OwnedMessage>, db_pool: Pool<Postgres>) -> 
                 {
                     error!(
                         "Failed to update device heartbeat for client {}: {}",
-                        heartbeat.client_id, e
+                        heartbeat.client_id.log_label(),
+                        e
                     );
                     let _ = transaction.rollback().await;
                     continue;
@@ -152,14 +151,15 @@ async fn process_batch(messages: Vec<OwnedMessage>, db_pool: Pool<Postgres>) -> 
                 if let Err(e) = transaction.commit().await {
                     error!(
                         "Failed to commit transaction for client {}: {}",
-                        heartbeat.client_id, e
+                        heartbeat.client_id.log_label(),
+                        e
                     );
                     continue;
                 }
 
                 debug!(
                     "Successfully processed heartbeat for client: {}",
-                    heartbeat.client_id
+                    heartbeat.client_id.log_label()
                 );
             }
             None => {

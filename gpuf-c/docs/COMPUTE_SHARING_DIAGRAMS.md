@@ -124,7 +124,7 @@ GpufNative.startInferenceService(modelPath, 8082);
 
 // 2. Start compute monitoring and sharing
 GpufNative.startComputeMonitoring(
-    "http://gpufabric.com:8080",  // HTTP monitoring server
+    "https://<your-gpufabric-api>",  // HTTP monitoring server
     "gpufs.example.com",          // TCP/WS server address
     8081,                         // Control port
     8083,                         // Proxy port

@@ -1,6 +1,6 @@
 use super::Engine;
 use anyhow::{anyhow, Result};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tokio::fs;
 use tokio::sync::RwLock;
@@ -158,19 +158,21 @@ impl LlamaEngine {
             // Run model loading in blocking thread
             let (backend, model) = tokio::task::spawn_blocking(move || {
                 // Use global backend singleton - initialize only once
-                let backend = LLAMA_BACKEND.get_or_init(|| {
-                    info!("Initializing Llama backend (first time only)");
-                    match LlamaBackend::init() {
-                        Ok(b) => Arc::new(b),
-                        Err(e) => {
-                            warn!("Failed to initialize Llama backend: {:?}", e);
-                            panic!("Cannot initialize Llama backend: {:?}", e);
+                let backend = LLAMA_BACKEND
+                    .get_or_init(|| {
+                        info!("Initializing Llama backend (first time only)");
+                        match LlamaBackend::init() {
+                            Ok(b) => Arc::new(b),
+                            Err(e) => {
+                                warn!("Failed to initialize Llama backend: {:?}", e);
+                                panic!("Cannot initialize Llama backend: {:?}", e);
+                            }
                         }
-                    }
-                }).clone();
+                    })
+                    .clone();
 
-                use llama_cpp_2::model::params::LlamaSplitMode as LlamaCppSplitMode;
                 use crate::util::nvswitch_check;
+                use llama_cpp_2::model::params::LlamaSplitMode as LlamaCppSplitMode;
 
                 // Check NVSwitch availability before CUDA init (HGX/A100/A800)
                 if !nvswitch_check::check_hgx_nvswitch_available() {
@@ -187,8 +189,7 @@ impl LlamaEngine {
                 };
 
                 // Build base model params step by step
-                let mut model_params =
-                    LlamaModelParams::default().with_n_gpu_layers(n_gpu_layers);
+                let mut model_params = LlamaModelParams::default().with_n_gpu_layers(n_gpu_layers);
                 model_params = model_params.with_split_mode(split_mode);
                 model_params = model_params.with_main_gpu(llama_main_gpu);
 
@@ -196,7 +197,11 @@ impl LlamaEngine {
                 if let Some(ref devs) = llama_devices {
                     let devs = devs.trim();
                     if !devs.is_empty() {
-                        if let Ok(devices) = devs.split(',').map(|s| s.trim().parse::<usize>()).collect::<Result<Vec<_>, _>>() {
+                        if let Ok(devices) = devs
+                            .split(',')
+                            .map(|s| s.trim().parse::<usize>())
+                            .collect::<Result<Vec<_>, _>>()
+                        {
                             // Rebuild params with devices to avoid with_devices move issue
                             let new_params = LlamaModelParams::default()
                                 .with_n_gpu_layers(n_gpu_layers)
@@ -311,10 +316,9 @@ impl LlamaEngine {
                 use llama_cpp_2::model::AddBos;
                 use llama_cpp_2::sampling::LlamaSampler;
 
-                let context_params =
-                    LlamaContextParams::default()
-                        .with_n_ctx(NonZeroU32::new(n_ctx))
-                        .with_n_batch(n_batch);
+                let context_params = LlamaContextParams::default()
+                    .with_n_ctx(NonZeroU32::new(n_ctx))
+                    .with_n_batch(n_batch);
 
                 // Lock model and create context with proper lifetime
                 let model_guard = model
@@ -482,10 +486,9 @@ impl LlamaEngine {
                 use llama_cpp_2::model::{AddBos, Special};
                 use llama_cpp_2::sampling::LlamaSampler;
 
-                let context_params =
-                    LlamaContextParams::default()
-                        .with_n_ctx(NonZeroU32::new(n_ctx))
-                        .with_n_batch(n_batch);
+                let context_params = LlamaContextParams::default()
+                    .with_n_ctx(NonZeroU32::new(n_ctx))
+                    .with_n_batch(n_batch);
 
                 let model_guard = model
                     .lock()
@@ -714,47 +717,70 @@ impl LlamaEngine {
         !model_ptr.is_null() && !context_ptr.is_null()
     }
 
-    /// Resolve model path: if relative, try models_dir first; if absolute, use directly
+    /// Resolve model path with a safe default: relative names must stay in models_dir;
+    /// absolute paths are allowed only when they point at an existing model file.
     fn resolve_model_path(&self, path: &str) -> Result<PathBuf> {
         let path_buf = PathBuf::from(path);
+        let candidate = if path_buf.is_absolute() {
+            path_buf
+        } else {
+            if path_buf
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+            {
+                return Err(anyhow!("Model path must not contain '..': {}", path));
+            }
+            self.models_dir.join(path_buf)
+        };
 
-        // If absolute path, use it directly
-        if path_buf.is_absolute() {
-            if !path_buf.exists() {
-                return Err(anyhow!("Model file does not exist: {}", path));
-            }
-            if !path_buf.is_file() {
-                return Err(anyhow!("Model path is not a file: {}", path));
-            }
-            return Ok(path_buf);
+        self.validate_model_path_candidate(&candidate, !PathBuf::from(path).is_absolute())
+    }
+
+    fn validate_model_path_candidate(
+        &self,
+        path: &Path,
+        must_stay_in_models_dir: bool,
+    ) -> Result<PathBuf> {
+        if !path.exists() {
+            return Err(anyhow!("Model file does not exist: {}", path.display()));
         }
-
-        // If relative path, try models_dir first
-        let models_dir_path = self.models_dir.join(path);
-        if models_dir_path.exists() && models_dir_path.is_file() {
-            info!(
-                "Resolved relative path '{}' to '{}'",
-                path,
-                models_dir_path.display()
+        let canonical = path
+            .canonicalize()
+            .map_err(|e| anyhow!("Invalid model path '{}': {}", path.display(), e))?;
+        if !canonical.is_file() {
+            return Err(anyhow!("Model path is not a file: {}", canonical.display()));
+        }
+        let ext = canonical
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if !matches!(ext.as_str(), "gguf" | "bin" | "safetensors") {
+            return Err(anyhow!(
+                "Model path must end with .gguf, .bin, or .safetensors: {}",
+                canonical.display()
+            ));
+        }
+        if must_stay_in_models_dir {
+            let models_dir = self.models_dir.canonicalize().map_err(|e| {
+                anyhow!("Invalid models dir '{}': {}", self.models_dir.display(), e)
+            })?;
+            if !canonical.starts_with(&models_dir) {
+                return Err(anyhow!(
+                    "Model path escapes models directory: {}",
+                    canonical.display()
+                ));
+            }
+        } else {
+            warn!(
+                "Using explicit absolute model path: {}",
+                canonical.display()
             );
-            return Ok(models_dir_path);
         }
-
-        // Fallback: try current directory
-        if path_buf.exists() && path_buf.is_file() {
-            warn!("Using model from current directory: {}", path);
-            return Ok(path_buf);
-        }
-
-        Err(anyhow!(
-            "Model file not found: '{}' (checked: {} and current dir)",
-            path,
-            models_dir_path.display()
-        ))
+        Ok(canonical)
     }
 
     fn validate_model_path(&self, path: &str) -> Result<PathBuf> {
-        // Use resolve_model_path for consistent path handling
         self.resolve_model_path(path)
     }
 
@@ -1073,7 +1099,9 @@ impl Drop for LlamaEngine {
         // 3. Arc automatically manages reference counting and will free memory when last reference is dropped
         // 4. Clearing here would break the global cache and cause model to be freed prematurely
         if self.is_initialized {
-            debug!("LlamaEngine instance dropped (model remains in global cache if still referenced)");
+            debug!(
+                "LlamaEngine instance dropped (model remains in global cache if still referenced)"
+            );
         }
     }
 }

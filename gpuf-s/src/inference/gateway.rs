@@ -26,7 +26,6 @@ use std::time::Duration;
 pub struct AuthContext {
     pub client_ids: Vec<ClientId>,
     pub access_level: AccessLevel,
-    pub token: String,
 }
 
 /// Inference Gateway - Handles external API requests and routes them to Android devices
@@ -82,14 +81,13 @@ impl InferenceGateway {
             error!("No Authorization header");
             return StatusCode::UNAUTHORIZED.into_response();
         };
-        debug!("Received token: {}", token);
+        debug!("Received bearer token ({} bytes)", token.len());
         match get_user_client_by_token(&db_pool, token.as_str()).await {
             Ok((client_ids, access_level)) => {
                 let mut req = req;
                 req.extensions_mut().insert(AuthContext {
                     client_ids,
                     access_level,
-                    token,
                 });
                 next.run(req).await
             }
@@ -110,8 +108,9 @@ impl InferenceGateway {
         }
 
         debug!(
-            "Send kafka key-value ({:?}, {chosen_client_id}) pair",
-            request_id
+            "Send kafka key-value pair (request_id_present={}, client={})",
+            request_id.is_some(),
+            chosen_client_id.log_label()
         );
 
         // Share API: Send kafka key-value (request_id, client_id) pair

@@ -2,6 +2,81 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
+fn is_valid_android_ndk(path: &PathBuf) -> bool {
+    path.join("toolchains/llvm/prebuilt/linux-x86_64/sysroot")
+        .is_dir()
+}
+
+fn latest_android_ndk_under(root: &str) -> Option<PathBuf> {
+    let mut candidates = fs::read_dir(root)
+        .ok()?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.is_dir())
+        .collect::<Vec<_>>();
+    candidates.sort();
+    candidates
+        .into_iter()
+        .rev()
+        .find(|path| is_valid_android_ndk(path))
+}
+
+fn resolve_android_ndk_root() -> PathBuf {
+    for name in ["ANDROID_NDK_ROOT", "ANDROID_NDK_HOME", "ANDROID_NDK"] {
+        if let Ok(value) = env::var(name) {
+            let path = PathBuf::from(&value);
+            if is_valid_android_ndk(&path) {
+                return path;
+            }
+            println!(
+                "cargo:warning={} is set but does not look like an Android NDK: {}",
+                name, value
+            );
+        }
+    }
+
+    let mut ndk_roots = Vec::new();
+    if let Ok(home) = env::var("HOME") {
+        ndk_roots.push(format!("{home}/Android/Sdk/ndk"));
+    }
+    ndk_roots.extend([
+        "/opt/android-sdk/ndk".to_string(),
+        "/usr/lib/android-sdk/ndk".to_string(),
+    ]);
+
+    for root in ndk_roots {
+        if let Some(path) = latest_android_ndk_under(&root) {
+            println!(
+                "cargo:warning=Using detected Android NDK: {}",
+                path.display()
+            );
+            return path;
+        }
+    }
+
+    if let Ok(home) = env::var("HOME") {
+        let path = PathBuf::from(home).join("android-ndk-r27d");
+        if is_valid_android_ndk(&path) {
+            return path;
+        }
+    }
+
+    panic!("Android NDK not found; set ANDROID_NDK_ROOT or ANDROID_NDK_HOME");
+}
+
+fn android_sysroot_lib_triple(target: &str) -> String {
+    if target.starts_with("armv7-linux-androideabi") {
+        "arm-linux-androideabi".to_string()
+    } else if target.starts_with("aarch64-linux-android") {
+        "aarch64-linux-android".to_string()
+    } else if target.starts_with("x86_64-linux-android") {
+        "x86_64-linux-android".to_string()
+    } else if target.starts_with("i686-linux-android") {
+        "i686-linux-android".to_string()
+    } else {
+        target.to_string()
+    }
+}
+
 fn main() {
     // Get the target OS from Cargo environment variable
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap();
@@ -63,7 +138,7 @@ fn main() {
             r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.0\lib\x64",
             r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.8\lib\x64",
             r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.7\lib\x64",
-             r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0\lib\x64",
+            r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0\lib\x64",
         ];
 
         // Check if NVML_LIB_PATH environment variable is set
@@ -218,17 +293,29 @@ fn main() {
             panic!("llama-android-ndk directory not found");
         }
 
-        // Use absolute paths for Android NDK
-        let ndk_root = env::var("ANDROID_NDK_ROOT")
-            .unwrap_or_else(|_| "/home/jack/android-ndk-r27d".to_string());
-        let sysroot = format!("{}/toolchains/llvm/prebuilt/linux-x86_64/sysroot", ndk_root);
-        let lib_path = format!("{}/usr/lib/aarch64-linux-android/28", sysroot);
+        println!("cargo:rerun-if-env-changed=ANDROID_NDK_ROOT");
+        println!("cargo:rerun-if-env-changed=ANDROID_NDK_HOME");
+        println!("cargo:rerun-if-env-changed=ANDROID_API");
+        println!("cargo:rerun-if-env-changed=ANDROID_PLATFORM");
+
+        let ndk_root = resolve_android_ndk_root();
+        let target_triple =
+            env::var("TARGET").unwrap_or_else(|_| "aarch64-linux-android".to_string());
+        let sysroot_lib_triple = android_sysroot_lib_triple(&target_triple);
+        let android_api = env::var("ANDROID_API")
+            .ok()
+            .or_else(|| env::var("ANDROID_PLATFORM").ok())
+            .map(|v| v.trim_start_matches("android-").to_string())
+            .unwrap_or_else(|| "28".to_string());
+        let sysroot = ndk_root.join("toolchains/llvm/prebuilt/linux-x86_64/sysroot");
+        let sysroot_lib_dir = sysroot.join("usr/lib").join(&sysroot_lib_triple);
+        let lib_path = sysroot_lib_dir.join(&android_api);
 
         // Add Android system library paths first
-        println!("cargo:rustc-link-search=native={}", lib_path);
+        println!("cargo:rustc-link-search=native={}", lib_path.display());
         println!(
-            "cargo:rustc-link-search=native={}/usr/lib/aarch64-linux-android",
-            sysroot
+            "cargo:rustc-link-search=native={}",
+            sysroot_lib_dir.display()
         );
 
         // Link system libraries first
@@ -394,7 +481,10 @@ fn main() {
             .unwrap_or(default_lib_dir);
 
         if !llama_lib_dir.exists() {
-            println!("cargo:warning=llama-ios directory not found at: {}", llama_lib_dir.display());
+            println!(
+                "cargo:warning=llama-ios directory not found at: {}",
+                llama_lib_dir.display()
+            );
             println!("cargo:warning=Please build llama.cpp iOS static libraries first (scheme A)");
             panic!("llama-ios directory not found");
         }
@@ -472,15 +562,33 @@ fn bundle_cuda_dlls_windows() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Common install locations (best-effort)
-    cuda_bin_dirs.push(PathBuf::from(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0\bin\x64"));
-    cuda_bin_dirs.push(PathBuf::from(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6\bin\x64"));
-    cuda_bin_dirs.push(PathBuf::from(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.5\bin\x64"));
-    cuda_bin_dirs.push(PathBuf::from(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\bin\x64"));
-    cuda_bin_dirs.push(PathBuf::from(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.3\bin\x64"));
-    cuda_bin_dirs.push(PathBuf::from(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.2\bin\x64"));
-    cuda_bin_dirs.push(PathBuf::from(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.1\bin\x64"));
-    cuda_bin_dirs.push(PathBuf::from(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.0\bin\x64"));
-    cuda_bin_dirs.push(PathBuf::from(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.8\bin\x64"));
+    cuda_bin_dirs.push(PathBuf::from(
+        r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0\bin\x64",
+    ));
+    cuda_bin_dirs.push(PathBuf::from(
+        r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6\bin\x64",
+    ));
+    cuda_bin_dirs.push(PathBuf::from(
+        r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.5\bin\x64",
+    ));
+    cuda_bin_dirs.push(PathBuf::from(
+        r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\bin\x64",
+    ));
+    cuda_bin_dirs.push(PathBuf::from(
+        r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.3\bin\x64",
+    ));
+    cuda_bin_dirs.push(PathBuf::from(
+        r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.2\bin\x64",
+    ));
+    cuda_bin_dirs.push(PathBuf::from(
+        r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.1\bin\x64",
+    ));
+    cuda_bin_dirs.push(PathBuf::from(
+        r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.0\bin\x64",
+    ));
+    cuda_bin_dirs.push(PathBuf::from(
+        r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.8\bin\x64",
+    ));
 
     // Find a bin dir that actually exists
     let cuda_bin = cuda_bin_dirs.into_iter().find(|p| p.exists());
@@ -591,10 +699,7 @@ fn bundle_windows_tar() -> Result<(), Box<dyn std::error::Error>> {
 
     builder.finish()?;
 
-    println!(
-        "cargo:warning=Created bundle tar at {}",
-        tar_path.display()
-    );
+    println!("cargo:warning=Created bundle tar at {}", tar_path.display());
 
     Ok(())
 }
@@ -625,7 +730,9 @@ fn bundle_nvml_dll_windows() -> Result<(), Box<dyn std::error::Error>> {
         candidates.push(PathBuf::from(&nvml_path).join("nvml.lib"));
     }
 
-    candidates.push(PathBuf::from(r"C:\Program Files\NVIDIA Corporation\NVSMI\nvml.dll"));
+    candidates.push(PathBuf::from(
+        r"C:\Program Files\NVIDIA Corporation\NVSMI\nvml.dll",
+    ));
     candidates.push(PathBuf::from(r"C:\Windows\System32\nvml.dll"));
 
     if let Ok(cuda_path) = env::var("CUDA_PATH") {
@@ -637,7 +744,9 @@ fn bundle_nvml_dll_windows() -> Result<(), Box<dyn std::error::Error>> {
         .find(|p| p.is_file() && p.file_name().and_then(|s| s.to_str()) == Some("nvml.dll"));
 
     let Some(src) = src else {
-        return Err("nvml.dll not found. Install NVIDIA driver (NVSMI) or set NVML_LIB_PATH.".into());
+        return Err(
+            "nvml.dll not found. Install NVIDIA driver (NVSMI) or set NVML_LIB_PATH.".into(),
+        );
     };
 
     let dst = output_dir.join("nvml.dll");

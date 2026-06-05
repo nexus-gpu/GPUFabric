@@ -4,7 +4,7 @@
 
 本文档描述了 GPUFabric Remote Worker 的 JNI (Java Native Interface) API，用于在 Android 应用中集成分布式 LLM 推理功能。这些 API 允许 Android 设备作为远程工作节点，连接到 GPUFabric 服务器并执行 LLM 推理任务。
 
-**源文件**: `/home/jack/codedir/GPUFabric/gpuf-c/src/jni_remote_worker.rs`
+**源文件**: `gpuf-c/src/jni_remote_worker.rs`
 
 **Java 包名**: `com.gpuf.c.RemoteWorker`
 
@@ -150,7 +150,8 @@ RemoteWorker.startTasksWithCallback();
 
 1. `setRemoteWorkerModel(...)`
 2. `startRemoteWorker(...)`
-3. `registerCallbackEmitter(emitter)`（或通过 RN NativeModule 的 `registerEmitter()`）
+3. `startRemoteWorkerWithTls(...)`（新增 additive TLS 入口；旧入口保持兼容）
+4. `registerCallbackEmitter(emitter)`（或通过 RN NativeModule 的 `registerEmitter()`）
 4. `startRemoteWorkerTasksWithJavaCallback()`
 5. JS 侧监听 `RemoteWorkerEvent`
 
@@ -176,7 +177,7 @@ public static native int startRemoteWorker(
 **参数**:
 | 参数名 | 类型 | 说明 |
 |--------|------|------|
-| `serverAddr` | String | 服务器 IP 地址或主机名<br>例如: `"8.140.251.142"` |
+| `serverAddr` | String | 服务器 IP 地址或主机名<br>例如: `"<your-server-host>"` |
 | `controlPort` | int | 控制端口号<br>例如: `17000` |
 | `proxyPort` | int | 代理端口号<br>例如: `17001` |
 | `workerType` | String | 工作器类型<br>可选值: `"TCP"` 或 `"WS"` (WebSocket) |
@@ -190,11 +191,12 @@ public static native int startRemoteWorker(
 - `clientId` 必须是32个十六进制字符（128位）
 - 确保网络权限已授予
 - 服务器地址和端口必须可访问
+- 当前 JNI/C `startRemoteWorker` 签名保持兼容，不新增 TLS 参数；新增的 `startRemoteWorkerWithTls(...)` / `start_remote_worker_with_tls(...)` 使用同一控制协议但外层包 TLS，支持 CA bundle、SNI/server name 和 SHA256 leaf pin。`validateMobileTlsPolicy(caCertPath, serverName, certSha256Pin)` / `gpuf_validate_mobile_tls_policy` 可用于提前校验 TLS 配置。Android/iOS target 编译、真机/模拟器 TLS/pinning 握手日志仍是正式移动 SDK 发布 gate。CLI/config 方式的 `gpuf-c` 可通过 `--control-tls` / `control_tls = true` 启用控制连接 TLS。
 
 **示例**:
 ```java
 int result = RemoteWorker.startRemoteWorker(
-    "8.140.251.142",  // 服务器地址
+    "<your-server-host>",  // 服务器地址，由集成方显式配置
     17000,            // 控制端口
     17001,            // 代理端口
     "TCP",            // 连接类型
@@ -205,6 +207,61 @@ if (result == 0) {
 } else {
     Log.e("GPUFabric", "远程工作器启动失败");
 }
+```
+
+### 2a. startRemoteWorkerWithTls
+
+**功能**: 使用 TLS 包裹的控制连接启动远程工作器。
+
+**兼容性**: 这是新增 additive API。旧 `startRemoteWorker(...)` 参数和行为保持兼容，仍用于明文/本地开发路径。
+
+**Java 方法签名**:
+```java
+public static native int startRemoteWorkerWithTls(
+    String serverAddr,
+    int controlPort,
+    int proxyPort,
+    String workerType,
+    String clientId,
+    String caCertPath,
+    String controlTlsServerName,
+    String certSha256Pin
+);
+```
+
+**TLS 参数**:
+| 参数名 | 类型 | 说明 |
+|--------|------|------|
+| `caCertPath` | String | PEM CA bundle 路径；使用 pin-only 时传空字符串 |
+| `controlTlsServerName` | String | SNI/server name；为空时回退到 `serverAddr`，生产集成建议显式传 DNS 名 |
+| `certSha256Pin` | String | leaf certificate DER SHA256，64 位 hex，可带 `sha256:` 前缀；仅使用 CA 时传空字符串 |
+
+**返回值**:
+- `0`: 成功
+- `-1`: 必填参数、连接或登录失败
+- `-2`: TLS policy 无效（CA/SNI/SHA256 pin）
+
+**示例**:
+```java
+int tlsPolicy = RemoteWorker.validateMobileTlsPolicy(
+    "/data/user/0/com.example/files/gpuf-ca.pem",
+    "gpuf.example.internal",
+    ""
+);
+if (tlsPolicy != 0) {
+    throw new IllegalStateException("Invalid GPUFabric TLS policy: " + tlsPolicy);
+}
+
+int result = RemoteWorker.startRemoteWorkerWithTls(
+    "gpuf.example.internal",
+    17000,
+    17001,
+    "TCP",
+    "50ef7b5e7b5b4c79991087bb9f62cef1",
+    "/data/user/0/com.example/files/gpuf-ca.pem",
+    "gpuf.example.internal",
+    ""
+);
 ```
 
 ---
@@ -376,7 +433,7 @@ if (result != 0) {
 
 // 3. 启动远程工作器
 result = RemoteWorker.startRemoteWorker(
-    "8.140.251.142",
+    "<your-server-host>",
     17000,
     17001,
     "TCP",

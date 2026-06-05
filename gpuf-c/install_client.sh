@@ -128,155 +128,78 @@ normalize_arch() {
     esac
 }
 
-calc_md5() {
+calc_sha256() {
     local file="$1"
 
-    if command -v md5sum &> /dev/null; then
-        md5sum "$file" | awk '{print $1}'
+    if command -v sha256sum &> /dev/null; then
+        sha256sum "$file" | awk '{print $1}'
         return 0
     fi
 
-    if command -v md5 &> /dev/null; then
-        md5 -q "$file"
+    if command -v shasum &> /dev/null; then
+        shasum -a 256 "$file" | awk '{print $1}'
         return 0
     fi
 
     if command -v openssl &> /dev/null; then
-        openssl md5 "$file" | awk '{print $NF}'
+        openssl dgst -sha256 "$file" | awk '{print $NF}'
         return 0
     fi
 
     return 1
 }
 
-read_md5_hint_file() {
-    local md5_file="$1"
+read_sha256_file() {
+    local sha_file="$1"
+    local archive_name="$2"
 
-    if [ ! -f "$md5_file" ]; then
-        return 0
+    if [ ! -f "$sha_file" ]; then
+        return 1
     fi
 
-    # Accept formats like:
-    #   <md5>
-    #   <md5>  filename
-    #   MD5(<file>)= <md5>
-    # and also allow short hints for fuzzy match
-    local hint
-    hint=$(tr -d '\r' < "$md5_file" | head -n 1)
-    hint=$(echo "$hint" | sed -E 's/.*=\s*//')
-    hint=$(echo "$hint" | awk '{print $1}')
-    hint=$(echo "$hint" | tr '[:upper:]' '[:lower:]')
-    echo "$hint"
+    local line
+    line=$(tr -d '\r' < "$sha_file" | grep -E "(^|[[:space:]])[* ]?$archive_name$|^[0-9a-fA-F]{64}([[:space:]]|$)" | head -n 1)
+    if [ -z "$line" ]; then
+        return 1
+    fi
+
+    echo "$line" | awk '{print $1}' | tr '[:upper:]' '[:lower:]'
 }
 
-verify_md5_contains_if_needed() {
+verify_sha256_required() {
     local file="$1"
-    local hint="$2"
+    local expected="$2"
 
-    if [ -z "$hint" ]; then
-        return 0
+    if [ -z "$expected" ]; then
+        log "${RED}sha256 check failed: expected hash missing${NC}"
+        return 1
+    fi
+
+    if [[ ! "$expected" =~ ^[0-9a-f]{64}$ ]]; then
+        log "${RED}sha256 check failed: invalid expected hash format${NC}"
+        return 1
     fi
 
     if [ ! -f "$file" ]; then
-        log "${RED}md5 check failed: file not found: $file${NC}"
+        log "${RED}sha256 check failed: file not found: $file${NC}"
         return 1
     fi
 
-    local md5
-    if ! md5=$(calc_md5 "$file"); then
-        log "${RED}md5 check failed: md5 tool not available (need md5sum/md5/openssl)${NC}"
+    local actual
+    if ! actual=$(calc_sha256 "$file"); then
+        log "${RED}sha256 check failed: sha256 tool not available (need sha256sum/shasum/openssl)${NC}"
         return 1
     fi
 
-    md5=$(echo "$md5" | tr '[:upper:]' '[:lower:]')
-    hint=$(echo "$hint" | tr '[:upper:]' '[:lower:]')
-
-    if [[ "$md5" != *"$hint"* ]]; then
-        log "${RED}md5 mismatch for $file${NC}"
-        log "${YELLOW}expected contains: $hint${NC}"
-        log "${YELLOW}actual md5:        $md5${NC}"
+    actual=$(echo "$actual" | tr '[:upper:]' '[:lower:]')
+    if [ "$actual" != "$expected" ]; then
+        log "${RED}sha256 mismatch for $file${NC}"
+        log "${YELLOW}expected: $expected${NC}"
+        log "${YELLOW}actual:   $actual${NC}"
         return 1
     fi
 
-    log "${GREEN}md5 match ok: $md5${NC}"
-}
-
-read_md5_prefix_from_filename() {
-    local file_path="$1"
-    local base
-    base=$(basename "$file_path")
-
-    # Expected format: <6hex>-<rest>
-    # Example: 6cb2ba-vulkan-gpuf-c
-    if [[ "$base" =~ ^([0-9a-fA-F]{6})- ]]; then
-        echo "${BASH_REMATCH[1]}" | tr '[:upper:]' '[:lower:]'
-        return 0
-    fi
-
-    echo ""
-}
-
-verify_md5_prefix_from_filename_if_possible() {
-    local file="$1"
-
-    if [ ! -f "$file" ]; then
-        log "${RED}md5 check failed: file not found: $file${NC}"
-        return 1
-    fi
-
-    local prefix
-    prefix=$(read_md5_prefix_from_filename "$file")
-    if [ -z "$prefix" ]; then
-        log "${YELLOW}warning: md5 prefix not found in filename (skip md5 prefix check): $(basename "$file")${NC}"
-        return 0
-    fi
-
-    local md5
-    if ! md5=$(calc_md5 "$file"); then
-        log "${RED}md5 check failed: md5 tool not available (need md5sum/md5/openssl)${NC}"
-        return 1
-    fi
-
-    md5=$(echo "$md5" | tr '[:upper:]' '[:lower:]')
-
-    if [ "${md5:0:6}" != "$prefix" ]; then
-        log "${RED}md5 prefix mismatch for $file${NC}"
-        log "${YELLOW}expected prefix: $prefix${NC}"
-        log "${YELLOW}actual md5:      $md5${NC}"
-        return 1
-    fi
-
-    log "${GREEN}md5 prefix match ok: $md5${NC}"
-}
-
-verify_md5_prefixes_from_extracted_dir_if_needed() {
-    local extracted_dir="$1"
-    local md5_hint="$2"
-
-    if [ -n "$md5_hint" ]; then
-        return 0
-    fi
-
-    if [ "$OS" = "linux" ]; then
-        local linux_cuda
-        linux_cuda=$(find "$extracted_dir" -maxdepth 1 -type f -name "*-cuda-gpuf-c" | head -n 1)
-        local linux_vulkan
-        linux_vulkan=$(find "$extracted_dir" -maxdepth 1 -type f -name "*-vulkan-gpuf-c" | head -n 1)
-
-        if [ -n "$linux_vulkan" ] && [ -f "$linux_vulkan" ]; then
-            verify_md5_prefix_from_filename_if_possible "$linux_vulkan"
-        fi
-
-        if [ -n "$linux_cuda" ] && [ -f "$linux_cuda" ]; then
-            verify_md5_prefix_from_filename_if_possible "$linux_cuda"
-        fi
-    else
-        local mac_bin
-        mac_bin=$(find "$extracted_dir" -maxdepth 1 -type f -name "*-metal-gpuf-c" | head -n 1)
-        if [ -n "$mac_bin" ] && [ -f "$mac_bin" ]; then
-            verify_md5_prefix_from_filename_if_possible "$mac_bin"
-        fi
-    fi
+    log "${GREEN}sha256 match ok: $actual${NC}"
 }
 
 ensure_dir() {
@@ -375,7 +298,6 @@ install_from_extracted_dir() {
         fi
 
         verify_macos_binary_format "$mac_bin"
-        verify_md5_prefix_from_filename_if_possible "$mac_bin"
 
         sudo install -m 0755 "$mac_bin" "$INSTALL_DIR/gpuf-c" >> "$LOG_FILE" 2>&1
         log "${GREEN}installed: $INSTALL_DIR/gpuf-c${NC}"
@@ -453,6 +375,21 @@ main() {
             if ! download_file "$BASE_URL/$ARCHIVE_NAME" "$archive_path"; then
                 exit 1
             fi
+
+            local sha_path="$tmp_dir/$ARCHIVE_NAME.sha256"
+            local expected_sha="${GPUF_C_CLIENT_SHA256:-}"
+            if [ -z "$expected_sha" ]; then
+                if download_file "$BASE_URL/$ARCHIVE_NAME.sha256" "$sha_path"; then
+                    expected_sha=$(read_sha256_file "$sha_path" "$ARCHIVE_NAME" || true)
+                else
+                    local sums_path="$tmp_dir/SHA256SUMS"
+                    if download_file "$BASE_URL/SHA256SUMS" "$sums_path"; then
+                        expected_sha=$(read_sha256_file "$sums_path" "$ARCHIVE_NAME" || true)
+                    fi
+                fi
+            fi
+            verify_sha256_required "$archive_path" "$expected_sha"
+
             extract_archive "$archive_path" "$extract_dir"
 
             local payload
@@ -467,8 +404,6 @@ main() {
             if [ -n "$top" ] && [ -f "$top/read.txt" ]; then
                 payload="$top"
             fi
-
-            verify_md5_prefixes_from_extracted_dir_if_needed "$payload" ""
 
             if [ "$OS" = "linux" ]; then
                 if command -v nvidia-smi &> /dev/null; then

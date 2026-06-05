@@ -10,6 +10,10 @@ struct Args {
     #[arg(short, long, default_value_t = 18081)]
     port: u16,
 
+    /// Bind address for the management API. Defaults to loopback; use --bind-addr 0.0.0.0 only behind a protected network boundary.
+    #[arg(long, default_value = "127.0.0.1")]
+    bind_addr: String,
+
     #[arg(long, env = "DATABASE_URL")]
     database_url: String,
 
@@ -27,6 +31,8 @@ async fn main() -> Result<()> {
 
     let server_state = Arc::new(ApiServer::new(&args.database_url, &args.redis_url).await?);
 
-    server_state.run_api_server(args.port).await?;
+    server_state
+        .run_api_server(&args.bind_addr, args.port)
+        .await?;
     Ok(())
 }

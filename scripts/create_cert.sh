@@ -18,10 +18,9 @@ subjectAltName = @alt_names
 
 [alt_names]
 DNS.1 = localhost
-DNS.2 = agent.gpunexus.com
+DNS.2 = ${GPUF_CERT_DNS:-agent.example.com}
 IP.1 = 127.0.0.1
-IP.3 = 8.140.251.142
-IP.4 = 192.168.110.100
+IP.3 = ${GPUF_CERT_IP:-127.0.0.1}
 EOL
 
 # generate server key and certificate signing request

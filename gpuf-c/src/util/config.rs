@@ -1,3 +1,4 @@
+use crate::llm_engine::{OLLAMA_DEFAULT_IMAGE, VLLM_DEFAULT_IMAGE};
 use crate::util::cmd::EngineType;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -33,6 +34,10 @@ pub struct ClientConfig {
     pub engine_type: String,
     #[serde(rename = "cert_chain_path")]
     pub cert_chain_path: String,
+    #[serde(rename = "control_tls")]
+    pub control_tls: Option<bool>,
+    #[serde(rename = "control_tls_server_name")]
+    pub control_tls_server_name: Option<String>,
     #[serde(rename = "local_addr")]
     pub local_addr: String,
     #[serde(rename = "local_port")]
@@ -87,6 +92,10 @@ pub struct Service {
     runtime: Option<String>,
     #[serde(rename = "devices")]
     devices: Option<Vec<String>>,
+    #[serde(rename = "security_opt")]
+    security_opt: Option<Vec<String>>,
+    #[serde(rename = "cap_drop")]
+    cap_drop: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -128,9 +137,9 @@ impl DockerConfig {
 
         let service = match engine_type {
             EngineType::VLLM => Service {
-                image: "vllm/vllm-openai:latest".to_string(),
+                image: VLLM_DEFAULT_IMAGE.to_string(),
                 container_name: "vllm_engine_container".to_string(),
-                ports: vec!["8000:8000".to_string()],
+                ports: vec!["127.0.0.1:8000:8000".to_string()],
                 volumes: vec![
                     "~/.vllm/models:/root/.cache/huggingface/hub".to_string(),
                     "${PWD}/configs:/app/configs".to_string(),
@@ -142,11 +151,13 @@ impl DockerConfig {
                 shm_size: Some("2g".to_string()),
                 runtime: None,
                 devices: None,
+                security_opt: Some(vec!["no-new-privileges:true".to_string()]),
+                cap_drop: Some(vec!["ALL".to_string()]),
             },
             EngineType::LLAMA => Service {
                 image: "ghcr.io/ggerganov/llama.cpp:server".to_string(),
                 container_name: "llama_engine_container".to_string(),
-                ports: vec!["8080:8080".to_string()],
+                ports: vec!["127.0.0.1:8080:8080".to_string()],
                 volumes: vec!["~/.llama/models:/models".to_string()],
                 environment: Some(HashMap::from([
                     (
@@ -159,20 +170,24 @@ impl DockerConfig {
                 shm_size: Some("2g".to_string()),
                 runtime: Some("nvidia".to_string()),
                 devices: None,
+                security_opt: Some(vec!["no-new-privileges:true".to_string()]),
+                cap_drop: Some(vec!["ALL".to_string()]),
             },
 
             EngineType::OLLAMA => Service {
-                image: "ollama/ollama:latest".to_string(),
+                image: OLLAMA_DEFAULT_IMAGE.to_string(),
                 container_name: "ollama_engine_container".to_string(),
-                ports: vec!["11434:11434".to_string()],
+                ports: vec!["127.0.0.1:11434:11434".to_string()],
                 volumes: vec!["~/.ollama/models:/root/.ollama/models".to_string()],
                 environment: Some(HashMap::from([
-                    ("OLLAMA_HOST".to_string(), "0.0.0.0".to_string()),
+                    ("OLLAMA_HOST".to_string(), "127.0.0.1".to_string()),
                     ("OLLAMA_GPU_LAYERS".to_string(), "all".to_string()),
                 ])),
                 shm_size: Some("2g".to_string()),
                 runtime: Some("nvidia".to_string()),
                 devices: Some(vec!["/dev/kfd".to_string(), "/dev/dri".to_string()]),
+                security_opt: Some(vec!["no-new-privileges:true".to_string()]),
+                cap_drop: Some(vec!["ALL".to_string()]),
             },
         };
 
@@ -199,15 +214,225 @@ impl DockerConfig {
             fs::create_dir_all(config_dir)?;
         }
 
-        let yaml = serde_yaml::to_string(self)?;
-        fs::write(path, yaml)?;
+        fs::write(path, self.to_compose_yaml())?;
         Ok(())
     }
 
     pub fn load_from_file(path: &Path) -> Result<Self> {
         let yaml = fs::read_to_string(path)?;
-        let config: DockerConfig = serde_yaml::from_str(&yaml)?;
-        Ok(config)
+        Self::from_generated_compose_yaml(&yaml)
+    }
+
+    fn to_compose_yaml(&self) -> String {
+        let mut out = String::new();
+        out.push_str(&format!(
+            "version: '{}'
+",
+            self.version
+        ));
+        out.push_str(
+            "services:
+",
+        );
+
+        let mut service_names: Vec<_> = self.services.keys().collect();
+        service_names.sort();
+        for name in service_names {
+            let service = &self.services[name];
+            out.push_str(&format!(
+                "  {}:
+",
+                name
+            ));
+            out.push_str(&format!(
+                "    image: '{}'
+",
+                service.image
+            ));
+            out.push_str(&format!(
+                "    container_name: '{}'
+",
+                service.container_name
+            ));
+            if !service.ports.is_empty() {
+                out.push_str(
+                    "    ports:
+",
+                );
+                for port in &service.ports {
+                    out.push_str(&format!(
+                        "      - '{}'
+",
+                        port
+                    ));
+                }
+            }
+            if !service.volumes.is_empty() {
+                out.push_str(
+                    "    volumes:
+",
+                );
+                for volume in &service.volumes {
+                    out.push_str(&format!(
+                        "      - '{}'
+",
+                        volume
+                    ));
+                }
+            }
+            if let Some(environment) = &service.environment {
+                if !environment.is_empty() {
+                    out.push_str(
+                        "    environment:
+",
+                    );
+                    let mut keys: Vec<_> = environment.keys().collect();
+                    keys.sort();
+                    for key in keys {
+                        out.push_str(&format!(
+                            "      {}: '{}'
+",
+                            key, environment[key]
+                        ));
+                    }
+                }
+            }
+            if let Some(shm_size) = &service.shm_size {
+                out.push_str(&format!(
+                    "    shm_size: '{}'
+",
+                    shm_size
+                ));
+            }
+            if let Some(runtime) = &service.runtime {
+                out.push_str(&format!(
+                    "    runtime: '{}'
+",
+                    runtime
+                ));
+            }
+            if let Some(devices) = &service.devices {
+                if !devices.is_empty() {
+                    out.push_str(
+                        "    devices:
+",
+                    );
+                    for device in devices {
+                        out.push_str(&format!(
+                            "      - '{}'
+",
+                            device
+                        ));
+                    }
+                }
+            }
+            if let Some(security_opt) = &service.security_opt {
+                if !security_opt.is_empty() {
+                    out.push_str(
+                        "    security_opt:
+",
+                    );
+                    for opt in security_opt {
+                        out.push_str(&format!(
+                            "      - '{}'
+",
+                            opt
+                        ));
+                    }
+                }
+            }
+            if let Some(cap_drop) = &service.cap_drop {
+                if !cap_drop.is_empty() {
+                    out.push_str(
+                        "    cap_drop:
+",
+                    );
+                    for cap in cap_drop {
+                        out.push_str(&format!(
+                            "      - '{}'
+",
+                            cap
+                        ));
+                    }
+                }
+            }
+        }
+
+        out.push_str(
+            "volumes:
+",
+        );
+        let mut volume_names: Vec<_> = self.volumes.keys().collect();
+        volume_names.sort();
+        for name in volume_names {
+            out.push_str(&format!(
+                "  {}:
+",
+                name
+            ));
+            out.push_str(&format!(
+                "    driver: '{}'
+",
+                self.volumes[name].driver
+            ));
+        }
+        out
+    }
+
+    fn from_generated_compose_yaml(yaml: &str) -> Result<Self> {
+        let version = yaml
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("version:"))
+            .map(|v| v.trim().trim_matches('\'').trim_matches('"').to_string())
+            .unwrap_or_else(|| "3.8".to_string());
+
+        let mut services = HashMap::new();
+        let mut in_services = false;
+        for line in yaml.lines() {
+            let trimmed = line.trim_end();
+            if trimmed == "services:" {
+                in_services = true;
+                continue;
+            }
+            if trimmed == "volumes:" {
+                break;
+            }
+            if in_services && line.starts_with("  ") && !line.starts_with("    ") {
+                let name = trimmed.trim().trim_end_matches(':');
+                if !name.is_empty() {
+                    let engine = match name {
+                        "vllm" => EngineType::VLLM,
+                        "ollama" => EngineType::OLLAMA,
+                        "llama" => EngineType::LLAMA,
+                        _ => continue,
+                    };
+                    let generated = DockerConfig::new(engine);
+                    if let Some(service) = generated.services.get(name) {
+                        services.insert(name.to_string(), service.clone());
+                    }
+                }
+            }
+        }
+
+        if services.is_empty() {
+            return Err(anyhow::anyhow!(
+                "Unsupported docker compose file: no known GPUFabric services found"
+            ));
+        }
+
+        let mut volumes = HashMap::new();
+        volumes.insert(
+            "model_data".to_string(),
+            Volume {
+                driver: "local".to_string(),
+            },
+        );
+
+        Ok(Self {
+            version,
+            services,
+            volumes,
+        })
     }
 }
 

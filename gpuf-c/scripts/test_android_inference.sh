@@ -14,7 +14,10 @@ echo "Test Target: Model Loading + Text Inference + generateTextWithSampling API
 echo ""
 
 # Configuration variables
-SDK_DIR="/home/jack/codedir/GPUFabric/target/gpufabric-android-sdk-v9.0.0"
+SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_ROOT/.." && pwd)"
+WORKSPACE_ROOT="$(cd "$PROJECT_ROOT/.." && pwd)"
+SDK_DIR="${SDK_DIR:-$WORKSPACE_ROOT/target/gpufabric-android-sdk-v9.0.0}"
 TEST_MODEL_PATH="$HOME/models/tinyllama-1.1b-chat-v0.3.gguf"  # Modify to your model path
 DEVICE_TEST_DIR="/data/local/tmp/gpuf_test"
 
@@ -244,8 +247,14 @@ int main() {
 }
 EOF
 
-    # Compile test program (useuse Android NDK)
-    NDK_ROOT="/home/jack/android-ndk-r27d"
+    # Compile test program with Android NDK.
+    NDK_ROOT="${ANDROID_NDK_ROOT:-${ANDROID_NDK_HOME:-}}"
+    if [ -z "$NDK_ROOT" ]; then
+        NDK_ROOT="$(find "$HOME/Android/Sdk/ndk" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -V | tail -n 1)"
+    fi
+    if [ -z "$NDK_ROOT" ] || [ ! -d "$NDK_ROOT" ]; then
+        handle_error "Android NDK not found. Set ANDROID_NDK_ROOT or ANDROID_NDK_HOME."
+    fi
     COMPILER="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang"
     
     echo "   🔨 Compiling test program..."

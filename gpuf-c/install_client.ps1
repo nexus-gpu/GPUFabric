@@ -2,7 +2,8 @@ param(
     [string]$BaseUrl = "https://oss.gpunexus.com/client",
     [string]$InstallDir = "$env:USERPROFILE\AppData\Local\Programs\gpuf-c",
     [string]$PackageName = "v1.0.2-windows-gpuf-c.tar.gz",
-    [string]$DownloadDir = "C:\gpuf"
+    [string]$DownloadDir = "C:\gpuf",
+    [string]$PackageSha256 = ""
 )
 
 # check if running as administrator
@@ -98,29 +99,41 @@ function Has-Vulkan {
     return (Test-Path $dll1) -or (Test-Path $dll2)
 }
 
-function Get-Md5PrefixFromFileName([string]$Path) {
-    $name = [System.IO.Path]::GetFileName($Path)
-    $m = [regex]::Match($name, "^([0-9a-fA-F]{6})-")
-    if ($m.Success) { return $m.Groups[1].Value.ToLower() }
+function Read-Sha256File([string]$Path, [string]$ArchiveName) {
+    if (-not (Test-Path $Path)) { return $null }
+    $lines = Get-Content -Path $Path | ForEach-Object { $_.Trim() }
+    foreach ($line in $lines) {
+        if ($line -match '^([0-9a-fA-F]{64})(\s+|$)') {
+            if (($line -match [regex]::Escape($ArchiveName)) -or ($lines.Count -eq 1)) {
+                return $Matches[1].ToLower()
+            }
+        }
+    }
     return $null
 }
 
-function Verify-Md5PrefixIfPossible([string]$Path) {
-    $prefix = Get-Md5PrefixFromFileName $Path
-    if (-not $prefix) {
-        Write-Host "warning: md5 prefix not found in filename (skip md5 prefix check): $([System.IO.Path]::GetFileName($Path))" -ForegroundColor Yellow
-        return
-    }
-
-    $md5 = (Get-FileHash -Algorithm MD5 -Path $Path).Hash.ToLower()
-    if ($md5.Substring(0, 6) -ne $prefix) {
-        Write-Host "error: md5 prefix mismatch for $Path" -ForegroundColor Red
-        Write-Host "expected prefix: $prefix" -ForegroundColor Yellow
-        Write-Host "actual md5:      $md5" -ForegroundColor Yellow
+function Verify-Sha256Required([string]$Path, [string]$Expected) {
+    if (-not $Expected) {
+        Write-Host "error: sha256 check failed: expected hash missing" -ForegroundColor Red
         exit 1
     }
-
-    Write-Host "md5 prefix match ok: $md5" -ForegroundColor Green
+    $expectedLower = $Expected.ToLower()
+    if ($expectedLower -notmatch '^[0-9a-f]{64}$') {
+        Write-Host "error: sha256 check failed: invalid expected hash format" -ForegroundColor Red
+        exit 1
+    }
+    if (-not (Test-Path $Path)) {
+        Write-Host "error: sha256 check failed: file not found: $Path" -ForegroundColor Red
+        exit 1
+    }
+    $actual = (Get-FileHash -Algorithm SHA256 -Path $Path).Hash.ToLower()
+    if ($actual -ne $expectedLower) {
+        Write-Host "error: sha256 mismatch for $Path" -ForegroundColor Red
+        Write-Host "expected: $expectedLower" -ForegroundColor Yellow
+        Write-Host "actual:   $actual" -ForegroundColor Yellow
+        exit 1
+    }
+    Write-Host "sha256 match ok: $actual" -ForegroundColor Green
 }
 
 function Get-PeMachine([string]$Path) {
@@ -447,6 +460,23 @@ try {
         Write-Host "hint: the destination file may be locked by another process; archive remains at: $tmpArchivePath" -ForegroundColor Yellow
         throw
     }
+
+    $expectedSha = $PackageSha256
+    if (-not $expectedSha) {
+        $shaFilePath = Join-Path $DownloadDir ($PackageName + ".sha256")
+        try {
+            Download-FilePreferCurl "$pkgUrl.sha256" $shaFilePath
+            $expectedSha = Read-Sha256File $shaFilePath $PackageName
+        } catch {
+            $sumsPath = Join-Path $DownloadDir "SHA256SUMS"
+            try {
+                Download-FilePreferCurl "$BaseUrl/SHA256SUMS" $sumsPath
+                $expectedSha = Read-Sha256File $sumsPath $PackageName
+            } catch {
+            }
+        }
+    }
+    Verify-Sha256Required $archivePath $expectedSha
 
     # Extract (.tar.gz) using tar.exe (available on most Windows 10/11)
     $tar = Get-Command tar -ErrorAction SilentlyContinue

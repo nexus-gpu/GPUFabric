@@ -1,17 +1,20 @@
 // Anthropic API compatible server routes for LlamaEngine
-use super::llama_engine::{LlamaEngine, SamplingParams};
-use super::llama_server::{build_chat_prompt, ChatMessage as LlamaChatMessage};
+use super::llama_engine::SamplingParams;
+use super::llama_server::{
+    build_chat_prompt, validate_prompt_and_tokens, ApiServerState, AppError,
+    ChatMessage as LlamaChatMessage,
+};
 use axum::{
     extract::State,
     response::{sse::Event, IntoResponse, Sse},
-    routing::post,
     Json,
 };
-use futures_util::stream::{self, Stream, StreamExt};
+use futures_util::{
+    stream::{self, Stream},
+    StreamExt,
+};
 use serde::{Deserialize, Serialize};
-use std::{sync::Arc, time::Duration};
-use tokio::sync::RwLock;
-use tokio::time::interval as tokio_interval;
+use std::sync::Arc;
 use tracing::{error, info};
 
 // ==================== Request / Response types ====================
@@ -75,27 +78,30 @@ pub struct AnthropicUsage {
 // ==================== Handler ====================
 
 pub async fn messages_handler(
-    State(engine): State<Arc<RwLock<LlamaEngine>>>,
+    State(state): State<ApiServerState>,
     Json(req): Json<MessagesRequest>,
 ) -> Result<axum::response::Response, AppError> {
     info!(
         "Anthropic messages request: {} messages, stream={}",
-        req.messages.len(), req.stream
+        req.messages.len(),
+        req.stream
     );
 
     if req.stream {
-        Ok(messages_stream(engine, req).await?.into_response())
+        Ok(messages_stream(state, req).await?.into_response())
     } else {
-        Ok(messages_non_stream(engine, req).await?.into_response())
+        Ok(messages_non_stream(state, req).await?.into_response())
     }
 }
 
 async fn messages_non_stream(
-    engine: Arc<RwLock<LlamaEngine>>,
+    state: ApiServerState,
     req: MessagesRequest,
 ) -> Result<Json<MessagesResponse>, AppError> {
-    let engine = engine.read().await;
     let prompt = build_anthropic_prompt(&req);
+    validate_prompt_and_tokens(&state.security.limits, &prompt, req.max_tokens)?;
+    let _generation_permit = state.try_generation_permit()?;
+    let engine = state.engine.read().await;
     let max_tokens = req.max_tokens.unwrap_or(1024);
     let mut sampling = SamplingParams::default();
     if let Some(t) = req.temperature {
@@ -129,11 +135,14 @@ async fn messages_non_stream(
 }
 
 async fn messages_stream(
-    engine: Arc<RwLock<LlamaEngine>>,
+    state: ApiServerState,
     req: MessagesRequest,
 ) -> Result<Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>>, AppError> {
-    let engine = engine.read().await;
     let prompt = build_anthropic_prompt(&req);
+    validate_prompt_and_tokens(&state.security.limits, &prompt, req.max_tokens)?;
+    let generation_permit = state.try_generation_permit()?;
+    let sse_permit = state.try_sse_permit()?;
+    let engine = state.engine.read().await;
     let max_tokens = req.max_tokens.unwrap_or(1024);
     let mut sampling = SamplingParams::default();
     if let Some(t) = req.temperature {
@@ -207,15 +216,8 @@ async fn messages_stream(
 
     let stream = message_start_event.chain(body_stream);
 
-    // Ping every 20s per SSE spec (keepalive to avoid connection timeout)
-    // Use unfold to create a stream that yields pings after 20s intervals
-    let ping_stream = stream::unfold((), |()| async move {
-        tokio::time::sleep(Duration::from_secs(20)).await;
-        Some((Ok::<Event, std::convert::Infallible>(Event::default().event("ping").data("")), ()))
-    });
-    let stream = stream.chain(ping_stream);
-
-    // Footer with flush and stop events
+    // Footer with flush and stop events. Keepalive pings must not be chained before
+    // this finite footer, otherwise message_stop can never be observed.
     let footer = stream::once(async move {
         let mut events: Vec<Result<Event, std::convert::Infallible>> = Vec::new();
         for ev in splitter.lock().unwrap().flush() {
@@ -226,40 +228,21 @@ async fn messages_stream(
                 &mut *block_started.lock().unwrap(),
             );
         }
-        // Close the final open block if stream ended mid-block
-        let final_index = *block_index.lock().unwrap();
-        if *block_started.lock().unwrap() {
-            events.push(sse_event(
-                "content_block_stop",
-                serde_json::json!({
-                    "type": "content_block_stop",
-                    "index": final_index
-                }),
-            ));
-        }
-        events.push(sse_event(
-            "message_delta",
-            serde_json::json!({
-                "type": "message_delta",
-                "delta": {
-                    "stop_reason": "end_turn",
-                    "stop_sequence": null
-                },
-                "usage": {
-                    "output_tokens": 0
-                }
-            }),
-        ));
-        events.push(sse_event(
-            "message_stop",
-            serde_json::json!({"type": "message_stop"}),
-        ));
+        append_footer_events(
+            &mut events,
+            *block_index.lock().unwrap(),
+            *block_started.lock().unwrap(),
+        );
         stream::iter(events)
     })
     .flatten();
 
-    let stream = stream.chain(footer);
-    Ok(Sse::new(stream))
+    let permits = Arc::new((generation_permit, sse_permit));
+    let stream = stream.chain(footer).map(move |event| {
+        let _keep_permits_alive = &permits;
+        event
+    });
+    Ok(Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::default()))
 }
 
 // ==================== Helpers ====================
@@ -285,7 +268,8 @@ fn build_anthropic_prompt(req: &MessagesRequest) -> String {
                     budget
                 )
             } else {
-                "Please reason step by step inside <think> tags before giving your final answer.".to_string()
+                "Please reason step by step inside <think> tags before giving your final answer."
+                    .to_string()
             };
             if base.is_empty() {
                 instruction
@@ -360,7 +344,55 @@ fn sse_event(name: &str, payload: serde_json::Value) -> Result<Event, std::conve
     Ok(Event::default()
         .event(name)
         .json_data(payload)
-        .unwrap_or_else(|_| Event::default().event("error").data("json serialization failed")))
+        .unwrap_or_else(|_| {
+            Event::default()
+                .event("error")
+                .data("json serialization failed")
+        }))
+}
+
+fn append_footer_events(
+    events: &mut Vec<Result<Event, std::convert::Infallible>>,
+    final_index: usize,
+    block_started: bool,
+) {
+    if block_started {
+        events.push(sse_event(
+            "content_block_stop",
+            serde_json::json!({
+                "type": "content_block_stop",
+                "index": final_index
+            }),
+        ));
+    }
+    events.push(sse_event(
+        "message_delta",
+        serde_json::json!({
+            "type": "message_delta",
+            "delta": {
+                "stop_reason": "end_turn",
+                "stop_sequence": null
+            },
+            "usage": {
+                "output_tokens": 0
+            }
+        }),
+    ));
+    events.push(sse_event(
+        "message_stop",
+        serde_json::json!({"type": "message_stop"}),
+    ));
+}
+
+#[cfg(test)]
+fn footer_event_names(block_started: bool) -> Vec<&'static str> {
+    let mut names = Vec::new();
+    if block_started {
+        names.push("content_block_stop");
+    }
+    names.push("message_delta");
+    names.push("message_stop");
+    names
 }
 
 fn append_event(
@@ -573,36 +605,30 @@ impl StreamSplitter {
     }
 }
 
-// ==================== Error handling ====================
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-#[derive(Debug)]
-pub struct AppError(anyhow::Error);
-
-impl axum::response::IntoResponse for AppError {
-    fn into_response(self) -> axum::response::Response {
-        error!("Anthropic API error: {}", self.0);
-
-        let error_response = serde_json::json!({
-            "type": "error",
-            "error": {
-                "type": "api_error",
-                "message": self.0.to_string()
-            }
-        });
-
-        (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            Json(error_response),
-        )
-            .into_response()
+    #[test]
+    fn stream_splitter_flushes_unclosed_thinking_before_footer() {
+        let mut splitter = StreamSplitter::new(true);
+        let events = splitter.push("hello <think>private reasoning");
+        assert!(events
+            .iter()
+            .any(|ev| matches!(ev, SplitEvent::StartThinking)));
+        let flushed = splitter.flush();
+        assert!(matches!(flushed.last(), Some(SplitEvent::EndThinking)));
     }
-}
 
-impl<E> From<E> for AppError
-where
-    E: Into<anyhow::Error>,
-{
-    fn from(err: E) -> Self {
-        Self(err.into())
+    #[test]
+    fn footer_events_always_end_with_message_stop() {
+        assert_eq!(
+            footer_event_names(false),
+            vec!["message_delta", "message_stop"]
+        );
+        assert_eq!(
+            footer_event_names(true),
+            vec!["content_block_stop", "message_delta", "message_stop"]
+        );
     }
 }

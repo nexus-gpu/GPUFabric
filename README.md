@@ -109,6 +109,7 @@ cargo run --release --bin gpuf-s
 # With full configuration
 cargo run --release --bin gpuf-s -- \
   --control-port 17000 \
+  --control-tls \
   --proxy-port 17001 \
   --public-port 18080 \
   --api-port 18081 \
@@ -130,6 +131,9 @@ cargo run --release --bin gpuf-c -- --client-id client_A
 cargo run --release --bin gpuf-c -- \
   --client-id client_A \
   --server-addr 192.168.1.100 \
+  --control-tls \
+  --control-tls-server-name "gpuf.example.internal" \
+  --cert-chain-path "ca-cert.pem" \
   --local-addr 127.0.0.1 \
   --local-port 11434
 ```
@@ -205,6 +209,7 @@ Comprehensive documentation is available in the `docs/` directory:
 - **[gpuf-s Documentation](./docs/gpuf-s.md)** - Server component documentation
 - **[gpuf-c Documentation](./docs/gpuf-c.md)** - Client component documentation
 - **[API Server Documentation](./docs/api_server.md)** - RESTful API reference
+- **[Frontend/GUI Integration](./gui/doc.md)** - Local dashboard and browser frontend API defaults
 - **[Heartbeat Consumer Documentation](./docs/heartbeat_consumer.md)** - Kafka consumer documentation
 - **[XDP Documentation](./docs/xdp.md)** - Kernel-level packet filtering
 
@@ -222,6 +227,7 @@ The gpuf-s server supports comprehensive configuration via command-line argument
 | Argument | Type | Default | Description |
 |----------|------|---------|-------------|
 | `--control-port` | u16 | 17000 | Port for client control connections |
+| `--control-tls` | bool | false | Serve client control connections over TLS; enable for remote production deployments |
 | `--proxy-port` | u16 | 17001 | Port for client proxy connections |
 | `--public-port` | u16 | 18080 | Port for public user connections |
 | `--api-port` | u16 | 18081 | Port for HTTP API server |
@@ -242,6 +248,34 @@ export REDIS_URL="redis://localhost:6379"
 export API_KEY="your-api-key"
 export RUST_LOG="gpuf-s=info"
 ```
+
+### Management API Server
+
+The standalone management API used by dashboards/frontends binds to loopback by default:
+
+```bash
+cargo run --release -p gpuf-s --bin api_server -- \
+  --bind-addr 127.0.0.1 \
+  --port 18081 \
+  --database-url "$DATABASE_URL"
+```
+
+Use `--bind-addr 0.0.0.0` only behind a protected reverse proxy or private network boundary.
+
+### Control Connection TLS
+
+For remote deployments, enable TLS on both sides of the gpuf-s/gpuf-c control connection:
+
+```bash
+# Server
+gpuf-s --control-tls --proxy-cert-chain-path cert.pem --proxy-private-key-path key.pem
+
+# Client
+gpuf-c --server-addr gpuf.example.internal --control-tls \
+  --control-tls-server-name gpuf.example.internal --cert-chain-path ca-cert.pem
+```
+
+Plaintext control TCP remains the default for compatibility in v1.1.0. Non-loopback plaintext connections emit a security/deprecation warning.
 
 ## 🔧 Development
 
@@ -523,11 +557,12 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## 🔒 Security
 
-- TLS 1.3 encryption for secure connections
+- Loopback defaults for local management APIs and explicit public-listen deployment choices
 - Database-backed authentication with token validation
 - Redis caching for performance without compromising security
-- Input validation and SQL injection prevention
-- Secure certificate management
+- Input validation, SQL injection prevention, and sanitized service logs
+- SHA256 verification for model downloads and SDK/release artifacts; MD5 is not used as a trust mechanism
+- Security release gates for cargo audit/deny, secret scan, targeted tests, and source grep checks
 
 ## 🌟 Use Cases
 

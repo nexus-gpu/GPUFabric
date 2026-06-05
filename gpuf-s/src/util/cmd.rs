@@ -5,6 +5,10 @@ pub struct Args {
     #[arg(long, default_value_t = 17000)]
     pub control_port: u16,
 
+    /// Accept gpuf-c control connections over TLS using the configured proxy certificate/key.
+    #[arg(long, default_value_t = false)]
+    pub control_tls: bool,
+
     #[arg(long, default_value_t = 17001)]
     pub proxy_port: u16,
 
@@ -43,4 +47,18 @@ pub struct Args {
 
     #[arg(long, default_value = "localhost:9092")]
     pub bootstrap_server: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_control_tls_flag() {
+        let args = Args::try_parse_from(["gpuf-s", "--control-tls"]).unwrap();
+        assert!(args.control_tls);
+
+        let args = Args::try_parse_from(["gpuf-s"]).unwrap();
+        assert!(!args.control_tls);
+    }
 }

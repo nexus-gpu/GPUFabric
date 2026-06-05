@@ -16,9 +16,6 @@ use jni::objects::{JClass, JObject, JString};
 use jni::sys::{jboolean, jbyteArray, jfloat, jint, jlong, jstring};
 #[cfg(target_os = "android")]
 use jni::JNIEnv;
-#[cfg(any(target_os = "android", target_os = "ios"))]
-use libc::size_t;
-#[cfg(target_os = "ios")]
 use libc::size_t;
 use once_cell::sync::Lazy;
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
@@ -26,7 +23,7 @@ use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::io::Write;
 #[cfg(any(target_os = "android", target_os = "ios"))]
 use std::os::raw::c_ulonglong;
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, Ordering};
 use std::sync::{Arc, Mutex};
 
 const DEFAULT_LLAMA_THREADS: i32 = 4;
@@ -322,47 +319,28 @@ pub struct llama_sampler_chain_params {
 // Global Engine State Management
 // ============================================================================
 
-// Global context position tracking for continuous inference
-static mut GLOBAL_CONTEXT_POSITION: i32 = 0;
+// Global context position tracking for continuous inference.
+static GLOBAL_CONTEXT_POSITION: AtomicI32 = AtomicI32::new(0);
 
 // Async generation control
-static GENERATION_STOP_FLAG: AtomicPtr<bool> = AtomicPtr::new(std::ptr::null_mut());
+static GENERATION_STOP_FLAG: AtomicBool = AtomicBool::new(false);
 static GENERATION_MUTEX: Mutex<()> = Mutex::new(());
 
 // Thread-safe generation stop control
 fn should_stop_generation() -> bool {
-    unsafe {
-        let stop_ptr = GENERATION_STOP_FLAG.load(Ordering::SeqCst);
-        if !stop_ptr.is_null() {
-            *stop_ptr
-        } else {
-            false
-        }
-    }
+    GENERATION_STOP_FLAG.load(Ordering::SeqCst)
 }
 
 fn set_generation_stop(stop: bool) {
-    unsafe {
-        let stop_ptr = GENERATION_STOP_FLAG.load(Ordering::SeqCst);
-        if !stop_ptr.is_null() {
-            *stop_ptr = stop;
-        }
-    }
+    GENERATION_STOP_FLAG.store(stop, Ordering::SeqCst);
 }
 
 fn init_generation_control() {
-    let stop_flag = Box::into_raw(Box::new(false));
-    GENERATION_STOP_FLAG.store(stop_flag, Ordering::SeqCst);
+    set_generation_stop(false);
 }
 
 fn cleanup_generation_control() {
-    unsafe {
-        let stop_ptr = GENERATION_STOP_FLAG.load(Ordering::SeqCst);
-        if !stop_ptr.is_null() {
-            let _ = Box::from_raw(stop_ptr);
-            GENERATION_STOP_FLAG.store(std::ptr::null_mut(), Ordering::SeqCst);
-        }
-    }
+    set_generation_stop(false);
 }
 
 // Global model state management
@@ -649,8 +627,8 @@ pub(crate) unsafe fn safe_tokenize(
         };
 
         println!(
-            "🎯 Using CORRECTED llama.cpp tokenization for: \"{}\"",
-            text_str
+            "🎯 Using CORRECTED llama.cpp tokenization for input ({} bytes)",
+            text_str.len()
         );
 
         // Get model and vocabulary for correct tokenization
@@ -687,16 +665,8 @@ pub(crate) unsafe fn safe_tokenize(
         if result > 0 {
             println!(" CORRECTED tokenizer success: {} tokens", result);
 
-            // Debug: Print token mapping
-            for i in 0..result {
-                let decoded = decode_token_to_text(model, *tokens.add(i as usize));
-                println!(
-                    "  Token[{}]: {} -> \"{}\"",
-                    i,
-                    *tokens.add(i as usize),
-                    decoded
-                );
-            }
+            // Debug: keep aggregate token diagnostics without leaking prompt text.
+            println!(" Token mapping redacted ({} tokens)", result);
         } else {
             println!(" Tokenizer failed: {}", result);
         }
@@ -746,8 +716,9 @@ fn simple_char_tokenize(
         }
 
         println!(
-            " Simple tokenization: \"{}\" -> {} tokens",
-            text, token_count
+            " Simple tokenization: input {} bytes -> {} tokens",
+            text.len(),
+            token_count
         );
         token_count
     }
@@ -756,8 +727,7 @@ fn simple_char_tokenize(
 // Safe test function to check if llama_token_to_piece works
 #[cfg(any(target_os = "android", target_os = "ios"))]
 fn test_token_decode(model: *const llama_model, token: LlamaToken) -> Option<String> {
-    // Use a static buffer to avoid unwind issues
-    static mut BUFFER: [u8; 64] = [0u8; 64];
+    let mut buffer = [0u8; 64];
 
     unsafe {
         // Get vocab from model first
@@ -768,17 +738,17 @@ fn test_token_decode(model: *const llama_model, token: LlamaToken) -> Option<Str
 
         // Try the new API
         let result = llama_token_to_piece(
-            vocab,                              //
-            token,                              //
-            BUFFER.as_mut_ptr() as *mut c_char, //
-            BUFFER.len() as c_int,              //
-            0,                                  //
-            true,                               //
+            vocab, //
+            token, //
+            buffer.as_mut_ptr() as *mut c_char,
+            buffer.len() as c_int,
+            0,    //
+            true, //
         );
 
-        if result > 0 && result < BUFFER.len() as c_int {
+        if result > 0 && result < buffer.len() as c_int {
             let actual_len = result as usize;
-            match std::str::from_utf8(&BUFFER[..actual_len]) {
+            match std::str::from_utf8(&buffer[..actual_len]) {
                 Ok(text) => Some(text.to_string()),
                 Err(_) => None,
             }
@@ -791,8 +761,8 @@ fn test_token_decode(model: *const llama_model, token: LlamaToken) -> Option<Str
 // Enhanced token decoding with larger buffer and special token support
 #[cfg(any(target_os = "android", target_os = "ios"))]
 fn decode_token_to_text(model: *const llama_model, token: LlamaToken) -> String {
-    // CRITICAL FIX: Use larger buffer to handle multi-byte tokens
-    static mut BUFFER: [u8; 1024] = [0u8; 1024]; // Increased from 64 to 1024
+    // Use a local buffer so concurrent mobile callbacks cannot race on token decoding.
+    let mut buffer = [0u8; 1024];
 
     unsafe {
         let vocab = llama_model_get_vocab(model);
@@ -804,20 +774,20 @@ fn decode_token_to_text(model: *const llama_model, token: LlamaToken) -> String 
         let result = llama_token_to_piece(
             vocab,
             token,
-            BUFFER.as_mut_ptr() as *mut c_char,
-            BUFFER.len() as c_int, // Larger buffer
+            buffer.as_mut_ptr() as *mut c_char,
+            buffer.len() as c_int, // Larger buffer
             0,                     // lstrip = 0 (no leading space removal)
             true,                  // special = true (decode special tokens)
         );
 
         if result > 0 {
-            let actual_len = if result < BUFFER.len() as c_int {
+            let actual_len = if result < buffer.len() as c_int {
                 result as usize
             } else {
-                BUFFER.len() - 1
+                buffer.len() - 1
             };
 
-            match std::str::from_utf8(&BUFFER[..actual_len]) {
+            match std::str::from_utf8(&buffer[..actual_len]) {
                 Ok(text) => {
                     if text.is_empty() {
                         format!("[empty_token:{}]", token)
@@ -827,7 +797,7 @@ fn decode_token_to_text(model: *const llama_model, token: LlamaToken) -> String 
                 }
                 Err(_) => {
                     // DEBUG: Show hex bytes for debugging
-                    let hex_bytes = &BUFFER[..actual_len.min(16)];
+                    let hex_bytes = &buffer[..actual_len.min(16)];
                     format!("[utf8_fail:{}:{:02X?}]", token, hex_bytes)
                 }
             }
@@ -877,8 +847,8 @@ pub fn manual_llama_completion(
                         println!(" RAW INPUT DEBUG:");
                         println!("  Pointer: {:p}", prompt);
                         println!("  Length: {} bytes", s.len());
-                        println!("  Content: \"{}\"", s);
-                        println!("  Bytes as hex: {:?}", s.as_bytes());
+                        println!("  Content: <redacted>");
+                        println!("  Bytes as hex: <redacted>");
                         s
                     }
                     Err(e) => {
@@ -896,12 +866,11 @@ pub fn manual_llama_completion(
             token_count = tokenize_result;
             println!(" Safe tokenization successful! Got {} tokens", token_count);
 
-            // DEBUG: Print actual input tokens and decoded text
-            println!(" INPUT DEBUG - Prompt tokens:");
-            for i in 0..token_count {
-                let decoded = decode_token_to_text(model, tokens[i as usize]);
-                println!("  Token[{}]: {} -> \"{}\"", i, tokens[i as usize], decoded);
-            }
+            // DEBUG: Keep only aggregate prompt token diagnostics.
+            println!(
+                " INPUT DEBUG - Prompt token ids redacted ({} tokens)",
+                token_count
+            );
         } else {
             println!(" Safe tokenization failed, using emergency fallback");
             // Emergency fallback to BOS only
@@ -927,7 +896,7 @@ pub fn manual_llama_completion(
         // Step 3: Global position tracking for continuous context
         // CRITICAL FIX: Reset position for new independent inference
         let current_pos = 0; // Always start from 0 for clean inference
-        GLOBAL_CONTEXT_POSITION = 0; // Reset global state
+        GLOBAL_CONTEXT_POSITION.store(0, Ordering::SeqCst); // Reset global state
         println!(
             " GLOBAL CONTEXT: Reset to position {} for clean inference",
             current_pos
@@ -1099,7 +1068,7 @@ pub fn manual_llama_completion(
             // Decode and add to result
             let decoded_text = decode_token_to_text(model, sampled_token);
             result_text.push_str(&decoded_text);
-            println!(" Token text: \"{}\"", decoded_text);
+            println!(" Token text redacted ({} bytes)", decoded_text.len());
 
             generated_tokens += 1;
             next_pos += 1;
@@ -1118,7 +1087,7 @@ pub fn manual_llama_completion(
             single_token_logits[0] = 1; // Request logits
 
             let new_batch = llama_batch {
-                n_tokens: 1,           // Single token batch
+                n_tokens: 1,                                                     // Single token batch
                 token: (&sampled_token as *const LlamaToken) as *mut LlamaToken, // The new token
                 embd: std::ptr::null_mut(),
                 pos: single_token_pos.as_ptr() as *mut LlamaPos,
@@ -1151,23 +1120,26 @@ pub fn manual_llama_completion(
         unsafe { llama_sampler_free(persistent_sampler) };
         println!(" Cleaned up persistent sampler");
 
-        GLOBAL_CONTEXT_POSITION = next_pos;
+        GLOBAL_CONTEXT_POSITION.store(next_pos, Ordering::SeqCst);
         println!(
             " GLOBAL CONTEXT: Updated position to {}",
-            GLOBAL_CONTEXT_POSITION
+            GLOBAL_CONTEXT_POSITION.load(Ordering::SeqCst)
         );
 
         // Step 6: Return only the generated text (no debug info)
         let final_text = if generated_tokens > 0 {
             println!(
                 " CONTINUOUS CONTEXT: Generated {} tokens from pos {} (next: {})",
-                generated_tokens, current_pos, GLOBAL_CONTEXT_POSITION
+                generated_tokens,
+                current_pos,
+                GLOBAL_CONTEXT_POSITION.load(Ordering::SeqCst)
             );
             result_text
         } else {
             println!(
                 " No tokens generated - continuous context ready from pos {} (next: {})",
-                current_pos, GLOBAL_CONTEXT_POSITION
+                current_pos,
+                GLOBAL_CONTEXT_POSITION.load(Ordering::SeqCst)
             );
             String::new() // Return empty string if no tokens generated
         };
@@ -1316,7 +1288,10 @@ fn simulate_llama_model_load_from_file(
 
     let path_str = unsafe { CStr::from_ptr(path).to_str().unwrap_or("invalid_path") };
 
-    println!("🔧 Simulating llama_load_model_from_file({})", path_str);
+    println!(
+        "🔧 Simulating llama_load_model_from_file(<redacted>, {} bytes)",
+        path_str.len()
+    );
     std::ptr::NonNull::dangling().as_ptr()
 }
 
@@ -1359,7 +1334,10 @@ fn simulate_llama_tokenize(
 
     let text_str = unsafe { CStr::from_ptr(text).to_str().unwrap_or("") };
 
-    println!("🔧 Simulating llama_tokenize({})", text_str);
+    println!(
+        "🔧 Simulating llama_tokenize(<redacted>, {} bytes)",
+        text_str.len()
+    );
 
     // Return fake token count
     let token_count = text_str.len().min(n_max_tokens as usize);
@@ -1474,14 +1452,15 @@ pub extern "C" fn gpuf_create_context(_model: *mut llama_model) -> *mut llama_co
 // ============================================================================
 
 // Async loading state management - simplified and realistic
-static mut ASYNC_LOADING_STATE: Option<AsyncLoadingState> = None;
-static mut ASYNC_LOADING_HANDLE: Option<std::thread::JoinHandle<i32>> = None;
+static ASYNC_LOADING_STATE: Lazy<Mutex<Option<AsyncLoadingState>>> = Lazy::new(|| Mutex::new(None));
+static ASYNC_LOADING_HANDLE: Lazy<Mutex<Option<std::thread::JoinHandle<i32>>>> =
+    Lazy::new(|| Mutex::new(None));
 
 #[derive(Clone, Copy)]
 pub struct AsyncLoadingState {
     pub status: i32,   // 0 = not started, 1 = loading, 2 = completed, 3 = error
     pub progress: f32, // Only meaningful when status = loading
-    pub model_ptr: *mut llama_model,
+    pub model_ptr: usize,
 }
 
 /// Start async model loading (realistic implementation)
@@ -1507,11 +1486,14 @@ pub extern "C" fn gpuf_load_model_async_start(path: *const c_char) -> bool {
     };
 
     // Initialize loading state
-    unsafe {
-        ASYNC_LOADING_STATE = Some(AsyncLoadingState {
+    {
+        let mut state_guard = ASYNC_LOADING_STATE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *state_guard = Some(AsyncLoadingState {
             status: 1, // loading
             progress: 0.0,
-            model_ptr: std::ptr::null_mut(),
+            model_ptr: 0,
         });
     }
 
@@ -1520,8 +1502,11 @@ pub extern "C" fn gpuf_load_model_async_start(path: *const c_char) -> bool {
         println!("📊 Background thread: Starting REAL model load...");
 
         // Update state to show we're actually loading
-        unsafe {
-            if let Some(ref mut state) = ASYNC_LOADING_STATE {
+        {
+            let mut state_guard = ASYNC_LOADING_STATE
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(ref mut state) = *state_guard {
                 state.progress = 0.1; // 10% - started loading
             }
         }
@@ -1531,16 +1516,19 @@ pub extern "C" fn gpuf_load_model_async_start(path: *const c_char) -> bool {
         let model_ptr = gpuf_load_model(path_cstr.as_ptr());
 
         // Update final state based on real result
-        unsafe {
-            if let Some(ref mut state) = ASYNC_LOADING_STATE {
+        {
+            let mut state_guard = ASYNC_LOADING_STATE
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(ref mut state) = *state_guard {
                 if model_ptr.is_null() {
                     state.status = 3; // error
                     state.progress = -1.0;
-                    state.model_ptr = std::ptr::null_mut();
+                    state.model_ptr = 0;
                 } else {
                     state.status = 2; // completed
                     state.progress = 1.0;
-                    state.model_ptr = model_ptr;
+                    state.model_ptr = model_ptr as usize;
                 }
             }
         }
@@ -1554,8 +1542,14 @@ pub extern "C" fn gpuf_load_model_async_start(path: *const c_char) -> bool {
     });
 
     // Store handle
-    unsafe {
-        ASYNC_LOADING_HANDLE = Some(handle);
+    {
+        let mut handle_guard = ASYNC_LOADING_HANDLE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(previous) = handle_guard.take() {
+            let _ = previous.join();
+        }
+        *handle_guard = Some(handle);
     }
 
     true
@@ -1570,68 +1564,79 @@ pub extern "C" fn gpuf_load_model_async_start(_path: *const c_char) -> bool {
 /// Get loading status (realistic polling)
 #[no_mangle]
 pub extern "C" fn gpuf_load_model_get_status() -> i32 {
-    unsafe {
-        ASYNC_LOADING_STATE.map(|state| state.status).unwrap_or(0) // 0 = not started
-    }
+    ASYNC_LOADING_STATE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+        .map(|state| state.status)
+        .unwrap_or(0) // 0 = not started
 }
 
 /// Get loading progress (limited but realistic)
 #[no_mangle]
 pub extern "C" fn gpuf_load_model_get_progress() -> f32 {
-    unsafe {
-        ASYNC_LOADING_STATE
-            .map(|state| state.progress)
-            .unwrap_or(-1.0) // -1.0 = not started
-    }
+    ASYNC_LOADING_STATE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+        .map(|state| state.progress)
+        .unwrap_or(-1.0) // -1.0 = not started
 }
 
 /// Check if loading is complete
 #[no_mangle]
 pub extern "C" fn gpuf_load_model_is_complete() -> bool {
-    unsafe {
-        ASYNC_LOADING_STATE
-            .map(|state| state.status == 2)
-            .unwrap_or(false)
-    }
+    ASYNC_LOADING_STATE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+        .map(|state| state.status == 2)
+        .unwrap_or(false)
 }
 
 /// Check if loading has error
 #[no_mangle]
 pub extern "C" fn gpuf_load_model_has_error() -> bool {
-    unsafe {
-        ASYNC_LOADING_STATE
-            .map(|state| state.status == 3)
-            .unwrap_or(false)
-    }
+    ASYNC_LOADING_STATE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+        .map(|state| state.status == 3)
+        .unwrap_or(false)
 }
 
 /// Get loaded model pointer (only valid after completion)
 #[no_mangle]
 pub extern "C" fn gpuf_load_model_get_result() -> *mut llama_model {
-    unsafe {
-        if let Some(state) = ASYNC_LOADING_STATE {
+    ASYNC_LOADING_STATE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+        .and_then(|state| {
             if state.status == 2 {
-                // completed
-                return state.model_ptr;
+                Some(state.model_ptr as *mut llama_model)
+            } else {
+                None
             }
-        }
-        std::ptr::null_mut()
-    }
+        })
+        .unwrap_or(std::ptr::null_mut())
 }
 
 /// Wait for loading to complete (blocking)
 #[no_mangle]
 #[cfg(target_os = "android")]
 pub extern "C" fn gpuf_load_model_wait() -> i32 {
-    unsafe {
-        if let Some(handle) = ASYNC_LOADING_HANDLE.take() {
-            match handle.join() {
-                Ok(result) => result, // 0 = failed, 1 = success
-                Err(_) => 0,          // error
-            }
-        } else {
-            0 // no handle
+    let handle = ASYNC_LOADING_HANDLE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take();
+    if let Some(handle) = handle {
+        match handle.join() {
+            Ok(result) => result, // 0 = failed, 1 = success
+            Err(_) => 0,          // error
         }
+    } else {
+        0 // no handle
     }
 }
 
@@ -1645,15 +1650,21 @@ pub extern "C" fn gpuf_load_model_wait() -> i32 {
 #[no_mangle]
 #[cfg(target_os = "android")]
 pub extern "C" fn gpuf_load_model_cleanup() {
-    unsafe {
+    {
         // Wait for thread if still running
-        if let Some(handle) = ASYNC_LOADING_HANDLE.take() {
+        let handle = ASYNC_LOADING_HANDLE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        if let Some(handle) = handle {
             let _ = handle.join();
         }
-
-        // Clear state
-        ASYNC_LOADING_STATE = None;
     }
+
+    // Clear state
+    *ASYNC_LOADING_STATE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
 }
 
 #[no_mangle]
@@ -1909,8 +1920,8 @@ pub extern "C" fn gpuf_load_multimodal_model(
         let mmproj_path_str = CStr::from_ptr(mmproj_path).to_str().unwrap_or("");
 
         println!("🔧 Loading multimodal model (libmtmd)...");
-        println!("  Text model: {}", text_path);
-        println!("  MMProj: {}", mmproj_path_str);
+        println!("  Text model path accepted ({} bytes)", text_path.len());
+        println!("  MMProj path accepted ({} bytes)", mmproj_path_str.len());
 
         // Load text model first
         let model_params = llama_model_default_params();
@@ -2333,8 +2344,8 @@ pub extern "C" fn gpuf_generate_multimodal(
                 println!("✅ Text-only tokenization successful");
 
                 let response = format!(
-                    "🔥 GPUFabric: libmtmd text-only generation successful! Prompt: '{}'",
-                    prompt_str
+                    "GPUFabric: libmtmd text-only generation successful (prompt {} bytes)",
+                    prompt_str.len()
                 );
 
                 let response_cstr = CString::new(response).unwrap_or_default();
@@ -3262,10 +3273,12 @@ pub extern "C" fn gpuf_generate_final_solution_text(
 
         let n_ctx = real_llama_n_ctx(ctx);
 
-        // For now, return a simple response showing tokenization worked
+        // For now, return a simple response showing tokenization worked without echoing prompt text.
         let output_text = format!(
-            "🔥 Real inference working! Parsed: '{}' (tokens: {}, ctx: {})",
-            prompt_str, token_count, n_ctx
+            "Real inference working (prompt {} bytes, tokens: {}, ctx: {})",
+            prompt_str.len(),
+            token_count,
+            n_ctx
         );
         let output_cstr = CString::new(output_text).unwrap();
 
@@ -3447,91 +3460,100 @@ pub extern "C" fn gpuf_cleanup() -> c_int {
 }
 
 // ============================================================================
-// Static buffers for Android memory safety
+// Android memory pool for llama.cpp allocations
 // ============================================================================
 
-static mut TOKEN_BUFFER: [LlamaToken; 32] = [0; 32];
-static mut TEXT_BUFFER: [u8; 128] = [0; 128];
-
-// 🆕 Memory pool for llama.cpp internal allocations
 #[repr(C)]
 pub struct MemoryPool {
-    buffer: *mut u8,
+    buffer: usize,
     size: usize,
     used: usize,
     initialized: bool,
 }
 
-static mut MEMORY_POOL: MemoryPool = MemoryPool {
-    buffer: std::ptr::null_mut(),
-    size: 0,
-    used: 0,
-    initialized: false,
-};
+static MEMORY_POOL: Lazy<Mutex<MemoryPool>> = Lazy::new(|| {
+    Mutex::new(MemoryPool {
+        buffer: 0,
+        size: 0,
+        used: 0,
+        initialized: false,
+    })
+});
 
 // Memory pool size: 64MB for llama.cpp internal allocations
 const MEMORY_POOL_SIZE: usize = 64 * 1024 * 1024; // 64MB
 
 #[cfg(target_os = "android")]
 pub fn init_memory_pool() -> bool {
-    unsafe {
-        if MEMORY_POOL.initialized {
-            return true;
-        }
+    let mut pool = MEMORY_POOL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if pool.initialized {
+        return true;
+    }
 
-        // Allocate memory pool using mmap for better control
-        let buffer = libc::mmap(
+    // Allocate memory pool using mmap for better control
+    let buffer = unsafe {
+        libc::mmap(
             std::ptr::null_mut(),
             MEMORY_POOL_SIZE,
             libc::PROT_READ | libc::PROT_WRITE,
             libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
             -1,
             0,
-        );
+        )
+    };
 
-        if buffer == libc::MAP_FAILED {
-            return false;
-        }
-
-        MEMORY_POOL = MemoryPool {
-            buffer: buffer as *mut u8,
-            size: MEMORY_POOL_SIZE,
-            used: 0,
-            initialized: true,
-        };
-
-        true
+    if buffer == libc::MAP_FAILED {
+        return false;
     }
+
+    *pool = MemoryPool {
+        buffer: buffer as usize,
+        size: MEMORY_POOL_SIZE,
+        used: 0,
+        initialized: true,
+    };
+
+    true
 }
 
 #[cfg(target_os = "android")]
 pub fn allocate_from_pool(size: usize, alignment: usize) -> *mut u8 {
-    unsafe {
-        if !MEMORY_POOL.initialized || MEMORY_POOL.buffer.is_null() {
-            return std::ptr::null_mut();
-        }
-
-        // Calculate aligned offset
-        let current_offset = MEMORY_POOL.used;
-        let aligned_offset = (current_offset + alignment - 1) & !(alignment - 1);
-        let new_used = aligned_offset + size;
-
-        // Check if we have enough space
-        if new_used > MEMORY_POOL.size {
-            return std::ptr::null_mut();
-        }
-
-        // Update pool state and return pointer
-        MEMORY_POOL.used = new_used;
-        MEMORY_POOL.buffer.add(aligned_offset)
+    if size == 0 || alignment == 0 || !alignment.is_power_of_two() {
+        return std::ptr::null_mut();
     }
+
+    let mut pool = MEMORY_POOL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if !pool.initialized || pool.buffer == 0 {
+        return std::ptr::null_mut();
+    }
+
+    // Calculate aligned offset
+    let current_offset = pool.used;
+    let aligned_offset = (current_offset + alignment - 1) & !(alignment - 1);
+    let new_used = aligned_offset.saturating_add(size);
+
+    // Check if we have enough space
+    if new_used > pool.size {
+        return std::ptr::null_mut();
+    }
+
+    // Update pool state and return pointer
+    pool.used = new_used;
+    unsafe { (pool.buffer as *mut u8).add(aligned_offset) }
 }
 
 #[cfg(any(target_os = "android", target_os = "ios"))]
 pub fn reset_pool() {
     #[cfg(target_os = "android")]
-    unsafe {
-        MEMORY_POOL.used = 0;
+    {
+        let mut pool = MEMORY_POOL
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        pool.used = 0;
     }
 
     #[cfg(target_os = "ios")]
@@ -3542,11 +3564,17 @@ pub fn reset_pool() {
 
 #[cfg(target_os = "android")]
 pub fn cleanup_memory_pool() {
-    unsafe {
-        if MEMORY_POOL.initialized && !MEMORY_POOL.buffer.is_null() {
-            libc::munmap(MEMORY_POOL.buffer as *mut libc::c_void, MEMORY_POOL.size);
-            MEMORY_POOL.initialized = false;
+    let mut pool = MEMORY_POOL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if pool.initialized && pool.buffer != 0 {
+        unsafe {
+            libc::munmap(pool.buffer as *mut libc::c_void, pool.size);
         }
+        pool.initialized = false;
+        pool.buffer = 0;
+        pool.size = 0;
+        pool.used = 0;
     }
 }
 
@@ -3780,9 +3808,9 @@ pub extern "C" fn gpuf_start_generation_async(
             if token_len > 0 {
                 let emitted = utf8_buf.push_and_take_valid(&token_buf[..token_len as usize]);
                 println!(
-                    "🔍 Token content: \"{}\" (bytes: {:?})",
-                    emitted,
-                    &token_buf[..token_len as usize]
+                    "🔍 Token content redacted (emitted {} bytes, raw {} bytes)",
+                    emitted.len(),
+                    token_len
                 );
 
                 // Call callback only if it's not None
@@ -3896,7 +3924,7 @@ pub extern "C" fn gpuf_generate_single_token(
             Err(_) => return -3,
         };
 
-        println!("📝 Processing prompt: \"{}\"", prompt_str);
+        println!("📝 Processing prompt ({} bytes)", prompt_str.len());
 
         // Simple tokenization
         let mut tokens = [0i32; 128];
@@ -3962,6 +3990,88 @@ pub extern "C" fn gpuf_generate_single_token(
 }
 
 // ============================================================================
+// C FFI - Mobile TLS Policy Validation
+// ============================================================================
+
+fn optional_c_string(ptr: *const c_char) -> Result<Option<String>, c_int> {
+    if ptr.is_null() {
+        return Ok(None);
+    }
+    // SAFETY: `ptr` is checked for null above and is expected to point to a
+    // valid NUL-terminated C string owned by the caller for this call.
+    // SAFETY: `ptr` is checked for null above and is expected to point to a
+    // valid NUL-terminated C string owned by the caller for this call.
+    let value = unsafe { CStr::from_ptr(ptr) }
+        .to_str()
+        .map_err(|_| -5)?
+        .trim()
+        .to_string();
+    if value.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(value))
+    }
+}
+
+fn required_c_string(ptr: *const c_char) -> Result<String, c_int> {
+    if ptr.is_null() {
+        return Err(-1);
+    }
+    let value = unsafe { CStr::from_ptr(ptr) }
+        .to_str()
+        .map_err(|_| -5)?
+        .trim()
+        .to_string();
+    if value.is_empty() {
+        Err(-1)
+    } else {
+        Ok(value)
+    }
+}
+
+/// Validate mobile TLS policy inputs before a wrapper enables remote worker TLS.
+///
+/// Returns:
+/// - 0: valid policy
+/// - -1: missing or invalid server name
+/// - -2: missing CA bundle and SHA256 pin
+/// - -3: invalid CA bundle path/content
+/// - -4: invalid SHA256 certificate pin
+/// - -5: invalid UTF-8 in one of the C strings
+#[no_mangle]
+pub extern "C" fn gpuf_validate_mobile_tls_policy(
+    ca_cert_path: *const c_char,
+    server_name: *const c_char,
+    cert_sha256_pin: *const c_char,
+) -> c_int {
+    let ca_cert_path = match optional_c_string(ca_cert_path) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    let server_name = match required_c_string(server_name) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    let cert_sha256_pin = match optional_c_string(cert_sha256_pin) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+
+    match crate::util::mobile_tls_policy::validate_mobile_tls_policy(
+        ca_cert_path.as_deref(),
+        &server_name,
+        cert_sha256_pin.as_deref(),
+    ) {
+        Ok(_) => 0,
+        Err(crate::util::mobile_tls_policy::MobileTlsPolicyError::MissingServerName)
+        | Err(crate::util::mobile_tls_policy::MobileTlsPolicyError::InvalidServerName(_)) => -1,
+        Err(crate::util::mobile_tls_policy::MobileTlsPolicyError::MissingTrustMaterial) => -2,
+        Err(crate::util::mobile_tls_policy::MobileTlsPolicyError::InvalidCaBundle(_)) => -3,
+        Err(crate::util::mobile_tls_policy::MobileTlsPolicyError::InvalidSha256Pin(_)) => -4,
+    }
+}
+
+// ============================================================================
 // C FFI - Remote Worker Management and Monitoring
 // ============================================================================
 
@@ -4020,8 +4130,12 @@ pub extern "C" fn start_remote_worker(
     };
 
     println!(
-        "📡 C API: Server: {}, Port: {}/{}, Type: {}, Client: {}",
-        server_addr_str, control_port, proxy_port, worker_type_str, client_id_str
+        "📡 C API: Remote worker config received (control_port={}, proxy_port={}, worker_type={}, server_addr_len={}, client_id_len={})",
+        control_port,
+        proxy_port,
+        worker_type_str,
+        server_addr_str.len(),
+        client_id_str.len()
     );
 
     // Parse worker type
@@ -4048,25 +4162,29 @@ pub extern "C" fn start_remote_worker(
                 .unwrap_or_default(),
         ),
         config: None,
-        local_addr: "0.0.0.0".to_string(),
+        local_addr: "127.0.0.1".to_string(),
         local_port: 0,
         p2p_advertise_ip: None,
         p2p_udp_port: 40000,
+        p2p_bind_addr: "127.0.0.1".to_string(),
+        p2p_public_listen: false,
         cert_chain_path: "".to_string(),
+        control_tls: false,
+        control_tls_server_name: None,
         auto_models: false,
         hugging_face_hub_token: None,
         chat_template_path: None,
         standalone_llama: false,
+        api_key: None,
         llama_model_path: None,
         n_gpu_layers: 99,
         n_ctx: 2048,  // Reduced for Android memory constraints
-        n_batch: 512,  // Reduced for Android memory constraints
+        n_batch: 512, // Reduced for Android memory constraints
         llama_split_mode: LlamaSplitModeArg::Layer,
         llama_main_gpu: 0,
         llama_devices: None,
         stream_chunk_bytes: 256,
     };
-
 
     #[cfg(target_os = "android")]
     {
@@ -4122,7 +4240,152 @@ pub extern "C" fn start_remote_worker(
     }
 }
 
-#[cfg(target_os = "ios")]
+/// Start remote worker over TLS and initialize global worker (C API)
+///
+/// This is additive: `start_remote_worker` keeps the legacy plaintext behavior.
+/// Returns -2 when the TLS CA/SNI/SHA256 pin policy is invalid.
+#[cfg(any(target_os = "android", target_os = "ios"))]
+#[no_mangle]
+pub extern "C" fn start_remote_worker_with_tls(
+    server_addr: *const c_char,
+    control_port: c_int,
+    proxy_port: c_int,
+    worker_type: *const c_char,
+    client_id: *const c_char,
+    ca_cert_path: *const c_char,
+    control_tls_server_name: *const c_char,
+    cert_sha256_pin: *const c_char,
+) -> c_int {
+    use crate::util::mobile_control_stream::MobileControlTlsConfig;
+
+    println!("🔥 GPUFabric C API: Starting TLS remote worker");
+
+    let server_addr_str = match required_c_string(server_addr) {
+        Ok(s) => s,
+        Err(code) => return code,
+    };
+    let worker_type_str = match required_c_string(worker_type) {
+        Ok(s) => s,
+        Err(code) => return code,
+    };
+    let client_id_str = match required_c_string(client_id) {
+        Ok(s) => s,
+        Err(code) => return code,
+    };
+    let ca_cert_path = match optional_c_string(ca_cert_path) {
+        Ok(s) => s,
+        Err(code) => return code,
+    };
+    let control_tls_server_name = match optional_c_string(control_tls_server_name) {
+        Ok(s) => s.unwrap_or_else(|| server_addr_str.clone()),
+        Err(code) => return code,
+    };
+    let cert_sha256_pin = match optional_c_string(cert_sha256_pin) {
+        Ok(s) => s,
+        Err(code) => return code,
+    };
+
+    match worker_type_str.as_str() {
+        "TCP" | "WS" => {}
+        _ => {
+            eprintln!("❌ Error: Unknown worker type: {}", worker_type_str);
+            return -1;
+        }
+    }
+
+    let tls_config = match MobileControlTlsConfig::from_inputs(
+        true,
+        ca_cert_path.as_deref(),
+        Some(control_tls_server_name.as_str()),
+        cert_sha256_pin.as_deref(),
+    ) {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("❌ Error: Invalid mobile control TLS policy: {}", e);
+            return -2;
+        }
+    };
+
+    println!(
+        "📡 C API: TLS remote worker config received (control_port={}, proxy_port={}, worker_type={}, server_addr_len={}, client_id_len={})",
+        control_port,
+        proxy_port,
+        worker_type_str,
+        server_addr_str.len(),
+        client_id_str.len()
+    );
+
+    #[cfg(target_os = "android")]
+    {
+        std::io::stdout().flush().unwrap();
+        let local_runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("Failed to create local tokio runtime");
+
+        match local_runtime.block_on(async {
+            crate::handle::android_sdk::perform_android_login_with_tls(
+                server_addr_str.as_str(),
+                control_port as u16,
+                client_id_str.as_str(),
+                false,
+                tls_config,
+            )
+            .await
+        }) {
+            Ok(_) => 0,
+            Err(e) => {
+                eprintln!(
+                    "❌ C API: Failed to start and login Android TLS worker: {}",
+                    e
+                );
+                -1
+            }
+        }
+    }
+
+    #[cfg(target_os = "ios")]
+    {
+        let local_runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("Failed to create local tokio runtime");
+
+        match local_runtime.block_on(async {
+            crate::worker_sdk::perform_login_with_tls(
+                server_addr_str.as_str(),
+                control_port as u16,
+                client_id_str.as_str(),
+                false,
+                tls_config,
+            )
+            .await
+        }) {
+            Ok(_) => 0,
+            Err(e) => {
+                eprintln!("❌ C API: Failed to login iOS TLS worker: {}", e);
+                -1
+            }
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[no_mangle]
+pub extern "C" fn start_remote_worker_with_tls(
+    _server_addr: *const c_char,
+    _control_port: c_int,
+    _proxy_port: c_int,
+    _worker_type: *const c_char,
+    _client_id: *const c_char,
+    _ca_cert_path: *const c_char,
+    _control_tls_server_name: *const c_char,
+    _cert_sha256_pin: *const c_char,
+) -> c_int {
+    -1
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[no_mangle]
 pub extern "C" fn start_remote_worker(
     _server_addr: *const c_char,
@@ -4226,7 +4489,7 @@ pub extern "C" fn set_remote_worker_model(model_path: *const c_char) -> c_int {
         status.set_error("Failed to load model");
         return -3;
     }
-    println!("✅ C API: Model loaded: {}", path_str);
+    println!("✅ C API: Model loaded (path {} bytes)", path_str.len());
 
     let context_ptr = gpuf_create_context(model_ptr);
     if context_ptr.is_null() {
@@ -4282,7 +4545,7 @@ pub extern "C" fn set_remote_worker_model(model_path: *const c_char) -> c_int {
     0 // Success
 }
 
-#[cfg(target_os = "ios")]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[no_mangle]
 pub extern "C" fn set_remote_worker_model(_model_path: *const c_char) -> c_int {
     -1
@@ -4326,7 +4589,7 @@ pub extern "C" fn start_remote_worker_tasks() -> c_int {
     }
 }
 
-#[cfg(target_os = "ios")]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[no_mangle]
 pub extern "C" fn start_remote_worker_tasks() -> c_int {
     -1
@@ -4347,7 +4610,10 @@ pub extern "C" fn start_remote_worker_tasks_with_callback_ptr(
         }) {
             Ok(_) => 0 as c_int,
             Err(e) => {
-                eprintln!("❌ C API: Failed to start background tasks with callback: {}", e);
+                eprintln!(
+                    "❌ C API: Failed to start background tasks with callback: {}",
+                    e
+                );
                 -1 as c_int
             }
         }
@@ -4360,19 +4626,22 @@ pub extern "C" fn start_remote_worker_tasks_with_callback_ptr(
             .build()
             .expect("Failed to create local tokio runtime");
 
-        match local_runtime
-            .block_on(async { crate::worker_sdk::start_worker_tasks_with_callback_ptr(callback).await })
-        {
+        match local_runtime.block_on(async {
+            crate::worker_sdk::start_worker_tasks_with_callback_ptr(callback).await
+        }) {
             Ok(_) => 0 as c_int,
             Err(e) => {
-                eprintln!("❌ C API: Failed to start background tasks with callback: {}", e);
+                eprintln!(
+                    "❌ C API: Failed to start background tasks with callback: {}",
+                    e
+                );
                 -1 as c_int
             }
         }
     }
 }
 
-#[cfg(target_os = "ios")]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[no_mangle]
 pub extern "C" fn start_remote_worker_tasks_with_callback_ptr(
     _callback: Option<extern "C" fn(*const c_char, *mut c_void)>,
@@ -4403,7 +4672,7 @@ pub extern "C" fn stop_remote_worker() -> c_int {
     }
 }
 
-#[cfg(target_os = "ios")]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[no_mangle]
 pub extern "C" fn stop_remote_worker() -> c_int {
     -1
@@ -4461,7 +4730,7 @@ pub extern "C" fn get_remote_worker_status(buffer: *mut c_char, buffer_size: siz
         }
     };
 
-    println!("📊 C API: Status: {}", status);
+    println!("📊 C API: Status generated ({} bytes)", status.len());
 
     // Convert to C string and copy to buffer
     let status_c = match std::ffi::CString::new(status) {
@@ -4491,7 +4760,7 @@ pub extern "C" fn get_remote_worker_status(buffer: *mut c_char, buffer_size: siz
     0 as c_int
 }
 
-#[cfg(target_os = "ios")]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[no_mangle]
 pub extern "C" fn get_remote_worker_status(buffer: *mut c_char, buffer_size: size_t) -> c_int {
     if buffer.is_null() || buffer_size == 0 {

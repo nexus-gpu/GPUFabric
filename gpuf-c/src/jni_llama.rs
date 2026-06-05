@@ -28,6 +28,23 @@ use crate::{
     GLOBAL_CONTEXT_PTR, GLOBAL_MODEL_PTR, MODEL_STATUS,
 };
 
+#[cfg(target_os = "android")]
+fn token_callback_from_jlong(
+    callback_function_ptr: jlong,
+) -> Option<extern "C" fn(*const c_char, *mut c_void)> {
+    if callback_function_ptr == 0 {
+        return None;
+    }
+
+    // SAFETY: The caller supplies a native function pointer with the expected
+    // C ABI/signature. The pointer must remain valid until generation stops.
+    Some(unsafe {
+        std::mem::transmute::<usize, extern "C" fn(*const c_char, *mut c_void)>(
+            callback_function_ptr as usize,
+        )
+    })
+}
+
 // ============================================================================
 // Basic Engine Management
 // ============================================================================
@@ -847,16 +864,7 @@ pub extern "C" fn Java_com_gpuf_c_GPUEngine_startGenerationAsync(
         }
     };
 
-    // Convert function pointer
-    let callback = if callback_function_ptr != 0 {
-        Some(unsafe {
-            std::mem::transmute::<jlong, extern "C" fn(*const c_char, *mut c_void)>(
-                callback_function_ptr,
-            )
-        })
-    } else {
-        None
-    };
+    let callback = token_callback_from_jlong(callback_function_ptr);
 
     let result = gpuf_start_generation_async(
         ctx,

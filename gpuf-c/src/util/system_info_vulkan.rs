@@ -19,14 +19,13 @@ macro_rules! debug_println {
 }
 
 #[cfg(target_os = "macos")]
-fn try_macos_gpu_metrics() -> std::result::Result<(u64, u64, u64, u64), Box<dyn std::error::Error>> {
-    use std::process::Command;
+fn try_macos_gpu_metrics() -> std::result::Result<(u64, u64, u64, u64), Box<dyn std::error::Error>>
+{
+    use std::time::Duration;
 
-    // This typically requires sudo privileges on macOS.
-    // If sudo is not available or requires TTY/password, return Err so caller can fallback.
-    let output = Command::new("sudo")
-        .args([
-            "powermetrics",
+    let output = crate::util::safe_command::run_sudo_noninteractive(
+        "powermetrics",
+        &[
             "--samplers",
             "gpu_power,thermal",
             "-i",
@@ -35,8 +34,10 @@ fn try_macos_gpu_metrics() -> std::result::Result<(u64, u64, u64, u64), Box<dyn 
             "1",
             "--format",
             "plist",
-        ])
-        .output()?;
+        ],
+        Duration::from_secs(8),
+        crate::util::safe_command::DEFAULT_OUTPUT_LIMIT,
+    )?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -66,10 +67,7 @@ fn try_macos_gpu_metrics() -> std::result::Result<(u64, u64, u64, u64), Box<dyn 
                 .unwrap_or(0) as u64;
         }
 
-        if let Some(level) = dict
-            .get("thermal_pressure")
-            .and_then(|v| v.as_string())
-        {
+        if let Some(level) = dict.get("thermal_pressure").and_then(|v| v.as_string()) {
             thermal_level = level.to_string();
         }
     }
@@ -101,7 +99,12 @@ fn try_macos_gpu_metrics() -> std::result::Result<(u64, u64, u64, u64), Box<dyn 
         return Err("powermetrics did not provide usable GPU metrics".into());
     }
 
-    Ok((usage_percent.min(100), mem_usage_percent.min(100), power_w, temp_c))
+    Ok((
+        usage_percent.min(100),
+        mem_usage_percent.min(100),
+        power_w,
+        temp_c,
+    ))
 }
 
 #[cfg(feature = "vulkan")]
@@ -201,7 +204,8 @@ pub async fn collect_device_info_vulkan_cross_platform() -> Result<(DevicesInfo,
                     properties.vendor_id,
                     properties.device_id,
                     device_name.as_bytes(),
-                ).into()
+                )
+                .into()
             }) as u16
         };
         if !is_software_or_cpu {

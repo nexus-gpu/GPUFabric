@@ -11,16 +11,17 @@ echo "=============================================="
 echo ""
 
 # Configuration
-NDK_ROOT="${NDK_ROOT:-/home/jack/android-ndk-r27d}"
-PROJECT_ROOT="/home/jack/codedir/GPUFabric/gpuf-c"
-WORKSPACE_ROOT="/home/jack/codedir/GPUFabric"
+SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_ROOT/.." && pwd)"
+WORKSPACE_ROOT="$(cd "$PROJECT_ROOT/.." && pwd)"
+NDK_ROOT="${NDK_ROOT:-${ANDROID_NDK_ROOT:-${ANDROID_NDK_HOME:-$HOME/android-ndk-r27d}}}"
 SDK_LIB="$PROJECT_ROOT/libgpuf_c_sdk_v9.so"
 TEST_SOURCE="$PROJECT_ROOT/examples/test_multimodal_android.c"
 TEST_BINARY="test_multimodal_android"
 
 # Model paths
-TEXT_MODEL="/home/jack/SmolVLM-500M-Instruct-Q8_0.gguf"
-MMPROJ_MODEL="/home/jack/mmproj-SmolVLM-500M-Instruct-Q8_0.gguf"
+TEXT_MODEL="${TEXT_MODEL:-$HOME/SmolVLM-500M-Instruct-Q8_0.gguf}"
+MMPROJ_MODEL="${MMPROJ_MODEL:-$HOME/mmproj-SmolVLM-500M-Instruct-Q8_0.gguf}"
 
 # Device paths
 DEVICE_DIR="/data/local/tmp"
@@ -266,7 +267,7 @@ if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
     echo "  --help       Show this help message"
     echo ""
     echo "Environment variables:"
-    echo "  NDK_ROOT     Path to Android NDK (default: /home/jack/android-ndk-r27d)"
+    echo "  NDK_ROOT     Path to Android NDK (default: $HOME/android-ndk-r27d)"
     echo ""
     exit 0
 fi

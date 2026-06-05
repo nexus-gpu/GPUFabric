@@ -45,7 +45,7 @@ fi
 
 if [ "$FILES_OK" = false ]; then
     echo -e "\n${RED}Please run the complete build and push script first:${NC}"
-    echo "  cd /home/jack/codedir/GPUFabric/gpuf-c/examples"
+    echo "  cd <repo>/gpuf-c/examples"
     echo "  ./build_and_test_multimodal.sh"
     exit 1
 fi

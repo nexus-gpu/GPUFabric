@@ -33,7 +33,7 @@ GpufNative.startInferenceService(modelPath, 8082);
 
 // Start offline mode compute monitoring (no result reporting)
 GpufNative.startComputeMonitoring(
-    "http://gpufabric.com:8080",  // HTTP server address (optional)
+    "https://<your-gpufabric-api>",  // HTTP server address (optional)
     "gpufs.example.com",          // TCP/WS server address (optional)
     8081,                         // Control port
     8083,                         // Proxy port
@@ -51,7 +51,7 @@ String result = GpufNative.generateText("Hello, how are you?", 100);
 ```java
 // Start online mode compute monitoring (full functionality)
 GpufNative.startComputeMonitoring(
-    "http://gpufabric.com:8080",  // HTTP server address
+    "https://<your-gpufabric-api>",  // HTTP server address
     "gpufs.example.com",          // TCP/WS server address
     8081,                         // Control port
     8083,                         // Proxy port

@@ -30,6 +30,47 @@ impl std::str::FromStr for LlamaSplitModeArg {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct SecurityConfig {
+    pub require_api_key: bool,
+    pub enforce_model_checksum: bool,
+    pub allow_public_listen: bool,
+    pub enforce_p2p_hmac: bool,
+    pub safe_download_path: bool,
+    pub allow_external_model_path: bool,
+}
+
+impl SecurityConfig {
+    pub fn from_args(args: &Args) -> Self {
+        Self {
+            require_api_key: args.api_key.is_some(),
+            enforce_model_checksum: true,
+            allow_public_listen: args.p2p_public_listen,
+            enforce_p2p_hmac: true,
+            safe_download_path: true,
+            allow_external_model_path: false,
+        }
+    }
+
+    pub fn emit_high_risk_warnings(&self) {
+        if self.allow_public_listen {
+            tracing::warn!("SECURITY: public P2P listen is explicitly enabled");
+        }
+        if !self.enforce_p2p_hmac {
+            tracing::warn!("SECURITY: P2P data-plane HMAC enforcement is disabled");
+        }
+        if !self.enforce_model_checksum {
+            tracing::warn!("SECURITY: model checksum enforcement is disabled");
+        }
+        if !self.safe_download_path {
+            tracing::warn!("SECURITY: safe download path enforcement is disabled");
+        }
+        if self.allow_external_model_path {
+            tracing::warn!("SECURITY: external model paths are allowed");
+        }
+    }
+}
+
 #[derive(Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
 pub struct Args {
@@ -69,9 +110,25 @@ pub struct Args {
     #[arg(long, default_value_t = 40000)]
     pub p2p_udp_port: u16,
 
+    /// Address to bind for P2P UDP data-plane. Defaults to loopback.
+    #[arg(long, default_value = "127.0.0.1")]
+    pub p2p_bind_addr: String,
+
+    /// Explicitly allow P2P UDP data-plane to bind to a non-loopback address.
+    #[arg(long, default_value_t = false)]
+    pub p2p_public_listen: bool,
+
     /// Certificate chain for TLS
     #[arg(long, default_value = "ca-cert.pem")]
     pub cert_chain_path: String,
+
+    /// Connect to the gpuf-s control port over TLS. Disabled by default for compatibility.
+    #[arg(long, default_value_t = false)]
+    pub control_tls: bool,
+
+    /// Optional SNI/server name override for --control-tls certificate validation.
+    #[arg(long, default_value = None)]
+    pub control_tls_server_name: Option<String>,
 
     #[arg(
         long,
@@ -100,6 +157,10 @@ pub struct Args {
     #[arg(long, help = "Run as standalone LLAMA API server")]
     pub standalone_llama: bool,
 
+    /// API key for standalone OpenAI/Anthropic-compatible routes (or GPUF_API_KEY).
+    #[arg(long, env = "GPUF_API_KEY", default_value = None)]
+    pub api_key: Option<String>,
+
     /// Model path for standalone LLAMA server
     #[arg(long, help = "Path to GGUF model file for standalone mode")]
     pub llama_model_path: Option<String>,
@@ -117,7 +178,11 @@ pub struct Args {
     pub n_ctx: u32,
 
     /// Batch size for prompt processing (default: 4096)
-    #[arg(long, default_value_t = 4096, help = "Batch size for prompt processing")]
+    #[arg(
+        long,
+        default_value_t = 4096,
+        help = "Batch size for prompt processing"
+    )]
     pub n_batch: u32,
 
     #[arg(
@@ -205,19 +270,31 @@ impl Args {
                 local_port: config_data.client.local_port,
                 p2p_advertise_ip: self.p2p_advertise_ip.clone(),
                 p2p_udp_port: self.p2p_udp_port,
+                p2p_bind_addr: self.p2p_bind_addr.clone(),
+                p2p_public_listen: self.p2p_public_listen,
                 cert_chain_path: config_data.client.cert_chain_path,
+                control_tls: config_data.client.control_tls.unwrap_or(self.control_tls),
+                control_tls_server_name: config_data
+                    .client
+                    .control_tls_server_name
+                    .clone()
+                    .or_else(|| self.control_tls_server_name.clone()),
                 worker_type: worker_type,
                 engine_type: engine_type,
                 auto_models: config_data.client.auto_models,
                 hugging_face_hub_token: config_data.client.hugging_face_hub_token,
                 chat_template_path: config_data.client.chat_template_path,
                 standalone_llama: false, // Config file doesn't support standalone mode
+                api_key: self.api_key.clone(),
                 llama_model_path: None,
                 n_ctx: config_data.client.n_ctx,
                 n_batch: self.n_batch,
                 n_gpu_layers: config_data.client.n_gpu_layers,
                 llama_split_mode,
-                llama_main_gpu: config_data.client.llama_main_gpu.unwrap_or(self.llama_main_gpu),
+                llama_main_gpu: config_data
+                    .client
+                    .llama_main_gpu
+                    .unwrap_or(self.llama_main_gpu),
                 llama_devices: config_data
                     .client
                     .llama_devices
@@ -235,6 +312,16 @@ impl Args {
 
             Ok(self.clone())
         }
+    }
+}
+
+impl Args {
+    pub fn p2p_udp_bind_addr(&self) -> String {
+        format!("{}:{}", self.p2p_bind_addr, self.p2p_udp_port)
+    }
+
+    pub fn security_config(&self) -> SecurityConfig {
+        SecurityConfig::from_args(self)
     }
 }
 
@@ -271,5 +358,27 @@ impl EngineType {
             EngineType::OLLAMA => common::EngineType::Ollama,
             EngineType::LLAMA => common::EngineType::Llama,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_control_tls_flags() {
+        let args = Args::try_parse_from([
+            "gpuf-c",
+            "--standalone-llama",
+            "--control-tls",
+            "--control-tls-server-name",
+            "gpuf.example.internal",
+        ])
+        .unwrap();
+        assert!(args.control_tls);
+        assert_eq!(
+            args.control_tls_server_name.as_deref(),
+            Some("gpuf.example.internal")
+        );
     }
 }

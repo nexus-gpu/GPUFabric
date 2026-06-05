@@ -17,6 +17,8 @@ use tracing::{debug, error, info};
 /// Inference service configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InferenceServiceConfig {
+    /// Service listening host. Defaults to loopback.
+    pub host: String,
     /// Service listening port
     pub port: u16,
     /// Model path
@@ -32,6 +34,7 @@ pub struct InferenceServiceConfig {
 impl Default for InferenceServiceConfig {
     fn default() -> Self {
         Self {
+            host: "127.0.0.1".to_string(),
             port: 8082, // Distinguish from gpuf-c's 8081
             model_path: String::new(),
             n_ctx: 4096,
@@ -100,7 +103,10 @@ impl InferenceService {
 
     /// Start inference service
     pub async fn start(&self) -> Result<()> {
-        info!("Starting inference service on port {}", self.config.port);
+        info!(
+            "Starting inference service on {}:{}",
+            self.config.host, self.config.port
+        );
 
         // 1. Initialize LLM engine
         self.init_llm_engine().await?;
@@ -109,13 +115,14 @@ impl InferenceService {
         let app = self.create_router();
 
         // 3. Start server
-        let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", self.config.port))
+        let bind_addr = format!("{}:{}", self.config.host, self.config.port);
+        let listener = tokio::net::TcpListener::bind(&bind_addr)
             .await
-            .map_err(|e| anyhow!("Failed to bind to port {}: {}", self.config.port, e))?;
+            .map_err(|e| anyhow!("Failed to bind to {}: {}", bind_addr, e))?;
 
         info!(
-            "Inference service started successfully on http://0.0.0.0:{}",
-            self.config.port
+            "Inference service started successfully on http://{}",
+            bind_addr
         );
 
         axum::serve(listener, app)

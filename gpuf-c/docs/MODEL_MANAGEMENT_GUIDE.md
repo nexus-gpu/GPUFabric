@@ -86,8 +86,8 @@ public class ModelManager {
             
             // Start compute monitoring (offline mode)
             GpufNative.startComputeMonitoring(
-                "http://gpufabric.com:8080", 
-                "gpufs.example.com", 
+                "https://<your-gpufabric-api>",
+                "gpufs.example.com",
                 8081, 8083, 0, 2, true
             );
         }
