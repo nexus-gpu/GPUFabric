@@ -77,11 +77,14 @@ pub extern "C" fn Java_com_gpuf_c_GPUEngine_getVersion(env: JNIEnv, _class: JCla
         return std::ptr::null_mut();
     }
 
+    // SAFETY: `gpuf_version` returns a process-static, NUL-terminated C string
+    // or null. Null was handled above and the pointer is only read for this call.
     let version_str = unsafe { CStr::from_ptr(version_ptr).to_str().unwrap_or("unknown") };
 
-    env.new_string(version_str)
-        .unwrap_or_else(|_| unsafe { JString::from_raw(std::ptr::null_mut()) })
-        .into_raw()
+    match env.new_string(version_str) {
+        Ok(jstring) => jstring.into_raw(),
+        Err(_) => std::ptr::null_mut(),
+    }
 }
 
 /// Cleanup and free resources
@@ -115,6 +118,8 @@ pub extern "C" fn Java_com_gpuf_c_GPUEngine_getSystemInfo(
         return std::ptr::null_mut();
     }
 
+    // SAFETY: `gpuf_system_info` returns a heap/static NUL-terminated C string
+    // or null. Null was handled above and the pointer is only read here.
     let info_str = unsafe { CStr::from_ptr(info_cstr).to_str().unwrap_or("Unknown") };
 
     match env.new_string(info_str) {
@@ -621,6 +626,8 @@ pub extern "C" fn Java_com_gpuf_c_GPUEngine_generate(
     );
 
     if result > 0 {
+        // SAFETY: `output` is a valid writable buffer passed to the C API above.
+        // A positive return means the buffer contains a NUL-terminated response.
         let _output_str = unsafe {
             CStr::from_ptr(output.as_mut_ptr() as *const c_char)
                 .to_str()
@@ -686,6 +693,8 @@ pub extern "C" fn Java_com_gpuf_c_GPUEngine_generateText(
     );
 
     if result > 0 {
+        // SAFETY: `output` was passed as a valid writable buffer to the C API and
+        // positive result codes indicate it now contains a NUL-terminated string.
         let output_str = unsafe {
             CStr::from_ptr(output.as_ptr() as *const c_char)
                 .to_str()
@@ -766,6 +775,8 @@ pub extern "C" fn Java_com_gpuf_c_GPUEngine_generateTextWithSampling(
     );
 
     if result > 0 {
+        // SAFETY: `output` was passed as a valid writable buffer to the C API and
+        // positive result codes indicate it now contains a NUL-terminated string.
         let output_str = unsafe {
             CStr::from_ptr(output.as_ptr() as *const c_char)
                 .to_str()
@@ -1120,6 +1131,8 @@ pub extern "C" fn Java_com_gpuf_c_GPUEngine_generateMultimodal(
     );
 
     if result > 0 {
+        // SAFETY: `output` was passed as a valid writable buffer to the C API and
+        // positive result codes indicate it now contains a NUL-terminated string.
         let output_str = unsafe {
             CStr::from_ptr(output.as_ptr() as *const c_char)
                 .to_str()

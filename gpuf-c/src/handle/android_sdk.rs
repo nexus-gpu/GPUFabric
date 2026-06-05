@@ -90,6 +90,19 @@ fn command_label(command: &Command) -> &'static str {
 }
 
 #[cfg(target_os = "android")]
+pub type StatusCallback = extern "C" fn(*const std::ffi::c_char, *mut std::ffi::c_void);
+
+#[cfg(target_os = "android")]
+fn call_status_callback(callback: Option<StatusCallback>, message: &CString) {
+    if let Some(callback_fn) = callback {
+        // The SDK entrypoint accepts this function pointer from trusted native
+        // caller code. `message` is a live NUL-terminated CString for the full
+        // callback call, and this Android path does not use callback user_data.
+        callback_fn(message.as_ptr(), std::ptr::null_mut());
+    }
+}
+
+#[cfg(target_os = "android")]
 extern "C" {
     fn llama_get_model(ctx: *const crate::llama_context) -> *const crate::llama_model;
     fn llama_model_get_vocab(model: *const crate::llama_model) -> *const crate::llama_vocab;
@@ -124,18 +137,23 @@ fn count_prompt_tokens(ctx: *mut crate::llama_context, prompt: *const std::os::r
         return 0;
     }
 
+    // SAFETY: `ctx` was checked for null above and is only queried for its model pointer.
     let model = unsafe { llama_get_model(ctx) };
     if model.is_null() {
         return 0;
     }
+    // SAFETY: `model` was returned by llama.cpp and checked for null before this call.
     let vocab = unsafe { llama_model_get_vocab(model) };
     if vocab.is_null() {
         return 0;
     }
 
+    // SAFETY: `prompt` was checked for null and the C API requires a NUL-terminated prompt.
     let prompt_len = unsafe { std::ffi::CStr::from_ptr(prompt) }.to_bytes().len();
 
     let mut tokens: Vec<i32> = vec![0; 512];
+    // SAFETY: `vocab` and `prompt` are valid for this call, and `tokens` is a
+    // writable buffer sized by `tokens.len()`.
     let mut n = unsafe {
         llama_tokenize(
             vocab,
@@ -150,6 +168,7 @@ fn count_prompt_tokens(ctx: *mut crate::llama_context, prompt: *const std::os::r
     if n < 0 {
         let needed = (-n) as usize;
         tokens = vec![0; needed.max(1)];
+        // SAFETY: `tokens` was resized to the capacity requested by llama.cpp.
         n = unsafe {
             llama_tokenize(
                 vocab,
@@ -179,6 +198,7 @@ fn build_chat_prompt_with_gguf_template(
         return None;
     }
 
+    // SAFETY: `ctx` was checked for null above and is only queried for its model pointer.
     let model = unsafe { llama_get_model(ctx) };
     if model.is_null() {
         return None;
@@ -186,6 +206,7 @@ fn build_chat_prompt_with_gguf_template(
 
     let key = CString::new("tokenizer.chat_template").ok()?;
     let mut tmpl_buf = vec![0u8; 8192];
+    // SAFETY: `model`, `key`, and `tmpl_buf` are valid for this metadata copy.
     let got = unsafe {
         llama_model_meta_val_str(
             model,
@@ -198,6 +219,8 @@ fn build_chat_prompt_with_gguf_template(
         return None;
     }
 
+    // SAFETY: llama.cpp returned a positive byte count into `tmpl_buf`; metadata
+    // string values are NUL-terminated C strings.
     let tmpl_cstr = unsafe { CStr::from_ptr(tmpl_buf.as_ptr() as *const std::os::raw::c_char) };
 
     let mut role_cstrs = Vec::with_capacity(messages.len());
@@ -215,6 +238,8 @@ fn build_chat_prompt_with_gguf_template(
         content_cstrs.push(content);
     }
 
+    // SAFETY: `tmpl_cstr` and `chat_msgs` point to live C strings/vectors for
+    // this sizing call; null output buffer with length 0 requests required size.
     let needed = unsafe {
         llama_chat_apply_template(
             tmpl_cstr.as_ptr(),
@@ -230,6 +255,8 @@ fn build_chat_prompt_with_gguf_template(
     }
 
     let mut out = vec![0u8; needed as usize + 1];
+    // SAFETY: `out` is a writable buffer of the advertised length and all chat
+    // message pointers remain owned by `role_cstrs`/`content_cstrs` for the call.
     let written = unsafe {
         llama_chat_apply_template(
             tmpl_cstr.as_ptr(),
@@ -244,6 +271,7 @@ fn build_chat_prompt_with_gguf_template(
         return None;
     }
 
+    // SAFETY: positive `written` indicates `out` now contains a NUL-terminated prompt.
     let s = unsafe { CStr::from_ptr(out.as_ptr() as *const std::os::raw::c_char) }
         .to_string_lossy()
         .to_string();
@@ -1249,8 +1277,13 @@ pub async fn start_worker_tasks() -> Result<()> {
                                             return;
                                         }
 
+                                        // SAFETY: `user_data` is created from a live TokenCallbackState
+                                        // immediately before starting synchronous generation and is not
+                                        // moved or dropped until the generation call returns.
                                         let state =
                                             unsafe { &mut *(user_data as *mut TokenCallbackState) };
+                                        // SAFETY: The token callback contract supplies `token` as a
+                                        // non-null, NUL-terminated C string for this callback call.
                                         let token_str =
                                             unsafe { std::ffi::CStr::from_ptr(token).to_str() };
                                         let Ok(token_str) = token_str else {
@@ -1386,20 +1419,17 @@ pub async fn start_worker_tasks() -> Result<()> {
                                         suppress: false,
                                     };
 
-                                    let completion_tokens_i32 = unsafe {
-                                        gpuf_start_generation_async(
-                                            context_ptr,
-                                            prompt_cstr.as_ptr(),
-                                            max_tokens as i32,
-                                            temperature,
-                                            top_k as i32,
-                                            top_p,
-                                            repeat_penalty,
-                                            Some(on_token),
-                                            (&mut cb_state as *mut TokenCallbackState)
-                                                as *mut c_void,
-                                        )
-                                    };
+                                    let completion_tokens_i32 = gpuf_start_generation_async(
+                                        context_ptr,
+                                        prompt_cstr.as_ptr(),
+                                        max_tokens as i32,
+                                        temperature,
+                                        top_k as i32,
+                                        top_p,
+                                        repeat_penalty,
+                                        Some(on_token),
+                                        (&mut cb_state as *mut TokenCallbackState) as *mut c_void,
+                                    );
 
                                     if completion_tokens_i32 > 0 {
                                         cb_state.completion_tokens = completion_tokens_i32 as u32;
@@ -1540,8 +1570,13 @@ pub async fn start_worker_tasks() -> Result<()> {
                                             return;
                                         }
 
+                                        // SAFETY: `user_data` is created from a live TokenCallbackState
+                                        // immediately before starting synchronous generation and is not
+                                        // moved or dropped until the generation call returns.
                                         let state =
                                             unsafe { &mut *(user_data as *mut TokenCallbackState) };
+                                        // SAFETY: The token callback contract supplies `token` as a
+                                        // non-null, NUL-terminated C string for this callback call.
                                         let token_str =
                                             unsafe { std::ffi::CStr::from_ptr(token).to_str() };
                                         let Ok(token_str) = token_str else {
@@ -1629,20 +1664,17 @@ pub async fn start_worker_tasks() -> Result<()> {
                                         suppress: false,
                                     };
 
-                                    let completion_tokens_i32 = unsafe {
-                                        gpuf_start_generation_async(
-                                            context_ptr,
-                                            prompt_cstr.as_ptr(),
-                                            max_tokens as i32,
-                                            temperature,
-                                            top_k as i32,
-                                            top_p,
-                                            repeat_penalty,
-                                            Some(on_token),
-                                            (&mut cb_state as *mut TokenCallbackState)
-                                                as *mut c_void,
-                                        )
-                                    };
+                                    let completion_tokens_i32 = gpuf_start_generation_async(
+                                        context_ptr,
+                                        prompt_cstr.as_ptr(),
+                                        max_tokens as i32,
+                                        temperature,
+                                        top_k as i32,
+                                        top_p,
+                                        repeat_penalty,
+                                        Some(on_token),
+                                        (&mut cb_state as *mut TokenCallbackState) as *mut c_void,
+                                    );
 
                                     if completion_tokens_i32 > 0 {
                                         cb_state.completion_tokens = completion_tokens_i32 as u32;
@@ -1706,7 +1738,9 @@ pub async fn start_worker_tasks() -> Result<()> {
                                     use crate::{gpuf_stop_generation, GLOBAL_CONTEXT_PTR};
                                     let context_ptr = GLOBAL_CONTEXT_PTR.load(Ordering::SeqCst);
                                     if !context_ptr.is_null() {
-                                        unsafe { gpuf_stop_generation(context_ptr) };
+                                        // `context_ptr` was loaded from the global context slot
+                                        // and checked for null before cancellation.
+                                        gpuf_stop_generation(context_ptr);
                                     }
                                 }
                             }
@@ -1752,9 +1786,7 @@ pub async fn start_worker_tasks() -> Result<()> {
 
 /// Start background worker tasks with callback support (heartbeat, handler, etc.)
 #[cfg(target_os = "android")]
-pub async fn start_worker_tasks_with_callback_ptr(
-    callback: Option<extern "C" fn(*const std::ffi::c_char, *mut std::ffi::c_void)>,
-) -> Result<()> {
+pub async fn start_worker_tasks_with_callback_ptr(callback: Option<StatusCallback>) -> Result<()> {
     use std::ffi::CString;
     use std::thread;
 
@@ -1788,9 +1820,7 @@ pub async fn start_worker_tasks_with_callback_ptr(
             };
 
             // Call the C callback function
-            unsafe {
-                callback_fn(combined_cstr.as_ptr(), std::ptr::null_mut());
-            }
+            call_status_callback(Some(callback_fn), &combined_cstr);
         }
     };
 
@@ -1840,9 +1870,7 @@ pub async fn start_worker_tasks_with_callback_ptr(
                     Ok(s) => s,
                     Err(_) => continue,
                 };
-                unsafe {
-                    callback_fn(heartbeat_msg.as_ptr(), std::ptr::null_mut());
-                }
+                call_status_callback(Some(callback_fn), &heartbeat_msg);
             }
 
             // Get real-time system usage information
@@ -1897,9 +1925,7 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                     Ok(s) => s,
                                     Err(_) => continue,
                                 };
-                            unsafe {
-                                callback_fn(error_msg.as_ptr(), std::ptr::null_mut());
-                            }
+                            call_status_callback(Some(callback_fn), &error_msg);
                         }
                         continue;
                     }
@@ -1935,9 +1961,7 @@ pub async fn start_worker_tasks_with_callback_ptr(
                             Ok(s) => s,
                             Err(_) => continue,
                         };
-                    unsafe {
-                        callback_fn(error_msg.as_ptr(), std::ptr::null_mut());
-                    }
+                    call_status_callback(Some(callback_fn), &error_msg);
                 }
             } else {
                 println!("✅ Android: Heartbeat sent successfully");
@@ -1973,9 +1997,7 @@ pub async fn start_worker_tasks_with_callback_ptr(
                         Ok(s) => s,
                         Err(_) => continue,
                     };
-                    unsafe {
-                        callback_fn(success_msg.as_ptr(), std::ptr::null_mut());
-                    }
+                    call_status_callback(Some(callback_fn), &success_msg);
                 }
             }
 
@@ -2016,9 +2038,7 @@ pub async fn start_worker_tasks_with_callback_ptr(
                 Ok(s) => s,
                 Err(_) => return Ok(()),
             };
-            unsafe {
-                callback_fn(start_msg.as_ptr(), std::ptr::null_mut());
-            }
+            call_status_callback(Some(callback_fn), &start_msg);
         }
 
         // Ensure blocking reads wake up periodically so stop signal can be observed
@@ -2064,9 +2084,7 @@ pub async fn start_worker_tasks_with_callback_ptr(
                             Ok(s) => s,
                             Err(_) => continue,
                         };
-                        unsafe {
-                            callback_fn(cmd_msg.as_ptr(), std::ptr::null_mut());
-                        }
+                        call_status_callback(Some(callback_fn), &cmd_msg);
                     }
 
                     // Handle different command types
@@ -2114,12 +2132,7 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                                 Ok(s) => s,
                                                 Err(_) => continue,
                                             };
-                                            unsafe {
-                                                callback_fn(
-                                                    success_msg.as_ptr(),
-                                                    std::ptr::null_mut(),
-                                                );
-                                            }
+                                            call_status_callback(Some(callback_fn), &success_msg);
                                         }
                                         if !pods_model.is_empty() {
                                             println!(
@@ -2146,12 +2159,7 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                                 Ok(s) => s,
                                                 Err(_) => break,
                                             };
-                                            unsafe {
-                                                callback_fn(
-                                                    error_msg.as_ptr(),
-                                                    std::ptr::null_mut(),
-                                                );
-                                            }
+                                            call_status_callback(Some(callback_fn), &error_msg);
                                         }
                                         break;
                                     }
@@ -2165,12 +2173,7 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                                 Ok(s) => s,
                                                 Err(_) => continue,
                                             };
-                                            unsafe {
-                                                callback_fn(
-                                                    error_msg.as_ptr(),
-                                                    std::ptr::null_mut(),
-                                                );
-                                            }
+                                            call_status_callback(Some(callback_fn), &error_msg);
                                         }
                                     } else {
                                         println!("✅ Android: Pull model successful");
@@ -2181,12 +2184,7 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                                 Ok(s) => s,
                                                 Err(_) => continue,
                                             };
-                                            unsafe {
-                                                callback_fn(
-                                                    success_msg.as_ptr(),
-                                                    std::ptr::null_mut(),
-                                                );
-                                            }
+                                            call_status_callback(Some(callback_fn), &success_msg);
                                         }
                                         if !pods_model.is_empty() {
                                             println!(
@@ -2299,9 +2297,14 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                                 return;
                                             }
 
+                                            // SAFETY: `user_data` is created from a live TokenCallbackState
+                                            // immediately before starting synchronous generation and is not
+                                            // moved or dropped until the generation call returns.
                                             let state = unsafe {
                                                 &mut *(user_data as *mut TokenCallbackState)
                                             };
+                                            // SAFETY: The token callback contract supplies `token` as a
+                                            // non-null, NUL-terminated C string for this callback call.
                                             let token_str =
                                                 unsafe { std::ffi::CStr::from_ptr(token).to_str() };
                                             let Ok(token_str) = token_str else {
@@ -2447,20 +2450,18 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                             suppress: false,
                                         };
 
-                                        let completion_tokens_i32 = unsafe {
-                                            gpuf_start_generation_async(
-                                                context_ptr,
-                                                prompt_cstr.as_ptr(),
-                                                max_tokens as i32,
-                                                temperature,
-                                                top_k as i32,
-                                                top_p,
-                                                repeat_penalty,
-                                                Some(on_token),
-                                                (&mut cb_state as *mut TokenCallbackState)
-                                                    as *mut c_void,
-                                            )
-                                        };
+                                        let completion_tokens_i32 = gpuf_start_generation_async(
+                                            context_ptr,
+                                            prompt_cstr.as_ptr(),
+                                            max_tokens as i32,
+                                            temperature,
+                                            top_k as i32,
+                                            top_p,
+                                            repeat_penalty,
+                                            Some(on_token),
+                                            (&mut cb_state as *mut TokenCallbackState)
+                                                as *mut c_void,
+                                        );
 
                                         if completion_tokens_i32 > 0 {
                                             cb_state.completion_tokens =
@@ -2631,9 +2632,14 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                                 return;
                                             }
 
+                                            // SAFETY: `user_data` is created from a live TokenCallbackState
+                                            // immediately before starting synchronous generation and is not
+                                            // moved or dropped until the generation call returns.
                                             let state = unsafe {
                                                 &mut *(user_data as *mut TokenCallbackState)
                                             };
+                                            // SAFETY: The token callback contract supplies `token` as a
+                                            // non-null, NUL-terminated C string for this callback call.
                                             let token_str =
                                                 unsafe { std::ffi::CStr::from_ptr(token).to_str() };
                                             let Ok(token_str) = token_str else {
@@ -2780,20 +2786,18 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                             suppress: false,
                                         };
 
-                                        let completion_tokens = unsafe {
-                                            gpuf_start_generation_async(
-                                                context_ptr,
-                                                prompt_cstr.as_ptr(),
-                                                max_tokens as i32,
-                                                temperature,
-                                                top_k as i32,
-                                                top_p,
-                                                repeat_penalty,
-                                                Some(on_token),
-                                                (&mut cb_state as *mut TokenCallbackState)
-                                                    as *mut c_void,
-                                            )
-                                        };
+                                        let completion_tokens = gpuf_start_generation_async(
+                                            context_ptr,
+                                            prompt_cstr.as_ptr(),
+                                            max_tokens as i32,
+                                            temperature,
+                                            top_k as i32,
+                                            top_p,
+                                            repeat_penalty,
+                                            Some(on_token),
+                                            (&mut cb_state as *mut TokenCallbackState)
+                                                as *mut c_void,
+                                        );
 
                                         cb_state.completion_tokens = completion_tokens as u32;
 
@@ -2868,7 +2872,7 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                         use crate::{gpuf_stop_generation, GLOBAL_CONTEXT_PTR};
                                         let context_ptr = GLOBAL_CONTEXT_PTR.load(Ordering::SeqCst);
                                         if !context_ptr.is_null() {
-                                            unsafe { gpuf_stop_generation(context_ptr) };
+                                            gpuf_stop_generation(context_ptr);
                                         }
                                     }
                                 }
@@ -2912,9 +2916,7 @@ pub async fn start_worker_tasks_with_callback_ptr(
                 Ok(s) => s,
                 Err(_) => return Ok(()),
             };
-            unsafe {
-                callback_fn(stop_msg.as_ptr(), std::ptr::null_mut());
-            }
+            call_status_callback(Some(callback_fn), &stop_msg);
         }
         Ok(())
     });

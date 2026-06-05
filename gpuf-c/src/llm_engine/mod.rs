@@ -8,7 +8,7 @@ pub mod vllm_engine;
 
 // Re-export commonly used types
 use crate::util::cmd::EngineType;
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 
 #[cfg(not(target_os = "ios"))]
 pub use llama_engine::LlamaEngine;
@@ -27,18 +27,30 @@ impl LlamaEngine {
 #[cfg(target_os = "ios")]
 impl Engine for LlamaEngine {
     fn init(&mut self) -> impl std::future::Future<Output = Result<()>> + Send {
-        async move { Err(anyhow!("LlamaEngine is not available on iOS in this build")) }
+        async move {
+            Err(anyhow::anyhow!(
+                "LlamaEngine is not available on iOS in this build"
+            ))
+        }
     }
 
     fn set_models(
         &mut self,
         _models: Vec<String>,
     ) -> impl std::future::Future<Output = Result<()>> + Send {
-        async move { Err(anyhow!("LlamaEngine is not available on iOS in this build")) }
+        async move {
+            Err(anyhow::anyhow!(
+                "LlamaEngine is not available on iOS in this build"
+            ))
+        }
     }
 
     fn start_worker(&mut self) -> impl std::future::Future<Output = Result<()>> + Send {
-        async move { Err(anyhow!("LlamaEngine is not available on iOS in this build")) }
+        async move {
+            Err(anyhow::anyhow!(
+                "LlamaEngine is not available on iOS in this build"
+            ))
+        }
     }
 
     fn stop_worker(&mut self) -> impl std::future::Future<Output = Result<()>> + Send {

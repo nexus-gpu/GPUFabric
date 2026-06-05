@@ -93,6 +93,7 @@ Record the configured runtime controls for the release:
 - Frontend/API documentation updated: `docs/api_server.md`, `gui/doc.md`, `gpuf-s/api/api_server.md`
 - Control TLS opt-in checked: `gpuf-s --control-tls`; `gpuf-c --control-tls --control-tls-server-name <name> --cert-chain-path <ca.pem>`
 - Mobile C/JNI TLS transport API added: `start_remote_worker_with_tls` / `RemoteWorker.startRemoteWorkerWithTls`; Linux lib/bin check, mobile TLS policy/config unit tests, and Android arm64 target compile passed with NDK 25.1. iOS target compile and device/simulator TLS/pinning logs remain mobile release evidence.
+- P2-3 FFI unsafe audit continued: JNI/Android/worker SDK paths removed unnecessary callback/generation `unsafe` wrappers and added `SAFETY` notes for C strings, callback `user_data`, chat-template buffers, and llama.cpp helper calls. `cargo fmt --all --check`, `cargo check -p gpuf-c --lib`, and Android arm64 target check passed; no public SDK or frontend API signature changed.
 - Metrics snapshot attached: TBD
 
 ## Security Exceptions

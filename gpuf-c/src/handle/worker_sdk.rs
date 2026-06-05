@@ -378,8 +378,7 @@ pub async fn start_worker_tasks_with_callback_ptr(
                 .ok();
 
             // Process commands with this stream
-            let mut stream_valid = true;
-            while stream_valid && !handler_stop.load(Ordering::Relaxed) {
+            while !handler_stop.load(Ordering::Relaxed) {
                 let cmd = match common::read_command_sync(&mut *stream) {
                     Ok(c) => c,
                     Err(e) => {
@@ -396,7 +395,6 @@ pub async fn start_worker_tasks_with_callback_ptr(
                             &format!("READ_ERROR - Connection lost: {}", e),
                         );
                         clear_tcp_stream();
-                        stream_valid = false;
                         break;
                     }
                 };
@@ -421,7 +419,6 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                 ),
                             );
                             clear_tcp_stream();
-                            stream_valid = false;
                             break;
                         }
 
@@ -637,6 +634,10 @@ fn build_chat_prompt_with_template(messages: &[common::ChatMessage]) -> String {
     }
 }
 
+#[cfg_attr(
+    not(any(target_os = "android", target_os = "ios")),
+    allow(unused_variables)
+)]
 fn handle_inference_task(
     stream: &mut MobileControlStream,
     task_id: String,
@@ -1047,22 +1048,20 @@ fn handle_inference_task(
             cancelled: AtomicBool::new(false),
         };
 
-        // SAFETY: `ctx_ptr` is checked above and `prompt_c` remains alive for
+        // Invariant: `ctx_ptr` is checked above and `prompt_c` remains alive for
         // the full synchronous generation call. `cb_state` is passed as
         // `user_data` and is not moved or dropped until the call returns.
-        let rc = unsafe {
-            gpuf_start_generation_async(
-                ctx_ptr,
-                prompt_c.as_ptr(),
-                max_tokens as i32,
-                temperature,
-                top_k,
-                top_p,
-                repeat_penalty,
-                Some(on_token),
-                (&mut cb_state as *mut TokenCallbackState) as *mut std::ffi::c_void,
-            )
-        };
+        let rc = gpuf_start_generation_async(
+            ctx_ptr,
+            prompt_c.as_ptr(),
+            max_tokens as i32,
+            temperature,
+            top_k,
+            top_p,
+            repeat_penalty,
+            Some(on_token),
+            (&mut cb_state as *mut TokenCallbackState) as *mut std::ffi::c_void,
+        );
 
         if rc < 0 {
             let result_command = CommandV1::InferenceResultChunk {
