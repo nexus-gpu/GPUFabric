@@ -18,6 +18,10 @@ pub struct Args {
     #[arg(long, default_value_t = 18081)]
     pub api_port: u16,
 
+    /// Port for the local inference gateway served by gpuf-s.
+    #[arg(long, default_value_t = 8081)]
+    pub inference_gateway_port: u16,
+
     /// Print client monitoring data
     #[arg(long)]
     pub monitor: bool,

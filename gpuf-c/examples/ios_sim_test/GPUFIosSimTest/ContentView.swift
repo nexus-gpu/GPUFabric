@@ -2,6 +2,7 @@ import SwiftUI
 import os
 
 private let remoteWorkerLogger = Logger(subsystem: "com.gpuf.iossimtest", category: "remote_worker")
+private let environment = ProcessInfo.processInfo.environment
 
 private final class RemoteWorkerStatusBox: @unchecked Sendable {
     var update: ((String) -> Void)?
@@ -67,13 +68,17 @@ private func startRemoteWorkerOnce() -> String {
 private func startRemoteWorkerWithModelPath(_ modelPath: String) -> String {
     remoteWorkerLogger.info("Model path: \(modelPath, privacy: .public)")
 
-    let serverAddr = "<your-server-host>"
-    let controlPort: Int32 = 17000
-    let proxyPort: Int32 = 17001
+    let serverAddr = environment["GPUF_IOS_TEST_SERVER_ADDR"] ?? "127.0.0.1"
+    let controlPort = Int32(environment["GPUF_IOS_TEST_CONTROL_PORT"] ?? "17100") ?? 17100
+    let proxyPort = Int32(environment["GPUF_IOS_TEST_PROXY_PORT"] ?? "17101") ?? 17101
     let workerType = "TCP"
-    let clientId = "<32-hex-client-id>"
+    let clientId = environment["GPUF_IOS_TEST_CLIENT_ID"] ?? "00112233445566778899aabbccddeeff"
+    let useTLS = environment["GPUF_IOS_TEST_TLS"] == "1"
+    let caCertPath = environment["GPUF_IOS_TEST_CA_CERT_PATH"]
+    let controlTLSServerName = environment["GPUF_IOS_TEST_TLS_SERVER_NAME"] ?? serverAddr
+    let certSHA256Pin = environment["GPUF_IOS_TEST_CERT_SHA256_PIN"]
 
-    remoteWorkerLogger.info("Starting remote worker with clientId: \(clientId, privacy: .public)")
+    remoteWorkerLogger.info("Starting remote worker with clientId: \(clientId, privacy: .public), tls: \(useTLS)")
 
     let modelRc = modelPath.withCString { cstr in
         set_remote_worker_model(cstr)
@@ -83,10 +88,27 @@ private func startRemoteWorkerWithModelPath(_ modelPath: String) -> String {
         return "❌ set_remote_worker_model failed: \(modelRc)"
     }
 
-    let startRc = serverAddr.withCString { s in
-        workerType.withCString { w in
-            clientId.withCString { c in
-                start_remote_worker(s, controlPort, proxyPort, w, c)
+    let startRc: Int32
+    if useTLS {
+        startRc = serverAddr.withCString { s in
+            workerType.withCString { w in
+                clientId.withCString { c in
+                    controlTLSServerName.withCString { tlsName in
+                        withOptionalCString(caCertPath) { ca in
+                            withOptionalCString(certSHA256Pin) { pin in
+                                start_remote_worker_with_tls(s, controlPort, proxyPort, w, c, ca, tlsName, pin)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        startRc = serverAddr.withCString { s in
+            workerType.withCString { w in
+                clientId.withCString { c in
+                    start_remote_worker(s, controlPort, proxyPort, w, c)
+                }
             }
         }
     }
@@ -119,4 +141,13 @@ private func startRemoteWorkerWithModelPath(_ modelPath: String) -> String {
     }
 
     return "✅ Remote worker started"
+}
+
+private func withOptionalCString<R>(_ value: String?, _ body: (UnsafePointer<CChar>?) -> R) -> R {
+    guard let value, !value.isEmpty else {
+        return body(nil)
+    }
+    return value.withCString { cstr in
+        body(cstr)
+    }
 }

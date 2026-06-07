@@ -34,8 +34,13 @@ async fn main() -> Result<()> {
     let proxy_listener = TcpListener::bind(format!("0.0.0.0:{}", args.proxy_port)).await?;
     let public_listener = TcpListener::bind(format!("0.0.0.0:{}", args.public_port)).await?;
     info!(
-        "gpuf-server listening on ports: Control={} (tls={}), Proxy={}, Public={}, API={}",
-        args.control_port, args.control_tls, args.proxy_port, args.public_port, args.api_port
+        "gpuf-server listening on ports: Control={} (tls={}), Proxy={}, Public={}, API={}, InferenceGateway={}",
+        args.control_port,
+        args.control_tls,
+        args.proxy_port,
+        args.public_port,
+        args.api_port,
+        args.inference_gateway_port
     );
     if !args.control_tls {
         warn!(
@@ -52,19 +57,23 @@ async fn main() -> Result<()> {
     let server_state3 = Arc::clone(&server_state);
     let _server_state4 = Arc::clone(&server_state);
 
-    // Start inference gateway on port 8081
+    // Start inference gateway.
+    let inference_gateway_port = args.inference_gateway_port;
     let inference_gateway = Arc::new(inference::InferenceGateway::new(
         server_state.inference_scheduler.clone(),
         server_state.db_pool.clone(),
         server_state.producer.clone(),
     ));
     let inference_gateway_task = tokio::spawn(async move {
-        info!("Starting Inference Gateway on port 8081...");
-        if let Err(e) = inference_gateway.run(8081).await {
+        info!("Starting Inference Gateway on port {}...", inference_gateway_port);
+        if let Err(e) = inference_gateway.run(inference_gateway_port).await {
             error!("Inference gateway failed: {}", e);
         }
     });
-    info!("Inference Gateway spawned and will start on port 8081");
+    info!(
+        "Inference Gateway spawned and will start on port {}",
+        inference_gateway_port
+    );
 
     tokio::spawn(async move {
         #[cfg(target_os = "linux")]
@@ -86,8 +95,10 @@ async fn main() -> Result<()> {
 
         #[cfg(not(target_os = "linux"))]
         {
-            // On Windows, we'll use Ctrl-C handling through tokio's default signal handling
-            info!("Running on Windows - signal handling through default mechanisms");
+            info!("Waiting for Ctrl-C shutdown signal...");
+            if let Err(e) = tokio::signal::ctrl_c().await {
+                error!("Failed to listen for Ctrl-C shutdown signal: {}", e);
+            }
         }
 
         // Send shutdown signal
