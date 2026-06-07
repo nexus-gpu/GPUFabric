@@ -1,3 +1,4 @@
+#[cfg(not(target_os = "ios"))]
 use crate::llm_engine::{OLLAMA_DEFAULT_IMAGE, VLLM_DEFAULT_IMAGE};
 use crate::util::cmd::EngineType;
 use anyhow::{Context, Result};
@@ -5,6 +6,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+#[cfg(target_os = "ios")]
+const OLLAMA_DEFAULT_IMAGE: &str = "ollama/ollama:0.5.7";
+#[cfg(target_os = "ios")]
+const VLLM_DEFAULT_IMAGE: &str = "vllm/vllm-openai:v0.8.5";
 
 const DOCKER_COMPOSE_FILENAME: &str = "docker-compose.yml";
 const CONFIG_DIR: &str = ".gpuf";

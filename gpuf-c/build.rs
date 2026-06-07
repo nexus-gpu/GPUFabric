@@ -258,17 +258,21 @@ fn main() {
     // Generate C bindings header for Android & iOS.
     // iOS SDK packaging scripts will copy gpuf_c.h into the XCFramework headers.
     if target_os == "android" || target_os == "ios" {
-        let crate_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
+        if env::var("GPUF_SKIP_CBINDGEN").ok().as_deref() == Some("1") {
+            println!("cargo:warning=Skipping cbindgen because GPUF_SKIP_CBINDGEN=1");
+        } else {
+            let crate_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
 
-        cbindgen::Builder::new()
-            .with_crate(crate_dir)
-            .with_language(cbindgen::Language::C)
-            .with_pragma_once(true)
-            .with_include_guard("GPUF_C_H")
-            .with_documentation(true)
-            .generate()
-            .expect("Unable to generate bindings")
-            .write_to_file("gpuf_c.h");
+            cbindgen::Builder::new()
+                .with_crate(crate_dir)
+                .with_language(cbindgen::Language::C)
+                .with_pragma_once(true)
+                .with_include_guard("GPUF_C_H")
+                .with_documentation(true)
+                .generate()
+                .expect("Unable to generate bindings")
+                .write_to_file("gpuf_c.h");
+        }
     }
 
     // For Android, link the static llama.cpp library

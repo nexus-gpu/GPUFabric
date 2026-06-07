@@ -16,9 +16,10 @@ fi
 
 # Pick a booted simulator if available; otherwise boot a reasonable default.
 BOOTED_JSON="$(xcrun simctl list -j devices booted 2>/dev/null || true)"
-BOOTED_UDID="$(printf '%s' "$BOOTED_JSON" | /usr/bin/python3 - <<'PY'
+BOOTED_UDID="$(BOOTED_JSON="$BOOTED_JSON" /usr/bin/python3 - <<'PY'
 import json,sys
-data=sys.stdin.read().strip()
+import os
+data=os.environ.get('BOOTED_JSON', '').strip()
 if not data:
   print('')
   sys.exit(0)
@@ -45,9 +46,10 @@ if [ -z "$BOOTED_UDID" ]; then
   # Try iPhone 15 first, fallback to any available iPhone.
   DEVICE_NAME="iPhone 15"
   AVAILABLE_JSON="$(xcrun simctl list -j devices available 2>/dev/null || true)"
-  UDID="$(printf '%s' "$AVAILABLE_JSON" | /usr/bin/python3 - <<'PY'
+  UDID="$(AVAILABLE_JSON="$AVAILABLE_JSON" /usr/bin/python3 - <<'PY'
 import json,sys
-data=sys.stdin.read().strip()
+import os
+data=os.environ.get('AVAILABLE_JSON', '').strip()
 if not data:
   print('')
   sys.exit(0)

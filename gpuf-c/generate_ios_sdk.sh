@@ -84,6 +84,7 @@ fi
 
 BUILD_MODE="${BUILD_MODE:-release}"
 FEATURES="${FEATURES:-ios-sdk}"
+export GPUF_SKIP_CBINDGEN="${GPUF_SKIP_CBINDGEN:-1}"
 
 IOS_DEVICE_TARGET="aarch64-apple-ios"
 IOS_SIM_ARM64_TARGET="aarch64-apple-ios-sim"
@@ -93,6 +94,7 @@ BUILD_DIR="$PROJECT_ROOT/build_ios"
 DIST_DIR="$BUILD_DIR/dist"
 INCLUDE_DIR="$DIST_DIR/include"
 
+rm -rf "$DIST_DIR"
 mkdir -p "$BUILD_DIR" "$DIST_DIR" "$INCLUDE_DIR"
 
 sha256_manifest_line() {
@@ -143,11 +145,13 @@ write_sha256_manifest() {
     done
 }
 
+if [ -f "$PROJECT_ROOT/gpuf_c_ios.h" ]; then
+    cp "$PROJECT_ROOT/gpuf_c_ios.h" "$INCLUDE_DIR/gpuf_c.h"
+elif [ -f "$PROJECT_ROOT/gpuf_c.h" ]; then
+    cp "$PROJECT_ROOT/gpuf_c.h" "$INCLUDE_DIR/"
+fi
 if [ -f "$PROJECT_ROOT/gpuf_c_minimal.h" ]; then
     cp "$PROJECT_ROOT/gpuf_c_minimal.h" "$INCLUDE_DIR/"
-fi
-if [ -f "$PROJECT_ROOT/gpuf_c.h" ]; then
-    cp "$PROJECT_ROOT/gpuf_c.h" "$INCLUDE_DIR/"
 fi
 
 echo "🦀 Ensuring Rust targets are installed..."
@@ -202,7 +206,7 @@ if [ ! -f "$SIM_ARM64_LIB" ]; then
     exit 1
 fi
 
-SIM_UNIVERSAL_LIB="$DIST_DIR/libgpuf_c_simulator.a"
+SIM_UNIVERSAL_LIB="$BUILD_DIR/libgpuf_c_simulator.a"
 if [ -n "$SIM_X64_LIB" ] && command -v lipo >/dev/null 2>&1; then
     echo "🔗 Creating universal simulator library (arm64 + x86_64)..."
     lipo -create "$SIM_ARM64_LIB" "$SIM_X64_LIB" -output "$SIM_UNIVERSAL_LIB"
@@ -258,8 +262,12 @@ merge_one() {
 LLAMA_DEVICE_DIR="$WORKSPACE_ROOT/target/llama-ios/$IOS_DEVICE_TARGET"
 LLAMA_SIM_ARM64_DIR="$WORKSPACE_ROOT/target/llama-ios/$IOS_SIM_ARM64_TARGET"
 
-MERGED_DEVICE_LIB="$DIST_DIR/libgpuf_c_device.a"
-MERGED_SIM_LIB="$DIST_DIR/libgpuf_c_simulator_merged.a"
+DEVICE_SLICE_DIR="$DIST_DIR/ios-arm64"
+SIM_SLICE_DIR="$DIST_DIR/ios-arm64-simulator"
+mkdir -p "$DEVICE_SLICE_DIR" "$SIM_SLICE_DIR"
+
+MERGED_DEVICE_LIB="$DEVICE_SLICE_DIR/libgpuf_c_sdk.a"
+MERGED_SIM_LIB="$SIM_SLICE_DIR/libgpuf_c_sdk.a"
 
 merge_one "$DEVICE_LIB" "$LLAMA_DEVICE_DIR" "$MERGED_DEVICE_LIB"
 merge_one "$SIM_UNIVERSAL_LIB" "$LLAMA_SIM_ARM64_DIR" "$MERGED_SIM_LIB"
@@ -278,8 +286,8 @@ write_sha256_manifest \
     "$MERGED_DEVICE_LIB" \
     "$MERGED_SIM_LIB" \
     "$XCFRAMEWORK_OUT"
-sha256_manifest_line "$DIST_DIR" "libgpuf_c_device.a" > "$DIST_DIR/libgpuf_c_device.a.sha256"
-sha256_manifest_line "$DIST_DIR" "libgpuf_c_simulator_merged.a" > "$DIST_DIR/libgpuf_c_simulator_merged.a.sha256"
+sha256_manifest_line "$DEVICE_SLICE_DIR" "libgpuf_c_sdk.a" > "$DEVICE_SLICE_DIR/libgpuf_c_sdk.a.sha256"
+sha256_manifest_line "$SIM_SLICE_DIR" "libgpuf_c_sdk.a" > "$SIM_SLICE_DIR/libgpuf_c_sdk.a.sha256"
 
 echo "✅ iOS SDK build completed!"
 echo "📦 XCFramework: $XCFRAMEWORK_OUT"

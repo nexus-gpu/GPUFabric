@@ -23,6 +23,7 @@ Complete documentation for the GPUFabric Android SDK project.
 ### 🔌 API Reference
 - **[API Documentation](api/)** - Low-level API reference
 - **[Mobile Integration](mobile/)** - Mobile-specific APIs
+- **[iOS SDK Integration](IOS_SDK_INTEGRATION.md)** - XCFramework build, pure C headers, Swift callbacks, and Remote Worker flow
 
 ### 🔒 Security And Release
 - **[Security Remediation Plan](../SECURITY_REMEDIATION_PLAN.md)** - P0/P1 remediation status, validation gates, and residual mobile/release gates

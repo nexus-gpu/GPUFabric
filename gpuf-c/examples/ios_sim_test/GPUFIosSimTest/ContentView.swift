@@ -71,7 +71,7 @@ private func startRemoteWorkerWithModelPath(_ modelPath: String) -> String {
     let controlPort: Int32 = 17000
     let proxyPort: Int32 = 17001
     let workerType = "TCP"
-    let clientId = "e64dcb400f9c41e68abf38e3105b935b"
+    let clientId = "<32-hex-client-id>"
 
     remoteWorkerLogger.info("Starting remote worker with clientId: \(clientId, privacy: .public)")
 
@@ -96,16 +96,21 @@ private func startRemoteWorkerWithModelPath(_ modelPath: String) -> String {
     }
 
     let cb: (@convention(c) (UnsafePointer<CChar>?, UnsafeMutableRawPointer?) -> Void) = remoteWorkerCallback
-    let cbPtr: Int64 = unsafeBitCast(cb, to: Int64.self)
-    let tasksRc = start_remote_worker_tasks_with_callback_ptr(cbPtr)
+    let registerRc = gpuf_register_remote_worker_callback(cb, nil)
+    if registerRc != 0 {
+        remoteWorkerLogger.error("gpuf_register_remote_worker_callback failed: \(registerRc)")
+        return "❌ gpuf_register_remote_worker_callback failed: \(registerRc)"
+    }
+
+    let tasksRc = start_remote_worker_tasks()
     if tasksRc != 0 {
-        remoteWorkerLogger.error("start_remote_worker_tasks_with_callback_ptr failed: \(tasksRc)")
-        return "❌ start_remote_worker_tasks_with_callback_ptr failed: \(tasksRc)"
+        remoteWorkerLogger.error("start_remote_worker_tasks failed: \(tasksRc)")
+        return "❌ start_remote_worker_tasks failed: \(tasksRc)"
     }
 
     var buffer = [CChar](repeating: 0, count: 512)
     let statusRc = buffer.withUnsafeMutableBufferPointer { buf in
-        get_remote_worker_status(buf.baseAddress, Int32(buf.count))
+        get_remote_worker_status(buf.baseAddress, buf.count)
     }
     if statusRc == 0 {
         let statusText = String(cString: buffer)
@@ -115,4 +120,3 @@ private func startRemoteWorkerWithModelPath(_ modelPath: String) -> String {
 
     return "✅ Remote worker started"
 }
-

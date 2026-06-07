@@ -31,7 +31,7 @@ fn emit_callback(callback: Option<extern "C" fn(*const c_char, *mut c_void)>, ms
     let Ok(cmsg) = std::ffi::CString::new(msg) else {
         return;
     };
-    cb(cmsg.as_ptr(), std::ptr::null_mut());
+    cb(cmsg.as_ptr(), registered_remote_worker_user_data());
 }
 
 static WORKER_TCP_STREAM: OnceLock<Mutex<Option<Arc<Mutex<MobileControlStream>>>>> =
@@ -42,6 +42,37 @@ static WORKER_CONTROL_TLS: OnceLock<Mutex<MobileControlTlsConfig>> = OnceLock::n
 static WORKER_CLIENT_ID: OnceLock<Mutex<Option<[u8; 16]>>> = OnceLock::new();
 static WORKER_STOP_SIGNAL: OnceLock<Arc<AtomicBool>> = OnceLock::new();
 static WORKER_CANCELLED_TASK: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+static WORKER_STATUS_CALLBACK: OnceLock<
+    Mutex<Option<(extern "C" fn(*const c_char, *mut c_void), usize)>>,
+> = OnceLock::new();
+
+pub fn register_remote_worker_callback(
+    callback: Option<extern "C" fn(*const c_char, *mut c_void)>,
+    user_data: *mut c_void,
+) -> i32 {
+    let slot = WORKER_STATUS_CALLBACK.get_or_init(|| Mutex::new(None));
+    match slot.lock() {
+        Ok(mut guard) => {
+            *guard = callback.map(|cb| (cb, user_data as usize));
+            0
+        }
+        Err(_) => -1,
+    }
+}
+
+fn registered_remote_worker_callback() -> Option<extern "C" fn(*const c_char, *mut c_void)> {
+    WORKER_STATUS_CALLBACK
+        .get()
+        .and_then(|slot| slot.lock().ok().and_then(|guard| guard.map(|(cb, _)| cb)))
+}
+
+fn registered_remote_worker_user_data() -> *mut c_void {
+    WORKER_STATUS_CALLBACK
+        .get()
+        .and_then(|slot| slot.lock().ok().and_then(|guard| guard.map(|(_, user_data)| user_data)))
+        .map(|user_data| user_data as *mut c_void)
+        .unwrap_or(std::ptr::null_mut())
+}
 
 fn os_type() -> OsType {
     #[cfg(target_os = "ios")]
@@ -186,6 +217,7 @@ pub async fn perform_login_with_tls(
 pub async fn start_worker_tasks_with_callback_ptr(
     callback: Option<extern "C" fn(*const c_char, *mut c_void)>,
 ) -> Result<()> {
+    let callback = callback.or_else(registered_remote_worker_callback);
     let tcp_stream = get_tcp_stream().ok_or_else(|| anyhow!("TCP connection not initialized"))?;
 
     let stop_signal = if let Some(existing) = WORKER_STOP_SIGNAL.get() {
@@ -248,7 +280,7 @@ pub async fn start_worker_tasks_with_callback_ptr(
                     Err(_) => "HEARTBEAT - Send failed".to_string(),
                 };
                 if let Ok(cmsg) = std::ffi::CString::new(msg) {
-                    cb(cmsg.as_ptr(), std::ptr::null_mut());
+                    cb(cmsg.as_ptr(), registered_remote_worker_user_data());
                 }
             }
 
@@ -595,7 +627,7 @@ fn build_chat_prompt_with_template(messages: &[common::ChatMessage]) -> String {
                     c_messages.as_ptr(),
                     messages.len(),
                     true, // add_ass=true
-                    buffer.as_mut_ptr() as *mut u8,
+                    buffer.as_mut_ptr() as *mut std::os::raw::c_char,
                     buffer.len() as i32,
                 )
             };

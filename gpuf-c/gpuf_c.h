@@ -725,6 +725,14 @@ int start_remote_worker_tasks_with_callback_ptr(void (*callback)(const char*, vo
 int start_remote_worker_tasks_with_callback_ptr(void (*_callback)(const char*, void*));
 
 /**
+ * Register a remote worker status callback (C API).
+ *
+ * This is the preferred iOS/Objective-C++ entry point. Existing callers may continue to use
+ * start_remote_worker_tasks_with_callback_ptr for backward compatibility.
+ */
+int gpuf_register_remote_worker_callback(void (*callback)(const char*, void*), void *user_data);
+
+/**
  * Stop remote worker and cleanup (C API)
  */
 int stop_remote_worker(void);

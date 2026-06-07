@@ -1471,12 +1471,6 @@ pub extern "C" fn gpuf_create_context(model: *mut llama_model) -> *mut llama_con
     result
 }
 
-#[no_mangle]
-#[cfg(target_os = "ios")]
-pub extern "C" fn gpuf_create_context(_model: *mut llama_model) -> *mut llama_context {
-    std::ptr::null_mut()
-}
-
 // Async Model Loading and Context Creation Functions
 // ============================================================================
 
@@ -1904,12 +1898,6 @@ pub extern "C" fn gpuf_load_model(path: *const c_char) -> *mut llama_model {
     println!("✅ real_llama_model_load_from_file returned: {:p}", result);
 
     result
-}
-
-#[no_mangle]
-#[cfg(target_os = "ios")]
-pub extern "C" fn gpuf_load_model(_path: *const c_char) -> *mut llama_model {
-    std::ptr::null_mut()
 }
 
 // 🆕 Helper function to detect model type from filename
@@ -3373,25 +3361,6 @@ pub extern "C" fn gpuf_generate_with_sampling(
 }
 
 #[no_mangle]
-#[cfg(target_os = "ios")]
-pub extern "C" fn gpuf_generate_with_sampling(
-    _model: *const llama_model,
-    _ctx: *mut llama_context,
-    _prompt: *const c_char,
-    _max_tokens: c_int,
-    _temperature: f32,
-    _top_k: c_int,
-    _top_p: f32,
-    _repeat_penalty: f32,
-    _output: *mut c_char,
-    _output_len: c_int,
-    _token_buffer: *mut LlamaToken,
-    _token_buffer_size: c_int,
-) -> c_int {
-    -1
-}
-
-#[no_mangle]
 pub extern "C" fn gpuf_system_info() -> *const c_char {
     let info = CString::new("GPUFabric Android LLaMA.cpp Engine").unwrap();
     info.into_raw()
@@ -3909,22 +3878,6 @@ pub extern "C" fn gpuf_start_generation_async(
         );
         completion_tokens
     }
-}
-
-#[no_mangle]
-#[cfg(target_os = "ios")]
-pub extern "C" fn gpuf_start_generation_async(
-    _ctx: *mut llama_context,
-    _prompt: *const c_char,
-    _max_tokens: c_int,
-    _temperature: f32,
-    _top_k: c_int,
-    _top_p: f32,
-    _repeat_penalty: f32,
-    _on_token_callback: Option<extern "C" fn(*const c_char, *mut c_void)>,
-    _user_data: *mut c_void,
-) -> c_int {
-    -1
 }
 
 /// Simple single token generation for testing
@@ -4681,6 +4634,28 @@ pub extern "C" fn start_remote_worker_tasks_with_callback_ptr(
 #[no_mangle]
 pub extern "C" fn start_remote_worker_tasks_with_callback_ptr(
     _callback: Option<extern "C" fn(*const c_char, *mut c_void)>,
+) -> c_int {
+    -1
+}
+
+/// Register a status callback for remote worker background tasks (C API).
+///
+/// This is the preferred iOS/Objective-C++ entry point because it keeps callback registration
+/// separate from task startup and preserves a caller-provided `user_data` pointer.
+#[cfg(target_os = "ios")]
+#[no_mangle]
+pub extern "C" fn gpuf_register_remote_worker_callback(
+    callback: Option<extern "C" fn(*const c_char, *mut c_void)>,
+    user_data: *mut c_void,
+) -> c_int {
+    crate::worker_sdk::register_remote_worker_callback(callback, user_data)
+}
+
+#[cfg(not(target_os = "ios"))]
+#[no_mangle]
+pub extern "C" fn gpuf_register_remote_worker_callback(
+    _callback: Option<extern "C" fn(*const c_char, *mut c_void)>,
+    _user_data: *mut c_void,
 ) -> c_int {
     -1
 }
