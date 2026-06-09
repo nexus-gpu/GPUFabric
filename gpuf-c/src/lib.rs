@@ -1932,6 +1932,10 @@ pub extern "C" fn gpuf_load_multimodal_model(
         return std::ptr::null_mut();
     }
 
+    // SAFETY: `text_model_path` and `mmproj_path` were checked for null and
+    // must remain valid NUL-terminated strings for this call. The llama.cpp
+    // and libmtmd pointers created here are either returned in the owned
+    // `gpuf_multimodal_model` box or freed on error before returning.
     unsafe {
         // Convert paths to Rust strings
         let text_path = CStr::from_ptr(text_model_path).to_str().unwrap_or("");
@@ -2046,6 +2050,9 @@ pub extern "C" fn gpuf_create_multimodal_context(
         return std::ptr::null_mut();
     }
 
+    // SAFETY: `multimodal_model` is checked for null above and must be a
+    // pointer returned by `gpuf_load_multimodal_model`; only the cached text
+    // model pointer is read here.
     let model = unsafe { (*multimodal_model).text_model };
     if model.is_null() {
         return std::ptr::null_mut();
@@ -2120,6 +2127,9 @@ pub extern "C" fn gpuf_generate_multimodal(
         return -1;
     }
 
+    // SAFETY: All raw inputs required by this FFI entrypoint were checked for
+    // null above. The caller must provide `output_len` bytes of writable output
+    // storage, and image data must be valid for `image_size` bytes when present.
     unsafe {
         let model_ref = &*multimodal_model;
         let mtmd_ctx = model_ref.mtmd_context;
@@ -2204,52 +2214,52 @@ pub extern "C" fn gpuf_generate_multimodal(
                     println!("🔍 Encoding multimodal input with mtmd_helper_eval_chunks...");
                     println!("🔍 Before encoding - current_pos: {}", current_pos);
 
-                    unsafe {
-                        // Check context state before encoding
-                        let pre_encode_n_ctx = llama_n_ctx(ctx);
-                        let pre_encode_vocab = llama_n_vocab(ctx);
+                    // Check context state before encoding
+                    let pre_encode_n_ctx = llama_n_ctx(ctx);
+                    let pre_encode_vocab = llama_n_vocab(ctx);
+                    println!(
+                        "🔍 Pre-encode: n_ctx={}, vocab_size={}",
+                        pre_encode_n_ctx, pre_encode_vocab
+                    );
+
+                    encode_result = mtmd_helper_eval_chunks(
+                        mtmd_ctx,
+                        ctx,
+                        chunks as *mut c_void,
+                        current_pos,
+                        0,    // seq_id
+                        128,  // n_batch
+                        true, // logits_last
+                        &mut new_n_past,
+                    );
+
+                    println!("🔍 mtmd_helper_eval_chunks result: {}", encode_result);
+                    println!("🔍 New n_past: {} (was: {})", new_n_past, current_pos);
+
+                    // Check context state after encoding
+                    let post_encode_n_ctx = llama_n_ctx(ctx);
+                    let post_encode_vocab = llama_n_vocab(ctx);
+                    println!(
+                        "🔍 Post-encode: n_ctx={}, vocab_size={}",
+                        post_encode_n_ctx, post_encode_vocab
+                    );
+
+                    if post_encode_vocab == 0 && pre_encode_vocab > 0 {
                         println!(
-                            "🔍 Pre-encode: n_ctx={}, vocab_size={}",
-                            pre_encode_n_ctx, pre_encode_vocab
+                            "⚠️ WARNING: vocab_size changed from {} to 0 after encoding!",
+                            pre_encode_vocab
                         );
-
-                        encode_result = mtmd_helper_eval_chunks(
-                            mtmd_ctx,
-                            ctx,
-                            chunks as *mut c_void,
-                            current_pos,
-                            0,    // seq_id
-                            128,  // n_batch
-                            true, // logits_last
-                            &mut new_n_past,
-                        );
-
-                        println!("🔍 mtmd_helper_eval_chunks result: {}", encode_result);
-                        println!("🔍 New n_past: {} (was: {})", new_n_past, current_pos);
-
-                        // Check context state after encoding
-                        let post_encode_n_ctx = llama_n_ctx(ctx);
-                        let post_encode_vocab = llama_n_vocab(ctx);
                         println!(
-                            "🔍 Post-encode: n_ctx={}, vocab_size={}",
-                            post_encode_n_ctx, post_encode_vocab
+                            "⚠️ This is expected - will use direct vocab pointer for generation"
                         );
+                    }
 
-                        if post_encode_vocab == 0 && pre_encode_vocab > 0 {
-                            println!(
-                                "⚠️ WARNING: vocab_size changed from {} to 0 after encoding!",
-                                pre_encode_vocab
-                            );
-                            println!("⚠️ This is expected - will use direct vocab pointer for generation");
-                        }
-
-                        if encode_result == 0 {
-                            println!("✅ Multimodal evaluation successful!");
-                            // Update position for generation
-                            current_pos = new_n_past;
-                        } else {
-                            println!("❌ Multimodal evaluation failed: {}", encode_result);
-                        }
+                    if encode_result == 0 {
+                        println!("✅ Multimodal evaluation successful!");
+                        // Update position for generation
+                        current_pos = new_n_past;
+                    } else {
+                        println!("❌ Multimodal evaluation failed: {}", encode_result);
                     }
 
                     println!(
@@ -2274,7 +2284,7 @@ pub extern "C" fn gpuf_generate_multimodal(
 
                         // Always use direct vocab pointer approach for consistency
                         // This avoids issues with llama_n_vocab(ctx) returning 0 after multimodal encoding
-                        let model_ptr = unsafe { llama_get_model(ctx) };
+                        let model_ptr = llama_get_model(ctx);
                         if model_ptr.is_null() {
                             let error_msg =
                                 CString::new("❌ Failed to get model pointer").unwrap_or_default();
@@ -2288,7 +2298,7 @@ pub extern "C" fn gpuf_generate_multimodal(
                             return copy_len as c_int;
                         }
 
-                        let vocab = unsafe { llama_model_get_vocab(model_ptr) };
+                        let vocab = llama_model_get_vocab(model_ptr);
                         if vocab.is_null() {
                             let error_msg =
                                 CString::new("❌ Failed to get vocab pointer").unwrap_or_default();
@@ -2389,7 +2399,7 @@ pub extern "C" fn gpuf_generate_multimodal(
 
         if result == 0 {
             // Return number of tokens in response as demo
-            let response_len = unsafe { CStr::from_ptr(output).to_bytes().len() };
+            let response_len = CStr::from_ptr(output).to_bytes().len();
             (response_len / 4) as c_int // Rough estimate of token count
         } else {
             -1
@@ -2883,7 +2893,8 @@ fn generate_multimodal_response_with_vocab(
         return "❌ Invalid context".to_string();
     }
 
-    // Create samplers for generation
+    // SAFETY: `ctx` was checked for null above and must be a live llama.cpp
+    // context. Sampler pointers are checked before use where ownership matters.
     let temp_sampler = unsafe { llama_sampler_init_temp(temperature) };
     let top_k_sampler = unsafe { llama_sampler_init_top_k(top_k) };
     let top_p_sampler = unsafe { llama_sampler_init_top_p(top_p, 1) };
@@ -2894,6 +2905,8 @@ fn generate_multimodal_response_with_vocab(
     let chain_params = llama_sampler_chain_params { no_perf: false };
     let sampler = unsafe { llama_sampler_chain_init(chain_params) };
 
+    // SAFETY: `sampler` is a newly created sampler chain; sampler components are
+    // handed to llama.cpp chain ownership exactly once.
     unsafe {
         llama_sampler_chain_add(sampler, temp_sampler);
         llama_sampler_chain_add(sampler, top_k_sampler);
@@ -2903,23 +2916,28 @@ fn generate_multimodal_response_with_vocab(
     }
 
     // Get model and vocab at function start (only once, like llama.rn)
+    // SAFETY: `ctx` is a non-null live llama.cpp context for this generation.
     let model = unsafe { llama_get_model(ctx) };
     if model.is_null() {
+        // SAFETY: `sampler` is owned by this function and has not been freed yet.
         unsafe { llama_sampler_free(sampler) };
         return "❌ Model is null".to_string();
     }
 
     let vocab = if direct_vocab.is_null() {
+        // SAFETY: `model` was returned by llama.cpp and checked for null.
         unsafe { llama_model_get_vocab(model) }
     } else {
         direct_vocab
     };
 
     if vocab.is_null() {
+        // SAFETY: `sampler` is owned by this function and has not been freed yet.
         unsafe { llama_sampler_free(sampler) };
         return "❌ Vocab is null".to_string();
     }
 
+    // SAFETY: `vocab` and `ctx` were checked above and remain valid for this call.
     let vocab_size = unsafe { llama_vocab_n_tokens(vocab) };
     let n_ctx = unsafe { llama_n_ctx(ctx as *const llama_context) };
 
@@ -2933,6 +2951,7 @@ fn generate_multimodal_response_with_vocab(
     // Validate vocab
     if vocab_size == 0 {
         println!("❌ CRITICAL: Vocab size is 0 - vocab is not properly initialized!");
+        // SAFETY: `sampler` is owned by this function and has not been freed yet.
         unsafe { llama_sampler_free(sampler) };
         return "❌ Vocab initialization failed - vocab size is 0".to_string();
     }
@@ -2964,6 +2983,8 @@ fn generate_multimodal_response_with_vocab(
     );
 
     // 🔍 Try to get logits to verify context is ready
+    // SAFETY: `ctx` is a live llama.cpp context. The logits pointer is only
+    // read after a null check and only for diagnostics.
     unsafe {
         let logits_ptr = llama_get_logits(ctx);
         if logits_ptr.is_null() {
@@ -2990,6 +3011,7 @@ fn generate_multimodal_response_with_vocab(
         }
 
         // 🆕 Follow llama.cpp official pattern: use llama_sampler_sample with index -1 (last position)
+        // SAFETY: `sampler` and `ctx` are live for this generation loop.
         let token = unsafe { llama_sampler_sample(sampler, ctx, -1) }; // 🆕 Use -1 for last position logits like llama.cpp
         println!("🔍 Sampled token: {} (0x{:x})", token, token);
 
@@ -2997,12 +3019,14 @@ fn generate_multimodal_response_with_vocab(
         println!("🔍 Token in range: {}", token < vocab_size);
 
         // Use official llama.cpp EOS check method
+        // SAFETY: `vocab` is a live llama.cpp vocab pointer checked above.
         if unsafe { llama_vocab_is_eog(vocab, token) } {
             println!("✅ EOS token detected: {} (0x{:x})", token, token);
             break;
         }
 
         // Check if this is a control token (like llama.rn does)
+        // SAFETY: `vocab` is a live llama.cpp vocab pointer checked above.
         if unsafe { llama_vocab_is_control(vocab, token) } {
             println!(
                 "⚠️ Control token detected: {} (0x{:x}), skipping...",
@@ -3021,6 +3045,8 @@ fn generate_multimodal_response_with_vocab(
                 logits: std::ptr::null_mut(),
             };
             n_past += 1;
+            // SAFETY: `accept_batch` points to local token/position storage
+            // that remains alive for the duration of this decode call.
             let accept_result = unsafe { llama_decode(ctx, accept_batch) };
             if accept_result != 0 {
                 println!("❌ Failed to accept control token {}: {}", i, accept_result);
@@ -3031,6 +3057,7 @@ fn generate_multimodal_response_with_vocab(
 
         // Convert token to string (use vocab from function start)
         let mut token_str = [0u8; 64];
+        // SAFETY: `token_str` is a writable local buffer and `vocab` is live.
         let token_len = unsafe {
             llama_token_to_piece(
                 vocab, // Use vocab obtained at function start
@@ -3043,12 +3070,20 @@ fn generate_multimodal_response_with_vocab(
         };
 
         if token_len > 0 {
-            let token_text =
-                unsafe { std::str::from_utf8_unchecked(&token_str[..token_len as usize]) };
-            generated_text.push_str(token_text);
-            generated_count += 1;
-            print!("{}", token_text);
-            std::io::stdout().flush().ok();
+            let token_len = (token_len as usize).min(token_str.len());
+            match std::str::from_utf8(&token_str[..token_len]) {
+                Ok(token_text) => {
+                    generated_text.push_str(token_text);
+                    generated_count += 1;
+                    println!(
+                        " Generated token text redacted ({} bytes)",
+                        token_text.len()
+                    );
+                }
+                Err(_) => {
+                    println!(" Skipping non-UTF8 token piece ({} bytes)", token_len);
+                }
+            }
         }
 
         // Accept the token into context
@@ -3078,10 +3113,8 @@ fn generate_multimodal_response_with_vocab(
         }
     }
 
-    // Clean up
-    unsafe {
-        llama_sampler_free(sampler);
-    };
+    // SAFETY: `sampler` is owned by this function and has not been freed yet.
+    unsafe { llama_sampler_free(sampler) };
 
     println!("\n✅ Real generation completed: {} tokens", generated_count);
 
@@ -3491,7 +3524,11 @@ pub fn init_memory_pool() -> bool {
         return true;
     }
 
-    // Allocate memory pool using mmap for better control
+    // Allocate memory pool using mmap for better control.
+    // SAFETY: Passing a null address lets the kernel choose the mapping. The
+    // requested length is the fixed `MEMORY_POOL_SIZE`, fd is -1 with
+    // MAP_ANONYMOUS, and the returned pointer is checked against MAP_FAILED
+    // before storing it under the mutex-protected pool state.
     let buffer = unsafe {
         libc::mmap(
             std::ptr::null_mut(),
@@ -3542,6 +3579,9 @@ pub fn allocate_from_pool(size: usize, alignment: usize) -> *mut u8 {
 
     // Update pool state and return pointer
     pool.used = new_used;
+    // SAFETY: `pool.buffer` is a live mmap allocation while `initialized` is
+    // true. Bounds were checked with `new_used <= pool.size`, and
+    // `aligned_offset` was derived from a power-of-two alignment.
     unsafe { (pool.buffer as *mut u8).add(aligned_offset) }
 }
 
@@ -3567,6 +3607,9 @@ pub fn cleanup_memory_pool() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     if pool.initialized && pool.buffer != 0 {
+        // SAFETY: The buffer/size pair was created by `init_memory_pool` with
+        // mmap and is still marked initialized under the same mutex. State is
+        // cleared immediately after munmap to prevent double unmapping.
         unsafe {
             libc::munmap(pool.buffer as *mut libc::c_void, pool.size);
         }
@@ -3621,6 +3664,10 @@ pub extern "C" fn gpuf_start_generation_async(
 
     // For now, use synchronous generation with callbacks
     // This avoids thread safety issues while providing streaming
+    // SAFETY: `ctx` and `prompt` were checked for null above and must remain
+    // valid for the duration of this synchronous call. Local token, logits,
+    // and position buffers outlive each llama.cpp decode call. Callback C
+    // strings are invoked only while their temporary CString storage is alive.
     unsafe {
         // Get prompt string
         let prompt_str = std::ffi::CStr::from_ptr(prompt).to_str().unwrap_or("");
@@ -3805,11 +3852,21 @@ pub extern "C" fn gpuf_start_generation_async(
             );
 
             if token_len > 0 {
-                let emitted = utf8_buf.push_and_take_valid(&token_buf[..token_len as usize]);
+                let raw_len = token_len as usize;
+                let piece_len = raw_len.min(token_buf.len());
+                if raw_len > token_buf.len() {
+                    println!(
+                        "⚠️ Token piece truncated for UTF-8 buffering (reported {} bytes, buffer {} bytes)",
+                        raw_len,
+                        token_buf.len()
+                    );
+                }
+
+                let emitted = utf8_buf.push_and_take_valid(&token_buf[..piece_len]);
                 println!(
                     "🔍 Token content redacted (emitted {} bytes, raw {} bytes)",
                     emitted.len(),
-                    token_len
+                    raw_len
                 );
 
                 // Call callback only if it's not None
@@ -3826,13 +3883,17 @@ pub extern "C" fn gpuf_start_generation_async(
                             }
                         }
                     } else {
-                        // Just print the token if no callback provided
-                        println!("🔍 No callback - printing directly");
-                        print!("{}", emitted);
-                        use std::io::Write;
-                        std::io::stdout().flush().ok();
+                        println!(
+                            "🔍 No callback - token text redacted ({} bytes)",
+                            emitted.len()
+                        );
                     }
                 }
+            } else if token_len < 0 {
+                println!(
+                    "⚠️ Token piece did not fit buffer (needed {} bytes)",
+                    -token_len
+                );
             } else {
                 println!("🔍 Empty token skipped");
             }

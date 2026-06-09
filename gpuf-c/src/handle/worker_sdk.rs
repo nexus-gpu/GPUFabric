@@ -69,7 +69,11 @@ fn registered_remote_worker_callback() -> Option<extern "C" fn(*const c_char, *m
 fn registered_remote_worker_user_data() -> *mut c_void {
     WORKER_STATUS_CALLBACK
         .get()
-        .and_then(|slot| slot.lock().ok().and_then(|guard| guard.map(|(_, user_data)| user_data)))
+        .and_then(|slot| {
+            slot.lock()
+                .ok()
+                .and_then(|guard| guard.map(|(_, user_data)| user_data))
+        })
         .map(|user_data| user_data as *mut c_void)
         .unwrap_or(std::ptr::null_mut())
 }

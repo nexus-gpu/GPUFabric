@@ -9,7 +9,7 @@
 The standalone management API now binds to `127.0.0.1` by default. Start it with `--bind-addr 127.0.0.1` for local frontend development; choose `--bind-addr 0.0.0.0` only behind a reverse proxy/firewall and with deployment-level access control.
 
 Existing REST paths and response envelopes remain compatible for frontends. The model APIs add optional `download_url`, `checksum`, and `expected_size` fields so UIs can show SHA256-verified artifact metadata without breaking older clients.
-Control TLS is separate from this REST API. If the same deployment accepts remote gpuf-c workers over non-loopback networks, enable `gpuf-s --control-tls` and configure clients with `gpuf-c --control-tls --control-tls-server-name <name> --cert-chain-path <ca.pem>`. Mobile native workers can use the additive `startRemoteWorkerWithTls` SDK entry point; this does not change frontend REST paths or response envelopes.
+Control TLS is separate from this REST API. If the same deployment accepts remote gpuf-c workers over non-loopback networks, enable `gpuf-s --control-tls` and configure clients with `gpuf-c --control-tls --control-tls-server-name <name> --cert-chain-path <ca.pem>`. Mobile native workers can use the additive `startRemoteWorkerWithTls` SDK entry point; this does not change frontend REST paths or response envelopes. Android native SDK rebuild/test fixes validated on 2026-06-09 also do not require frontend REST changes.
 
 ## Common Response Envelope
 All endpoints return this envelope type:

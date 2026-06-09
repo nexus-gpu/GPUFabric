@@ -218,6 +218,8 @@ Comprehensive documentation is available in the `docs/` directory:
 - **[Mobile SDK Integration Guide](./docs/mobile-sdk/INTEGRATION_GUIDE_EN.md)** - Android/iOS integration steps
 - **[Mobile SDK Checklist](./gpuf-c/docs/mobile/MOBILE_SDK_CHECKLIST.md)** - Development progress tracker
 
+Current Android SDK evidence: the packaged SDK builds with NDK 25.1.8937393 and passes real-device ARM64 inference through `gpuf-c/scripts/test_android_inference.sh`; iOS release evidence still requires macOS/Xcode platform jobs.
+
 ## 🛠️ Configuration
 
 ### Server Configuration

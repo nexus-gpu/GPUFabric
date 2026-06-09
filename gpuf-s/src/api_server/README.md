@@ -13,7 +13,7 @@ cargo run --release -p gpuf-s --bin api_server -- \
 ```
 
 Use `--bind-addr 0.0.0.0` only behind a reverse proxy, firewall, TLS, and deployment access control. Frontend integration details live in `../../../docs/api_server.md` and `../../../gui/doc.md`.
-This management API is independent of gpuf-s worker control TLS. Remote worker deployments should enable `gpuf-s --control-tls` separately on the main server process. Mobile native TLS worker startup is exposed through the gpuf-c SDK and does not change frontend REST integration.
+This management API is independent of gpuf-s worker control TLS. Remote worker deployments should enable `gpuf-s --control-tls` separately on the main server process. Mobile native TLS worker startup is exposed through the gpuf-c SDK and does not change frontend REST integration. The 2026-06-09 Android SDK rebuild/device inference validation is native-artifact evidence only and does not change these REST endpoints.
 
 ## API Documentation
 

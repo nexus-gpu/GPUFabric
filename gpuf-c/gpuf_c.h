@@ -340,8 +340,6 @@ extern int llama_chat_apply_template(const char *tmpl,
  */
 struct llama_context *gpuf_create_context(struct llama_model *model);
 
-struct llama_context *gpuf_create_context(struct llama_model *_model);
-
 /**
  * Start async model loading (realistic implementation)
  *
@@ -437,8 +435,6 @@ int gpuf_get_model_status(void);
  * of this call.
  */
 struct llama_model *gpuf_load_model(const char *path);
-
-struct llama_model *gpuf_load_model(const char *_path);
 
 /**
  *
@@ -570,19 +566,6 @@ int gpuf_generate_with_sampling(const struct llama_model *model,
                                 LlamaToken *token_buffer,
                                 int token_buffer_size);
 
-int gpuf_generate_with_sampling(const struct llama_model *_model,
-                                struct llama_context *_ctx,
-                                const char *_prompt,
-                                int _max_tokens,
-                                float _temperature,
-                                int _top_k,
-                                float _top_p,
-                                float _repeat_penalty,
-                                char *_output,
-                                int _output_len,
-                                LlamaToken *_token_buffer,
-                                int _token_buffer_size);
-
 const char *gpuf_system_info(void);
 
 const char *gpuf_version(void);
@@ -608,16 +591,6 @@ int gpuf_start_generation_async(struct llama_context *ctx,
                                 float repeat_penalty,
                                 void (*on_token_callback)(const char*, void*),
                                 void *user_data);
-
-int gpuf_start_generation_async(struct llama_context *_ctx,
-                                const char *_prompt,
-                                int _max_tokens,
-                                float _temperature,
-                                int _top_k,
-                                float _top_p,
-                                float _repeat_penalty,
-                                void (*_on_token_callback)(const char*, void*),
-                                void *_user_data);
 
 /**
  * Simple single token generation for testing
@@ -725,12 +698,14 @@ int start_remote_worker_tasks_with_callback_ptr(void (*callback)(const char*, vo
 int start_remote_worker_tasks_with_callback_ptr(void (*_callback)(const char*, void*));
 
 /**
- * Register a remote worker status callback (C API).
+ * Register a status callback for remote worker background tasks (C API).
  *
- * This is the preferred iOS/Objective-C++ entry point. Existing callers may continue to use
- * start_remote_worker_tasks_with_callback_ptr for backward compatibility.
+ * This is the preferred iOS/Objective-C++ entry point because it keeps callback registration
+ * separate from task startup and preserves a caller-provided `user_data` pointer.
  */
 int gpuf_register_remote_worker_callback(void (*callback)(const char*, void*), void *user_data);
+
+int gpuf_register_remote_worker_callback(void (*_callback)(const char*, void*), void *_user_data);
 
 /**
  * Stop remote worker and cleanup (C API)

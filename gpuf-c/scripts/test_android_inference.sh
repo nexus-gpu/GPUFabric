@@ -18,7 +18,7 @@ SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_ROOT/.." && pwd)"
 WORKSPACE_ROOT="$(cd "$PROJECT_ROOT/.." && pwd)"
 SDK_DIR="${SDK_DIR:-$WORKSPACE_ROOT/target/gpufabric-android-sdk-v9.0.0}"
-TEST_MODEL_PATH="$HOME/models/tinyllama-1.1b-chat-v0.3.gguf"  # Modify to your model path
+TEST_MODEL_PATH="${TEST_MODEL_PATH:-$HOME/models/tinyllama-1.1b-chat-v0.3.gguf}"  # Override with TEST_MODEL_PATH=/path/to/model.gguf
 DEVICE_TEST_DIR="/data/local/tmp/gpuf_test"
 
 # Color output
@@ -138,74 +138,85 @@ create_test_program() {
 #include <dlfcn.h>
 #include <unistd.h>
 
-// JNI function pointer type definitions
-typedef int (*jni_init_func)();
-typedef int (*jni_load_model_func)(const char*);
-typedef int (*jni_generate_text_func)(const char*, int, char*, int);
-typedef int (*jni_generate_sampling_func)(const char*, int, float, int, float, float, char*, int);
-typedef const char* (*jni_version_func)();
-typedef const char* (*jni_system_info_func)();
-typedef int (*jni_cleanup_func)();
+// C API function pointer type definitions
+typedef int (*gpuf_init_func)();
+typedef void* (*gpuf_load_model_func)(const char*);
+typedef void* (*gpuf_create_context_func)(void*);
+typedef int (*gpuf_generate_text_func)(const void*, void*, const char*, int, char*, int);
+typedef int (*gpuf_generate_sampling_func)(const void*, void*, const char*, int, float, int, float, float, char*, int, int*, int);
+typedef const char* (*gpuf_version_func)();
+typedef const char* (*gpuf_system_info_func)();
+typedef int (*gpuf_cleanup_func)();
 
 int main() {
     printf("🚀 GPUFabric Android Inference Test\n");
     printf("==================================\n\n");
-    
-    // Set library path
-    setenv("LD_PRELOAD", "/data/local/tmp/gpuf_test/libc++_shared.so", 1);
-    
+
     // Load library
-    void *handle = dlopen("/data/local/tmp/gpuf_test/libgpuf_c.so", RTLD_LAZY);
+    void *handle = dlopen("/data/local/tmp/gpuf_test/libgpuf_c.so", RTLD_NOW);
     if (!handle) {
         printf("❌ Library load failed: %s\n", dlerror());
         return 1;
     }
     printf("✅ Library loaded successfully\n");
-    
+
     // Get function pointers
-    jni_init_func jni_init = (jni_init_func) dlsym(handle, "Java_com_gpuf_c_GPUEngine_gpuf_1init");
-    jni_load_model_func jni_load_model = (jni_load_model_func) dlsym(handle, "Java_com_gpuf_c_GPUEngine_loadModelNew");
-    jni_generate_text_func jni_generate_text = (jni_generate_text_func) dlsym(handle, "gpuf_generate_final_solution_text");
-    jni_generate_sampling_func jni_generate_sampling = (jni_generate_sampling_func) dlsym(handle, "gpuf_generate_with_sampling");
-    jni_version_func jni_version = (jni_version_func) dlsym(handle, "gpuf_version");
-    jni_system_info_func jni_system_info = (jni_system_info_func) dlsym(handle, "gpuf_system_info");
-    jni_cleanup_func jni_cleanup = (jni_cleanup_func) dlsym(handle, "gpuf_cleanup");
-    
-    if (!jni_init || !jni_load_model || !jni_generate_text || !jni_version) {
+    gpuf_init_func gpuf_init = (gpuf_init_func) dlsym(handle, "gpuf_init");
+    gpuf_load_model_func gpuf_load_model = (gpuf_load_model_func) dlsym(handle, "gpuf_load_model");
+    gpuf_create_context_func gpuf_create_context = (gpuf_create_context_func) dlsym(handle, "gpuf_create_context");
+    gpuf_generate_text_func gpuf_generate_text = (gpuf_generate_text_func) dlsym(handle, "gpuf_generate_final_solution_text");
+    gpuf_generate_sampling_func gpuf_generate_sampling = (gpuf_generate_sampling_func) dlsym(handle, "gpuf_generate_with_sampling");
+    gpuf_version_func gpuf_version = (gpuf_version_func) dlsym(handle, "gpuf_version");
+    gpuf_system_info_func gpuf_system_info = (gpuf_system_info_func) dlsym(handle, "gpuf_system_info");
+    gpuf_cleanup_func gpuf_cleanup = (gpuf_cleanup_func) dlsym(handle, "gpuf_cleanup");
+
+    if (!gpuf_init || !gpuf_load_model || !gpuf_create_context || !gpuf_generate_text || !gpuf_version) {
         printf("❌ Function symbol retrieval failed\n");
+        printf("   gpuf_init=%p gpuf_load_model=%p gpuf_create_context=%p gpuf_generate_text=%p gpuf_version=%p\n",
+               gpuf_init, gpuf_load_model, gpuf_create_context, gpuf_generate_text, gpuf_version);
         dlclose(handle);
         return 1;
     }
-    
+
     // 1. Initialize
     printf("\n🔧 Step 1: Initialize engine...\n");
-    int init_result = jni_init();
-    if (init_result != 0) {
+    int init_result = gpuf_init();
+    if (init_result != 0 && init_result != 1) {
         printf("❌ Initialization failed (error code: %d)\n", init_result);
         return 1;
     }
-    printf("✅ Engine initialized successfully\n");
+    printf("✅ Engine initialized successfully (code: %d)\n", init_result);
     
     // 2. Get version information
     printf("\n📊 Version Information:\n");
-    printf("   Version: %s\n", jni_version());
-    printf("   System Information: %s\n", jni_system_info());
+    printf("   Version: %s\n", gpuf_version());
+    if (gpuf_system_info) {
+        printf("   System Information: %s\n", gpuf_system_info());
+    }
     
     // 3. Load model
     printf("\n🔧 Step 2: Load model...\n");
     const char* model_path = "/data/local/tmp/gpuf_test/model.gguf";
-    int load_result = jni_load_model(model_path);
-    if (load_result != 1) {
-        printf("❌ Model loading failed (error code: %d)\n", load_result);
+    void* model = gpuf_load_model(model_path);
+    if (!model) {
+        printf("❌ Model loading failed\n");
         return 1;
     }
     printf("✅ Model loaded successfully\n");
+
+    printf("\n🔧 Step 2b: Create context...\n");
+    void* ctx = gpuf_create_context(model);
+    if (!ctx) {
+        printf("❌ Context creation failed\n");
+        return 1;
+    }
+    printf("✅ Context created successfully\n");
     
     // 4. Basic text generation test
     printf("\n🔧 Step 3: Basic text generation test...\n");
     const char* prompt1 = "Once upon a time,";
     char output1[1024] = {0};
-    int gen1_result = jni_generate_text(prompt1, 50, output1, sizeof(output1));
+    int gen1_result = gpuf_generate_text(model, ctx, prompt1, 50, output1, sizeof(output1));
     if (gen1_result > 0) {
         printf("✅ Basic generation successful\n");
         printf("   Prompt: %s\n", prompt1);
@@ -226,8 +237,9 @@ int main() {
     printf("   Sampling params: temp=%.1f, top_k=%d, top_p=%.1f, repeat=%.1f\n", 
            temperature, top_k, top_p, repeat_penalty);
     
-    int gen2_result = jni_generate_sampling(prompt2, 50, temperature, top_k, top_p, repeat_penalty, 
-                                            output2, sizeof(output2));
+    int token_buffer[128] = {0};
+    int gen2_result = gpuf_generate_sampling(model, ctx, prompt2, 50, temperature, top_k, top_p, repeat_penalty,
+                                            output2, sizeof(output2), token_buffer, 128);
     if (gen2_result > 0) {
         printf("✅ Sampling generation successful\n");
         printf("   Prompt: %s\n", prompt2);
@@ -238,7 +250,9 @@ int main() {
     
     // 6. Cleanup
     printf("\n🧹 Cleaning up resources...\n");
-    jni_cleanup();
+    if (gpuf_cleanup) {
+        gpuf_cleanup();
+    }
     dlclose(handle);
     printf("✅ Cleanup completed\n");
     

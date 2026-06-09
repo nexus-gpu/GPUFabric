@@ -109,6 +109,38 @@ write_sha256_manifest() {
     done
 }
 
+llama_build_matches_current_ndk() {
+    local build_dir="$1"
+    local cache_file="$build_dir/CMakeCache.txt"
+    local expected_toolchain="$NDK_ROOT/build/cmake/android.toolchain.cmake"
+
+    [ -f "$cache_file" ] || return 1
+    grep -Fqx "CMAKE_TOOLCHAIN_FILE:FILEPATH=$expected_toolchain" "$cache_file"
+}
+
+copy_compatible_llama_android_build() {
+    local build_dir="$1"
+    local label="$2"
+
+    [ -d "$build_dir" ] || return 1
+    [ -f "$build_dir/src/libllama.a" ] || return 1
+    ls "$build_dir"/ggml/src/libggml*.a >/dev/null 2>&1 || return 1
+
+    if ! llama_build_matches_current_ndk "$build_dir"; then
+        echo "⚠️ Ignoring $label llama.cpp Android build because its CMake cache does not match $NDK_ROOT"
+        return 1
+    fi
+
+    echo "🔄 Using $label llama.cpp build results..."
+    cp "$build_dir/src/libllama.a" "$LLAMA_ANDROID_NDK_DIR/"
+    cp "$build_dir"/ggml/src/libggml*.a "$LLAMA_ANDROID_NDK_DIR/"
+    if [ -f "$build_dir/tools/mtmd/libmtmd.a" ]; then
+        cp "$build_dir/tools/mtmd/libmtmd.a" "$LLAMA_ANDROID_NDK_DIR/"
+    fi
+    echo "✅ $label static libraries copied successfully!"
+    return 0
+}
+
 # Check Environment
 check_environment() {
     handle_step "Checking build environment..."
@@ -254,19 +286,18 @@ build_llama_android_libs() {
         # Create llama-android-ndk directory
         mkdir -p "$LLAMA_ANDROID_NDK_DIR"
         
-        # Check for pre-built libraries
-        if [ -d "$LLAMA_CPP_ROOT/build-android" ] && [ -f "$LLAMA_CPP_ROOT/build-android/src/libllama.a" ]; then
-            echo "🔄 Using existing llama.cpp build results..."
-            cp "$LLAMA_CPP_ROOT/build-android/src/libllama.a" "$LLAMA_ANDROID_NDK_DIR/"
-            cp "$LLAMA_CPP_ROOT/build-android/ggml/src/libggml"*.a "$LLAMA_ANDROID_NDK_DIR/"
-            echo "✅ Existing static libraries copied successfully!"
-        elif [ -d "$LLAMA_CPP_ROOT/build-android-new" ] && [ -f "$LLAMA_CPP_ROOT/build-android-new/src/libllama.a" ]; then
-            echo "🔄 Using new llama.cpp build results..."
-            cp "$LLAMA_CPP_ROOT/build-android-new/src/libllama.a" "$LLAMA_ANDROID_NDK_DIR/"
-            cp "$LLAMA_CPP_ROOT/build-android-new/ggml/src/libggml"*.a "$LLAMA_ANDROID_NDK_DIR/"
-            echo "✅ New build static libraries copied successfully!"
+        # Check for compatible pre-built libraries. Do not reuse llama.cpp
+        # outputs configured with a different Android NDK; libc++ ABI mismatches
+        # can otherwise pass link-time and fail at dlopen on real devices.
+        if [ "${GPUF_FORCE_REBUILD_LLAMA_ANDROID:-0}" = "1" ]; then
+            echo "🔨 GPUF_FORCE_REBUILD_LLAMA_ANDROID=1, rebuilding llama.cpp..."
+            build_llama_cpp_from_source
+        elif copy_compatible_llama_android_build "$LLAMA_CPP_ROOT/build-android" "existing"; then
+            true
+        elif copy_compatible_llama_android_build "$LLAMA_CPP_ROOT/build-android-new" "new"; then
+            true
         else
-            echo "🔨 No valid pre-built libraries found, starting llama.cpp compilation..."
+            echo "🔨 No compatible pre-built libraries found, starting llama.cpp compilation..."
             build_llama_cpp_from_source
         fi
         
@@ -296,7 +327,15 @@ build_llama_cpp_from_source() {
     
     cd "$LLAMA_CPP_ROOT"
     
-    # Create build directory
+    # Create build directory. Remove stale CMake cache when switching NDKs;
+    # otherwise CMake silently keeps the old toolchain and produces incompatible
+    # Android static libraries.
+    if [ "${GPUF_FORCE_REBUILD_LLAMA_ANDROID:-0}" = "1" ]; then
+        rm -rf build-android
+    elif [ -f "build-android/CMakeCache.txt" ] && ! llama_build_matches_current_ndk "$LLAMA_CPP_ROOT/build-android"; then
+        echo "⚠️ Removing stale llama.cpp Android build cache for a different NDK"
+        rm -rf build-android
+    fi
     mkdir -p build-android
     cd build-android
     
@@ -479,6 +518,18 @@ verify_sdk() {
     echo ""
     echo "📋 Dependencies:"
     readelf -d libgpuf_c_sdk_v9.so | grep NEEDED | sed 's/Shared library:/Shared library:/'
+
+    local llvm_nm="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
+    local llvm_cxxfilt="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-cxxfilt"
+    if [ -x "$llvm_nm" ] && [ -x "$llvm_cxxfilt" ]; then
+        local unresolved_cpp
+        unresolved_cpp="$($llvm_nm -D libgpuf_c_sdk_v9.so | $llvm_cxxfilt | grep ' U .*std::__ndk1::' | head -20 || true)"
+        if [ -n "$unresolved_cpp" ]; then
+            echo "❌ Unresolved Android libc++ symbols detected:"
+            echo "$unresolved_cpp"
+            handle_error "SDK has unresolved C++ runtime symbols; rebuild llama.cpp with the current Android NDK"
+        fi
+    fi
     
     handle_success "SDK verification completed"
 }

@@ -752,6 +752,7 @@ redis-cli monitor
 
 ## Changelog
 
+- 2026-06-09: Documented that Android native SDK rebuild/test fixes do not change frontend REST contracts.
 - 2026-06-05: Documented that mobile native TLS worker APIs are additive and do not change frontend REST contracts.
 - 2026-06-04: Documented security remediation defaults, frontend integration contract, loopback API bind default, additive model checksum fields, and SDK compatibility impact.
 - Initial version: Support for client management, monitoring, and model management APIs

@@ -386,7 +386,7 @@ GPUFabricClientSDK sdk = ClientConfig.builder()
     .build();
 ```
 
-Control connection TLS note: CLI/config deployments can enable `[client].control_tls = true` and `control_tls_server_name`. The public Java/C mobile remote worker plaintext signatures shown here remain unchanged for compatibility. Mobile wrappers can preflight CA/SNI/pin inputs with the policy helper below and can opt into the TLS-wrapped control protocol with the additive `start_remote_worker_with_tls` / `startRemoteWorkerWithTls` APIs. Android arm64 target compile now passes locally with NDK 25.1; iOS target builds and Android/iOS device TLS/pinning handshake logs are still required release evidence.
+Control connection TLS note: CLI/config deployments can enable `[client].control_tls = true` and `control_tls_server_name`. The public Java/C mobile remote worker plaintext signatures shown here remain unchanged for compatibility. Mobile wrappers can preflight CA/SNI/pin inputs with the policy helper below and can opt into the TLS-wrapped control protocol with the additive `start_remote_worker_with_tls` / `startRemoteWorkerWithTls` APIs. Android arm64 target compile and packaged SDK real-device inference now pass locally with NDK 25.1.8937393; iOS target builds and Android/iOS TLS/pinning handshake logs are still required release evidence.
 
 ### Mobile TLS Policy Helper
 

@@ -19,7 +19,7 @@ This guide provides detailed instructions for building GPUFabric Mobile SDK, sup
 
 ### Android Requirements
 - **Android Studio**: Latest version
-- **Android NDK**: r21+ (recommended r26d)
+- **Android NDK**: r21+; current local validation uses NDK 25.1.8937393 at `/home/jack/Android/Sdk/ndk/25.1.8937393`
 - **Android SDK**: API 24+ 
 - **CMake**: 3.18+ (auto-installed)
 
@@ -139,12 +139,14 @@ artifact process with `SHA256SUMS`, not by committing them.
 ```
 target/
 ├── aarch64-linux-android/release/
-│   └── libgpuf_c.so              # ARM64 library (2.2MB → ~1.5MB compressed)
+│   └── libgpuf_c.so              # ARM64 library (2.2MB -> ~1.5MB compressed)
 ├── armv7-linux-androideabi/release/
 │   └── libgpuf_c.so              # ARMv7 library
 └── x86_64-linux-android/release/
     └── libgpuf_c.so              # x86_64 library
 ```
+
+`gpuf-c/generate_sdk.sh` produces the packaged Android SDK at `target/gpufabric-android-sdk-v9.0.0/` plus `target/gpufabric-android-sdk-v9.0.0.tar.gz` and `target/SHA256SUMS`. The script rejects stale llama.cpp Android static libraries whose CMake cache points at a different NDK; set `GPUF_FORCE_REBUILD_LLAMA_ANDROID=1` to force a clean llama.cpp rebuild when switching NDKs.
 
 ### iOS Output
 ```
@@ -202,6 +204,20 @@ gpuf_c.h                           # C header file (common for all platforms)
 
 ### test_android.ps1
 **Purpose**: Android test environment preparation
+
+### gpuf-c/scripts/test_android_inference.sh
+**Purpose**: Linux/adb real-device validation for the packaged Android SDK.
+
+Example:
+```bash
+env ANDROID_NDK_ROOT=/home/jack/Android/Sdk/ndk/25.1.8937393 \
+    ANDROID_NDK_HOME=/home/jack/Android/Sdk/ndk/25.1.8937393 \
+    SDK_DIR=/home/jack/codedir/GPUFabric/target/gpufabric-android-sdk-v9.0.0 \
+    TEST_MODEL_PATH=/home/jack/models/tinyllama-1.1b-chat-v0.3.gguf \
+    gpuf-c/scripts/test_android_inference.sh
+```
+
+The script deploys `libgpuf_c_sdk_v9.so`, `libc++_shared.so`, a GGUF model, and a small C test binary through adb. It validates `gpuf_init`, `gpuf_load_model`, `gpuf_create_context`, `gpuf_generate_final_solution_text`, and `gpuf_generate_with_sampling` on the device.
 
 **Features**:
 - ✅ Copy .so files to test directory

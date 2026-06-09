@@ -65,7 +65,10 @@ async fn main() -> Result<()> {
         server_state.producer.clone(),
     ));
     let inference_gateway_task = tokio::spawn(async move {
-        info!("Starting Inference Gateway on port {}...", inference_gateway_port);
+        info!(
+            "Starting Inference Gateway on port {}...",
+            inference_gateway_port
+        );
         if let Err(e) = inference_gateway.run(inference_gateway_port).await {
             error!("Inference gateway failed: {}", e);
         }
