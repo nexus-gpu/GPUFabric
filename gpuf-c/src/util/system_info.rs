@@ -17,6 +17,8 @@ use tracing::warn;
 
 #[cfg(target_os = "macos")]
 use crate::util::device_info::read_power_metrics;
+#[cfg(target_os = "macos")]
+use std::time::Duration;
 
 #[cfg(all(not(target_os = "macos"), not(target_os = "android"), feature = "nvml"))]
 use nvml_wrapper::NVML;
