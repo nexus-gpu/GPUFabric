@@ -27,3 +27,19 @@ Sensitive pattern gate:
 Conclusion:
   iOS permissions surface is minimal.
   Logging needs production hardening in app-layer wrappers before release.
+
+Required closure evidence:
+  To clear this blocker for formal mobile SDK release, replace the status with PASS_PRODUCTION_LOGGING_PERMISSIONS_SIGNED_OFF and attach production wrapper permission/logging review details in this file or a linked release record.
+
+Required fields:
+  reviewer: <release-owner-or-security-reviewer>
+  reviewed_at_utc: <timestamp>
+  android_manifest_or_app_artifact: <path-or-artifact-id>@<commit-or-version>
+  ios_info_plist_or_app_artifact: <path-or-artifact-id>@<commit-or-version>
+  android_permissions: INTERNET/ACCESS_NETWORK_STATE only, or documented justification for any additional permission
+  ios_permissions: no sensitive privacy permissions, or documented justification for each NS*UsageDescription key
+  log_redaction_policy: production logs redact or suppress client IDs, tokens, prompts, model paths, endpoint hosts/IPs, CA paths, and certificate pins
+  log_validation_artifact: <CI grep, device log review, code review link, or signed release note>
+  exception_owner_expiry: <owner and expiry if any permission/logging exception remains>
+
+Until those fields are attached by a release owner, this file must keep a blocking status.

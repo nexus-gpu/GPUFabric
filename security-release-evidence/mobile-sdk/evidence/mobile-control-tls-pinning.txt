@@ -60,3 +60,18 @@ Previous iOS integration flow:
 Release conclusion:
   TLS APIs, negative validation coverage, valid CA-bundle parsing, SHA256 pin format handling, stable C return codes, Android plaintext Remote Worker compatibility, and Android additive TLS Remote Worker startup are covered by passing tests/logs.
   Attach a saved iOS TLS runtime log for human release review of the simulator/device flow.
+
+Required closure evidence:
+  To clear this blocker for formal mobile SDK release, replace the status with PASS_ANDROID_IOS_TLS_RUNTIME_REVIEWED after attaching iOS runtime logs.
+
+Required iOS TLS runtime fields:
+  raw_log_file: security-release-evidence/mobile-sdk/evidence/ios-simulator-tls-runtime.log or ios-device-tls-runtime.log
+  repo_commit: <commit under test>
+  xcode_version: <xcodebuild -version>
+  ios_runtime: <simulator-or-device-runtime>
+  command: gpuf-c/examples/ios_sim_test/run_ios_sim_tls_test.sh or equivalent Xcode action
+  tls_inputs: CA bundle path redacted, server name/SNI, optional SHA256 test pin
+  passing_signals: gpuf_validate_mobile_tls_policy rc=0, start_remote_worker_with_tls success, callback/status update, get_remote_worker_status started/running, stop lifecycle
+  redaction_check: no production client IDs, tokens, private keys, endpoint secrets, full model paths, CA paths, or pins in attached logs
+
+Until the iOS TLS raw runtime log is attached, this file must keep a blocking status.

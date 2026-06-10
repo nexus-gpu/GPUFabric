@@ -62,3 +62,21 @@ Risk:
 Release recommendation:
   Treat this file as ASAN/TSAN pass evidence for the Linux nightly mobile unit subset.
   Formal release should additionally attach Android/iOS runtime sanitizer evidence, or have a release owner explicitly approve the Linux ASAN/TSAN unit subset plus Android C harness logs as the mobile runtime sanitizer substitute.
+
+Required closure evidence:
+  To clear this blocker for formal mobile SDK release, replace the status with either PASS_ANDROID_IOS_RUNTIME_SANITIZER or PASS_RUNTIME_SANITIZER_SUBSTITUTE_APPROVED.
+
+Required fields for PASS_ANDROID_IOS_RUNTIME_SANITIZER:
+  android_runtime_sanitizer: <command/log/artifact proving Android runtime sanitizer or equivalent device memory/thread check>
+  ios_runtime_sanitizer: <command/log/artifact proving iOS simulator/device sanitizer run>
+  covered_paths: callback registration, worker task start/stop, model/context create/free, and TLS setup/teardown
+  exit_codes: all sanitizer commands exit 0 with no unsuppressed findings
+
+Required fields for PASS_RUNTIME_SANITIZER_SUBSTITUTE_APPROVED:
+  reviewer: <release-owner-or-security-reviewer>
+  reviewed_at_utc: <timestamp>
+  approved_substitute_scope: Linux nightly ASAN/TSAN mobile unit subset plus Android real-device C harness logs
+  residual_risk_acceptance: explicit acceptance that Android/iOS app wrapper lifetime bugs are not directly sanitizer-tested in this release
+  approval_artifact: <signed note, release ticket, or review link>
+
+Until one closure path is attached by a release owner, this file must keep a blocking status.

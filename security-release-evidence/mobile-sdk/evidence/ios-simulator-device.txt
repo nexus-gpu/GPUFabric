@@ -80,3 +80,7 @@ Expected raw runtime log attachment format:
     --- raw script output ---
     --- raw iOS Console / log stream output ---
   Required signal: model discovery/loading, remote worker start, TLS flag for TLS runs, callback or status update, and get_remote_worker_status/started state. Logs must redact production client IDs, tokens, private keys, and production endpoint secrets.
+
+Required closure evidence:
+  To clear this blocker for formal mobile SDK release, attach the raw plaintext and TLS simulator/device logs above, then replace the status with PASS_IOS_RUNTIME_LOGS_ATTACHED.
+  Until raw logs are attached, this file must keep a blocking status.
