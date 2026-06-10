@@ -38,6 +38,14 @@ Fixture status:
   gpuf-c/tests/fixtures/control-rotated-cert.pem is present and parses as a PEM certificate bundle.
   Valid CA-bundle and stable C FFI return-code tests now pass.
 
+Android TLS runtime evidence:
+  Raw runtime log: security-release-evidence/mobile-sdk/evidence/android-remote-worker-tls-runtime.log
+  Device: HMA-AL00, Android 10, arm64-v8a.
+  Transport setup: adb reverse tcp:17100/tcp:17100 and tcp:17101/tcp:17101 to the local gpuf-s TLS test stack.
+  Trust setup: docker/ca-cert.pem copied to /data/local/tmp/gpuf_test/control-ca.pem; SNI/server name localhost.
+  Passing signals: gpuf_validate_mobile_tls_policy rc=0, set_remote_worker_model rc=0, start_remote_worker_with_tls rc=0, start_remote_worker_tasks_with_callback_ptr rc=0, get_remote_worker_status rc=0, stop_remote_worker rc=0.
+  Callback signals: STARTING, SUCCESS, HEARTBEAT, HANDLER_START, LOGIN_SUCCESS, PULL_MODEL_SUCCESS, HANDLER_STOP.
+
 Previous iOS integration flow:
   run_ios_sim_tls_test.sh generates local TLS cert material and then starts the simulator sample with:
     GPUF_IOS_TEST_TLS=1
@@ -46,5 +54,5 @@ Previous iOS integration flow:
   The sample calls start_remote_worker_with_tls and registers gpuf_register_remote_worker_callback.
 
 Release conclusion:
-  TLS APIs, negative validation coverage, valid CA-bundle parsing, SHA256 pin format handling, and stable C return codes are covered by passing unit tests.
+  TLS APIs, negative validation coverage, valid CA-bundle parsing, SHA256 pin format handling, stable C return codes, and Android additive TLS Remote Worker startup are covered by passing tests/logs.
   Attach a saved iOS TLS runtime log for human release review of the simulator/device flow.

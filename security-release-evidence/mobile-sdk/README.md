@@ -26,3 +26,4 @@ Files in this bundle:
 Additional attached evidence:
 
 - `evidence/android-real-device-inference-runtime.log`: raw Android 10 arm64 device runtime log for packaged SDK deployment, model loading, local generation, sampling generation, and cleanup.
+- `evidence/android-remote-worker-tls-runtime.log`: raw Android 10 arm64 device runtime log for the additive TLS Remote Worker C API, CA/SNI validation, callback/task startup, heartbeat/login, status query, and stop lifecycle.

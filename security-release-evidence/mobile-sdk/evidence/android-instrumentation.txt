@@ -1,17 +1,20 @@
-status: PARTIAL_ANDROID_DEVICE_INFERENCE_PASS_INSTRUMENTATION_PENDING
-generated_at_utc: 2026-06-10T05:32:01Z
+status: PARTIAL_ANDROID_DEVICE_INFERENCE_AND_TLS_WORKER_PASS_PLAINTEXT_PENDING
+generated_at_utc: 2026-06-10T05:51:07Z
 branch: optimize/gpuf-c
-commit: 04d0d8f3e041a79459f7ed8738764639199b8a16
+commit: 65d3ef36df5e25a29971e937bd465f60eb0a4ea3
 
 Purpose:
   Android instrumentation lifecycle/security evidence for the mobile SDK release gate bundle.
 
 Current result:
   Android real-device packaged SDK inference was rerun on 2026-06-10 and passed.
+  Android real-device TLS Remote Worker C API harness was run on 2026-06-10 and passed against the local gpuf-s TLS test stack through adb reverse.
   Raw runtime log: security-release-evidence/mobile-sdk/evidence/android-real-device-inference-runtime.log
+  Raw TLS worker log: security-release-evidence/mobile-sdk/evidence/android-remote-worker-tls-runtime.log
   adb device: 66J5T19611000157, model HMA-AL00, Android 10, arm64-v8a.
   SDK under test: target/gpufabric-android-sdk-v9.0.0.
   Model under test: TinyLlama GGUF test model, path redacted in the evidence log.
+  TLS trust material: docker/ca-cert.pem copied to /data/local/tmp/gpuf_test/control-ca.pem; server name localhost.
 
 Observed passing coverage from gpuf-c/scripts/test_android_inference.sh:
   SDK deployment to /data/local/tmp/gpuf_test.
@@ -24,11 +27,21 @@ Observed passing coverage from gpuf-c/scripts/test_android_inference.sh:
   Resource cleanup.
   JNI environment file/model checks.
 
+Observed passing coverage from the Android TLS Remote Worker C harness:
+  gpuf_validate_mobile_tls_policy returned 0 for CA bundle plus SNI.
+  set_remote_worker_model returned 0 with the on-device GGUF model.
+  start_remote_worker_with_tls returned 0 against gpuf-s --control-tls.
+  start_remote_worker_tasks_with_callback_ptr returned 0.
+  get_remote_worker_status returned Worker is running.
+  Callback lifecycle emitted STARTING, SUCCESS, HEARTBEAT, HANDLER_START, LOGIN_SUCCESS, PULL_MODEL_SUCCESS, and HANDLER_STOP events.
+  stop_remote_worker returned 0.
+  gpuf-s server log recorded TLS control connections and redacted client registration/heartbeat/model-status events for client 50ef7b...cef1.
+
 Observed limitations:
-  This is a raw Android real-device SDK inference/runtime log, not an AndroidJUnitRunner instrumentation suite.
+  These are raw Android real-device C harness logs, not an AndroidJUnitRunner instrumentation suite.
   It does not exercise Remote Worker plaintext startup.
-  It does not exercise Remote Worker TLS startup with CA/SNI/SHA256 pin inputs.
-  It does not validate callback registration or worker task lifecycle on Android.
+  The TLS worker run used CA/SNI validation but did not add a SHA256 leaf pin.
+  The current local gpuf-s test stack has control TLS enabled, so plaintext Remote Worker compatibility still needs a plaintext control-plane environment or a separate app-layer test.
   The device did not provide nm, so the script skipped its optional on-device symbol count.
 
 Expected instrumentation coverage:
@@ -41,5 +54,5 @@ Expected instrumentation coverage:
   Confirm no token, secret, full client ID, prompt, or model path leaks into logs.
 
 Release conclusion:
-  Android packaged SDK local inference is now backed by a fresh raw real-device runtime log.
-  Full mobile SDK release still requires Android instrumentation or equivalent app-layer runtime evidence for Remote Worker plaintext/TLS, callback lifecycle, task start/stop, and production logging redaction.
+  Android packaged SDK local inference and additive TLS Remote Worker startup are now backed by fresh raw real-device runtime logs.
+  Full mobile SDK release still requires plaintext Remote Worker compatibility evidence and/or AndroidJUnitRunner/app-layer instrumentation sign-off for production logging redaction.
