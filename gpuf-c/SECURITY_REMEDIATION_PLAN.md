@@ -320,7 +320,7 @@ rg -n "serde_yaml|serde_yml" gpuf-c/Cargo.toml gpuf-c/src
 - `gpuf-s` 新增 `--control-tls`，启用后控制端口使用现有 `--proxy-cert-chain-path` / `--proxy-private-key-path` 证书和私钥。
 - `gpuf-c` 新增 `--control-tls`、`--control-tls-server-name`，并可通过 `config.toml` 的 `[client].control_tls` / `control_tls_server_name` 配置；`--cert-chain-path` 用作 CA bundle。
 - v1.1.0 为兼容保持明文默认；非 loopback 明文控制连接输出 deprecation/security warning。远程生产部署应同时在服务端和客户端启用 TLS。
-- 已补本地回归：明文默认连接、TLS listener 握手、同 CA 轮换证书接受、过期证书拒绝均通过。仍未完成的 release gate：默认 TLS 切换、移动 C/JNI remote worker TLS/pinning。
+- 已补本地回归：明文默认连接、TLS listener 握手、同 CA 轮换证书接受、过期证书拒绝均通过。移动 C/JNI 已补 Android 真机 plaintext/TLS Remote Worker 运行证据；仍未完成的 release gate：默认 TLS 切换、iOS raw simulator/device runtime log、ASAN/TSAN 或认可替代证据、生产签名/SBOM。
 
 ### P2-6 统一安全配置和回滚策略
 
