@@ -1,7 +1,7 @@
-status: CONDITIONAL_FAIL_UNIT_FIXTURE_MISSING
-generated_at_utc: 2026-06-10T02:31:17Z
+status: PASS_UNIT_RECHECK_RUNTIME_LOG_FOLLOWUP
+generated_at_utc: 2026-06-10T03:20:00Z
 branch: optimize/gpuf-c
-commit: e1fc8b9eb58867f4e3749b827eca5b399ef45c7d
+commit: 52e6697ee14fd5714a904280947f7861b84e7ee3
 
 Purpose:
   Mobile control TLS and pinning evidence for Android/iOS C/JNI SDK surfaces.
@@ -20,24 +20,23 @@ Static review:
 Unit test command:
   cargo test -p gpuf-c mobile_tls_policy --lib
 
-Unit test result on 2026-06-10:
+Unit test result on 2026-06-10 Linux re-check:
   running 7 tests
-  passed: 5
-  failed: 2
+  passed: 7
+  failed: 0
 
 Passing tests:
+  accepts_ca_bundle_and_sha256_pin
+  accepts_colon_separated_pin_without_ca
+  ffi_returns_stable_error_codes
+  rejects_bad_pin
   rejects_missing_trust_material
   rejects_invalid_server_name
-  rejects_bad_pin
-  accepts_colon_separated_pin_without_ca
   rejects_missing_ca_file
 
-Failing tests:
-  accepts_ca_bundle_and_sha256_pin
-  ffi_returns_stable_error_codes
-
-Failure reason:
-  Missing fixture gpuf-c/tests/fixtures/control-rotated-cert.pem caused valid CA-bundle cases to return InvalidCaBundle / -3.
+Fixture status:
+  gpuf-c/tests/fixtures/control-rotated-cert.pem is present and parses as a PEM certificate bundle.
+  Valid CA-bundle and stable C FFI return-code tests now pass.
 
 Previous iOS integration flow:
   run_ios_sim_tls_test.sh generates local TLS cert material and then starts the simulator sample with:
@@ -47,5 +46,5 @@ Previous iOS integration flow:
   The sample calls start_remote_worker_with_tls and registers gpuf_register_remote_worker_callback.
 
 Release conclusion:
-  TLS APIs and negative validation coverage are present.
-  Do not mark the mobile TLS/pinning gate fully passed until the missing fixture is restored or the tests generate their fixture dynamically, and a saved iOS TLS runtime log is attached.
+  TLS APIs, negative validation coverage, valid CA-bundle parsing, SHA256 pin format handling, and stable C return codes are covered by passing unit tests.
+  Attach a saved iOS TLS runtime log for human release review of the simulator/device flow.

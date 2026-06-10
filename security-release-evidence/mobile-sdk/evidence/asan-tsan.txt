@@ -13,7 +13,7 @@ Current result:
 Related evidence:
   iOS SDK static build succeeded for ios-arm64 and ios-arm64-simulator.
   C ABI symbols for model/context/free, Remote Worker, TLS Remote Worker, and callback registration are present.
-  TLS policy unit suite was partially run; 5 passed and 2 failed due missing fixture.
+  TLS policy unit suite passed on 2026-06-10 Linux re-check: 7 passed, 0 failed.
 
 Risk:
   Callback and FFI lifecycle bugs can survive compile/link checks.

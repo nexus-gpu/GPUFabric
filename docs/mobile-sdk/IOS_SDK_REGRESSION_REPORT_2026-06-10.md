@@ -15,7 +15,7 @@
 - Intel simulator slice: NOT INCLUDED. `x86_64-apple-ios` was skipped because `target/llama-ios/x86_64-apple-ios` is not present locally.
 - C ABI symbols: present for local inference, Remote Worker, TLS Remote Worker, and C callback registration.
 - Simulator/device runtime: previous plain/TLS Remote Worker flow was exercised with a real GGUF model, but raw simulator runtime logs were not persisted into a file. This report records the flow and marks raw runtime log attachment as a release evidence follow-up.
-- TLS policy unit tests: 5 passed, 2 failed because the test fixture `gpuf-c/tests/fixtures/control-rotated-cert.pem` is missing. This is a release-gate risk to fix before claiming full TLS test pass.
+- TLS policy unit tests: PASS on 2026-06-10 Linux re-check after syncing the certificate fixture; `cargo test -p gpuf-c mobile_tls_policy --lib` passed 7/7 tests.
 
 ## Local Build Evidence
 
@@ -126,11 +126,23 @@ cargo test -p gpuf-c mobile_tls_policy --lib
 
 Result:
 
-- 5 passed.
-- 2 failed.
-- Failure cause: missing fixture `gpuf-c/tests/fixtures/control-rotated-cert.pem`; expected valid-CA tests returned `InvalidCaBundle` / `-3`.
+- Re-check host: Linux workspace checkout (`<repo>`).
+- Re-check commit: `52e6697ee14fd5714a904280947f7861b84e7ee3`.
+- 7 passed.
+- 0 failed.
+- Passing coverage includes valid CA bundle + SHA256 pin and stable C FFI error-code mapping.
 
-Conclusion: TLS API and policy code are present, and negative validation cases pass, but the formal TLS policy unit suite is not fully green until the missing fixture is restored or the tests are updated to generate their own fixture.
+Passing tests:
+
+- `accepts_ca_bundle_and_sha256_pin`
+- `accepts_colon_separated_pin_without_ca`
+- `ffi_returns_stable_error_codes`
+- `rejects_bad_pin`
+- `rejects_invalid_server_name`
+- `rejects_missing_ca_file`
+- `rejects_missing_trust_material`
+
+Conclusion: TLS API and policy unit coverage is green for CA bundle parsing, SHA256 pin normalization, invalid policy rejection, and stable C return codes. Human release review should still attach raw iOS TLS runtime logs for the simulator/device flow described above.
 
 ## Security Review Notes
 
@@ -150,6 +162,5 @@ security-release-evidence/mobile-sdk/evidence/
 This evidence package is suitable for the script-level presence check. Human release approval should still review the conditional items:
 
 - Attach raw iOS simulator/device runtime logs for plain and TLS Remote Worker runs.
-- Fix or restore TLS test fixture so `cargo test -p gpuf-c mobile_tls_policy --lib` is green.
 - Add Android instrumentation logs if this is a full Android+iOS mobile SDK release.
 - Add ASAN/TSAN or document an approved sanitizer substitute for mobile FFI callback lifecycle tests.
