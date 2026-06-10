@@ -70,7 +70,7 @@ GPUF_REQUIRE_MOBILE_EVIDENCE=1 \
 scripts/mobile_sdk_release_gate.sh security-release-evidence/mobile-sdk <mobile-evidence-dir>
 ```
 
-The evidence directory must contain non-empty files named `android-target-compile.txt`, `ios-target-compile.txt`, `android-keystore-review.txt`, `ios-keychain-review.txt`, `mobile-control-tls-pinning.txt`, `android-instrumentation.txt`, `ios-simulator-device.txt`, `asan-tsan.txt`, and `permissions-logging-audit.txt`. These files should link to device/simulator logs, CI job URLs, or signed-off review notes.
+The evidence directory must contain non-empty files named `android-target-compile.txt`, `ios-target-compile.txt`, `android-keystore-review.txt`, `ios-keychain-review.txt`, `mobile-control-tls-pinning.txt`, `android-instrumentation.txt`, `ios-simulator-device.txt`, `asan-tsan.txt`, and `permissions-logging-audit.txt`. Each required file must start with a non-blocking `status:` header. Strict mode fails on missing files, missing status headers, or blocking status markers such as `REQUIRED`, `REQUIRES`, `PENDING`, `FOLLOWUP`, `ACTION`, `CONDITIONAL`, `NOT_RERUN`, `MISSING`, `INCOMPLETE`, `TODO`, or `TBD`. The files should link to device/simulator logs, CI job URLs, or signed-off review notes.
 
 ## SBOM
 

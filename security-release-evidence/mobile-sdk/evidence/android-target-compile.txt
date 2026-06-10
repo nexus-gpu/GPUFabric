@@ -1,21 +1,41 @@
-status: NOT_RERUN_ON_2026_06_10
-generated_at_utc: 2026-06-10T02:31:17Z
+status: PASS
+generated_at_utc: 2026-06-10T08:49:24Z
 branch: optimize/gpuf-c
-commit: e1fc8b9eb58867f4e3749b827eca5b399ef45c7d
+commit: 2b594e901ff4fb899cbcbbe2520d94e1c1217f00
 
 Purpose:
-  Android target compile evidence placeholder for the mobile SDK release gate bundle.
+  Android arm64 target compile evidence for the mobile SDK release gate bundle.
 
-Current host check:
-  rustup target list --installed did not show aarch64-linux-android, armv7-linux-androideabi, or x86_64-linux-android.
-  ANDROID_NDK_HOME was not set.
-  ANDROID_NDK_ROOT was not set.
-  adb was not found on PATH.
-  cargo-ndk was not found on PATH.
+Host/toolchain:
+  Android NDK: <home>/Android/Sdk/ndk/25.1.8937393
+  Target ABI: aarch64-linux-android
+  Linker: <home>/Android/Sdk/ndk/25.1.8937393/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang
+  Archiver: <home>/Android/Sdk/ndk/25.1.8937393/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
 
-Historical project note:
-  docs/mobile-sdk/README.md and gpuf-c/docs/mobile/MOBILE_SDK_CHECKLIST.md state that Android arm64 target compile had passed locally with NDK 25.1 in earlier remediation work.
+Command:
+  env ANDROID_NDK_ROOT=<home>/Android/Sdk/ndk/25.1.8937393 \
+      ANDROID_NDK_HOME=<home>/Android/Sdk/ndk/25.1.8937393 \
+      CC_aarch64_linux_android=<home>/Android/Sdk/ndk/25.1.8937393/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang \
+      CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=<home>/Android/Sdk/ndk/25.1.8937393/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang \
+      AR_aarch64_linux_android=<home>/Android/Sdk/ndk/25.1.8937393/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar \
+      cargo check -p gpuf-c --lib --target aarch64-linux-android
+
+Observed result:
+  exit_code: 0
+  package: gpuf-c v1.0.2
+  cargo result: Finished dev profile target(s) for aarch64-linux-android.
+  build.rs linked the staged Android llama.cpp static library from <repo>/target/llama-android-ndk.
+  build.rs found libmtmd.a and enabled multimodal support.
+
+Warnings:
+  The check completed with existing unused/unreachable-code warnings in gpuf-c.
+  The warnings are not new blockers for Android target compilation or SDK API compatibility.
+
+Related runtime evidence:
+  security-release-evidence/mobile-sdk/evidence/android-real-device-inference-runtime.log
+  security-release-evidence/mobile-sdk/evidence/android-remote-worker-plain-runtime.log
+  security-release-evidence/mobile-sdk/evidence/android-remote-worker-tls-runtime.log
 
 Release conclusion:
-  Android compile was not rerun in this iOS SDK regression capture.
-  For a full mobile SDK release, replace this file with fresh Android target compile logs, including NDK version, target ABI, command, exit code, archive path, and SHA256.
+  Android arm64 target compile is freshly validated on the current branch commit with NDK 25.1.8937393.
+  Formal mobile release still requires the remaining non-Android compile gates documented in mobile-evidence-status.txt.

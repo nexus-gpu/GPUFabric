@@ -1,5 +1,5 @@
-generated_at_utc=2026-06-10T02:51:55Z
+generated_at_utc=2026-06-10T08:50:12Z
 repo=<repo>
 GPUF_REQUIRE_MOBILE_EVIDENCE=1
 evidence_dir=security-release-evidence/mobile-sdk/evidence
-git_head=4d5eaa1cd5ad5485b35d1dba4c4d12d6bed617bd
+git_head=2b594e901ff4fb899cbcbbe2520d94e1c1217f00

@@ -408,4 +408,4 @@ rg -n "8[.]140[.]251[.]142|hf_[[:alnum:]]{20,}|sshpass[[:space:]]+-p|BEGIN[[:spa
 gitleaks detect --source . --redact
 ```
 
-如果某个工具在本地不可用，CI 必须执行等效 gate，并把输出附到发布记录。PR/普通 CI 可不传 artifact 或 mobile evidence 目录生成状态说明；正式 release job 必须启用 `GPUF_REQUIRE_ARTIFACTS=1`、`GPUF_REQUIRE_SIGNING=1`，移动 SDK 发布还必须启用 `GPUF_REQUIRE_MOBILE_EVIDENCE=1`。
+如果某个工具在本地不可用，CI 必须执行等效 gate，并把输出附到发布记录。PR/普通 CI 可不传 artifact 或 mobile evidence 目录生成状态说明；正式 release job 必须启用 `GPUF_REQUIRE_ARTIFACTS=1`、`GPUF_REQUIRE_SIGNING=1`，移动 SDK 发布还必须启用 `GPUF_REQUIRE_MOBILE_EVIDENCE=1`。移动 SDK 严格 gate 不只检查文件存在；每个必需证据文件必须带非阻断 `status:`，包含 `REQUIRED`、`REQUIRES`、`PENDING`、`FOLLOWUP`、`ACTION`、`CONDITIONAL`、`NOT_RERUN`、`MISSING`、`INCOMPLETE`、`TODO` 或 `TBD` 等未闭环标记时必须失败。
