@@ -10,12 +10,6 @@
 
 #![allow(dead_code)] // Ignore IDE warnings for sampler functions
 
-#[cfg(target_os = "android")]
-use jni::objects::{JClass, JObject, JString};
-#[cfg(target_os = "android")]
-use jni::sys::{jboolean, jbyteArray, jfloat, jint, jlong, jstring};
-#[cfg(target_os = "android")]
-use jni::JNIEnv;
 use libc::size_t;
 use once_cell::sync::Lazy;
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
