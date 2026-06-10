@@ -197,5 +197,5 @@ security-release-evidence/mobile-sdk/evidence/
 This evidence package is suitable for the script-level presence check. Human release approval should still review the conditional items:
 
 - Attach raw iOS simulator/device runtime logs for plain and TLS Remote Worker runs.
-- Add Android instrumentation logs if this is a full Android+iOS mobile SDK release.
+- Review the attached Android real-device C harness logs; add AndroidJUnitRunner or production app-layer instrumentation sign-off if required by the release policy.
 - Add ASAN/TSAN or document an approved sanitizer substitute for mobile FFI callback lifecycle tests.

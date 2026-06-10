@@ -46,6 +46,10 @@ Android TLS runtime evidence:
   Passing signals: gpuf_validate_mobile_tls_policy rc=0, set_remote_worker_model rc=0, start_remote_worker_with_tls rc=0, start_remote_worker_tasks_with_callback_ptr rc=0, get_remote_worker_status rc=0, stop_remote_worker rc=0.
   Callback signals: STARTING, SUCCESS, HEARTBEAT, HANDLER_START, LOGIN_SUCCESS, PULL_MODEL_SUCCESS, HANDLER_STOP.
 
+Android plaintext compatibility evidence:
+  Raw runtime log: security-release-evidence/mobile-sdk/evidence/android-remote-worker-plain-runtime.log
+  Passing signals: set_remote_worker_model rc=0, start_remote_worker rc=0, start_remote_worker_tasks_with_callback_ptr rc=0, get_remote_worker_status rc=0, stop_remote_worker rc=0.
+
 Previous iOS integration flow:
   run_ios_sim_tls_test.sh generates local TLS cert material and then starts the simulator sample with:
     GPUF_IOS_TEST_TLS=1
@@ -54,5 +58,5 @@ Previous iOS integration flow:
   The sample calls start_remote_worker_with_tls and registers gpuf_register_remote_worker_callback.
 
 Release conclusion:
-  TLS APIs, negative validation coverage, valid CA-bundle parsing, SHA256 pin format handling, stable C return codes, and Android additive TLS Remote Worker startup are covered by passing tests/logs.
+  TLS APIs, negative validation coverage, valid CA-bundle parsing, SHA256 pin format handling, stable C return codes, Android plaintext Remote Worker compatibility, and Android additive TLS Remote Worker startup are covered by passing tests/logs.
   Attach a saved iOS TLS runtime log for human release review of the simulator/device flow.
