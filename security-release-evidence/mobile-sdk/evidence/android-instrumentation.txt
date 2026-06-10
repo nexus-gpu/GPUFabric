@@ -1,0 +1,25 @@
+status: NOT_RUN_REQUIRES_DEVICE_OR_EMULATOR_LOG
+generated_at_utc: 2026-06-10T02:31:17Z
+branch: optimize/gpuf-c
+commit: e1fc8b9eb58867f4e3749b827eca5b399ef45c7d
+
+Purpose:
+  Android instrumentation lifecycle/security evidence for the mobile SDK release gate bundle.
+
+Current result:
+  Android instrumentation was not run in this iOS SDK regression capture.
+  adb is not available on the current host PATH.
+  No Android emulator/device runtime log was captured.
+
+Expected instrumentation coverage:
+  Load native library.
+  Initialize SDK.
+  Validate Remote Worker plaintext startup remains compatible.
+  Validate TLS startup with CA/SNI/SHA256 pin inputs.
+  Register callback and verify lifecycle.
+  Start and stop worker tasks.
+  Confirm no token, secret, full client ID, prompt, or model path leaks into logs.
+
+Release conclusion:
+  Replace this file with fresh Android instrumentation output before a full mobile SDK release.
+  This file exists to keep the release-gate evidence bundle structurally complete while making the Android runtime gap explicit.

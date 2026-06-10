@@ -1,0 +1,51 @@
+status: CONDITIONAL_FAIL_UNIT_FIXTURE_MISSING
+generated_at_utc: 2026-06-10T02:31:17Z
+branch: optimize/gpuf-c
+commit: e1fc8b9eb58867f4e3749b827eca5b399ef45c7d
+
+Purpose:
+  Mobile control TLS and pinning evidence for Android/iOS C/JNI SDK surfaces.
+
+API coverage:
+  C header exposes gpuf_validate_mobile_tls_policy(ca_cert_path, control_tls_server_name, cert_sha256_pin).
+  C header exposes start_remote_worker_with_tls(server_addr, control_port, proxy_port, worker_type, client_id, ca_cert_path, control_tls_server_name, cert_sha256_pin).
+  Plain start_remote_worker remains available for backwards compatibility.
+  Android JNI wrappers are additive and do not remove old plaintext calls.
+
+Static review:
+  gpuf-c/src/util/mobile_tls_policy.rs validates non-empty server name, CA bundle path, and SHA256 pin format.
+  gpuf-c/src/util/mobile_control_stream.rs builds a TLS client config, loads CA roots, validates server name, and compares SHA256 pin when provided.
+  gpuf-c/src/lib.rs maps TLS policy errors to stable C return codes.
+
+Unit test command:
+  cargo test -p gpuf-c mobile_tls_policy --lib
+
+Unit test result on 2026-06-10:
+  running 7 tests
+  passed: 5
+  failed: 2
+
+Passing tests:
+  rejects_missing_trust_material
+  rejects_invalid_server_name
+  rejects_bad_pin
+  accepts_colon_separated_pin_without_ca
+  rejects_missing_ca_file
+
+Failing tests:
+  accepts_ca_bundle_and_sha256_pin
+  ffi_returns_stable_error_codes
+
+Failure reason:
+  Missing fixture gpuf-c/tests/fixtures/control-rotated-cert.pem caused valid CA-bundle cases to return InvalidCaBundle / -3.
+
+Previous iOS integration flow:
+  run_ios_sim_tls_test.sh generates local TLS cert material and then starts the simulator sample with:
+    GPUF_IOS_TEST_TLS=1
+    GPUF_IOS_TEST_CA_CERT_SOURCE_PATH=<generated-ca-cert>
+    GPUF_IOS_TEST_TLS_SERVER_NAME=<test-server-name>
+  The sample calls start_remote_worker_with_tls and registers gpuf_register_remote_worker_callback.
+
+Release conclusion:
+  TLS APIs and negative validation coverage are present.
+  Do not mark the mobile TLS/pinning gate fully passed until the missing fixture is restored or the tests generate their fixture dynamically, and a saved iOS TLS runtime log is attached.

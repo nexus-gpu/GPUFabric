@@ -31,7 +31,7 @@ Toolchain:
 Command:
 
 ```bash
-cd /Users/jack/codedir/GPUFabric/gpuf-c
+cd <repo>/gpuf-c
 GPUF_SKIP_CBINDGEN=1 bash generate_ios_sdk.sh
 ```
 

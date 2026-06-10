@@ -1,0 +1,29 @@
+status: NOT_RUN_REQUIRES_RELEASE_DECISION
+generated_at_utc: 2026-06-10T02:31:17Z
+branch: optimize/gpuf-c
+commit: e1fc8b9eb58867f4e3749b827eca5b399ef45c7d
+
+Purpose:
+  ASAN/TSAN evidence for mobile FFI, callback lifecycle, model/context ownership, and Remote Worker task start/stop lifecycle.
+
+Current result:
+  ASAN was not run for iOS or Android in this evidence capture.
+  TSAN was not run for iOS or Android in this evidence capture.
+
+Related evidence:
+  iOS SDK static build succeeded for ios-arm64 and ios-arm64-simulator.
+  C ABI symbols for model/context/free, Remote Worker, TLS Remote Worker, and callback registration are present.
+  TLS policy unit suite was partially run; 5 passed and 2 failed due missing fixture.
+
+Risk:
+  Callback and FFI lifecycle bugs can survive compile/link checks.
+  Formal release should run sanitizer coverage for:
+    gpuf_register_remote_worker_callback
+    start_remote_worker_tasks
+    stop_remote_worker
+    gpuf_load_model / gpuf_create_context / llama_free / llama_model_free
+    TLS control stream setup and teardown
+
+Release recommendation:
+  Treat this file as evidence that sanitizer status is explicitly known, not as a sanitizer pass.
+  Either run ASAN/TSAN and replace this file with logs, or document an approved substitute such as focused Miri/loom/unit integration coverage plus manual lifecycle review.

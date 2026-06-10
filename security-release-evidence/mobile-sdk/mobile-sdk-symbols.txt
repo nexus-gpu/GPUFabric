@@ -1,0 +1,71 @@
+gpuf-c/src/jni_remote_worker.rs:23:    start_remote_worker, start_remote_worker_tasks_with_callback_ptr, start_remote_worker_with_tls,
+gpuf-c/src/jni_remote_worker.rs:291:pub extern "C" fn Java_com_gpuf_c_RemoteWorker_startRemoteWorkerTasksWithJavaCallback(
+gpuf-c/src/jni_remote_worker.rs:306:    start_remote_worker_tasks_with_callback_ptr(Some(rn_status_callback))
+gpuf-c/src/jni_remote_worker.rs:316:///     String serverAddr,
+gpuf-c/src/jni_remote_worker.rs:323:/// @param serverAddr Server IP address or hostname
+gpuf-c/src/jni_remote_worker.rs:331:pub extern "C" fn Java_com_gpuf_c_RemoteWorker_startRemoteWorker(
+gpuf-c/src/jni_remote_worker.rs:428:    let result = start_remote_worker(
+gpuf-c/src/jni_remote_worker.rs:452:///     String serverAddr,
+gpuf-c/src/jni_remote_worker.rs:463:pub extern "C" fn Java_com_gpuf_c_RemoteWorker_startRemoteWorkerWithTls(
+gpuf-c/src/jni_remote_worker.rs:472:    control_tls_server_name: JString,
+gpuf-c/src/jni_remote_worker.rs:493:    let control_tls_server_name_c = match jstring_to_cstring(
+gpuf-c/src/jni_remote_worker.rs:495:        &control_tls_server_name,
+gpuf-c/src/jni_remote_worker.rs:507:    let result = start_remote_worker_with_tls(
+gpuf-c/src/jni_remote_worker.rs:514:        control_tls_server_name_c.as_ptr(),
+gpuf-c/src/jni_remote_worker.rs:542:pub extern "C" fn Java_com_gpuf_c_RemoteWorker_startRemoteWorkerTasks(
+gpuf-c/src/jni_remote_worker.rs:552:    let result = start_remote_worker_tasks_with_callback_ptr(callback);
+gpuf-c/src/lib.rs:4064:pub extern "C" fn start_remote_worker(
+gpuf-c/src/lib.rs:4161:        control_tls: false,
+gpuf-c/src/lib.rs:4162:        control_tls_server_name: None,
+gpuf-c/src/lib.rs:4234:/// This is additive: `start_remote_worker` keeps the legacy plaintext behavior.
+gpuf-c/src/lib.rs:4238:pub extern "C" fn start_remote_worker_with_tls(
+gpuf-c/src/lib.rs:4245:    control_tls_server_name: *const c_char,
+gpuf-c/src/lib.rs:4268:    let control_tls_server_name = match optional_c_string(control_tls_server_name) {
+gpuf-c/src/lib.rs:4288:        Some(control_tls_server_name.as_str()),
+gpuf-c/src/lib.rs:4364:pub extern "C" fn start_remote_worker_with_tls(
+gpuf-c/src/lib.rs:4371:    _control_tls_server_name: *const c_char,
+gpuf-c/src/lib.rs:4379:pub extern "C" fn start_remote_worker(
+gpuf-c/src/lib.rs:4546:pub extern "C" fn start_remote_worker_tasks() -> c_int {
+gpuf-c/src/lib.rs:4583:pub extern "C" fn start_remote_worker_tasks() -> c_int {
+gpuf-c/src/lib.rs:4590:pub extern "C" fn start_remote_worker_tasks_with_callback_ptr(
+gpuf-c/src/lib.rs:4635:pub extern "C" fn start_remote_worker_tasks_with_callback_ptr(
+gpuf-c/docs/JNI_RemoteWorker_API_CN.md:169:    String serverAddr,
+gpuf-c/docs/JNI_RemoteWorker_API_CN.md:180:| `serverAddr` | String | 服务器 IP 地址或主机名<br>例如: `"<your-server-host>"` |
+gpuf-c/docs/JNI_RemoteWorker_API_CN.md:194:- 当前 JNI/C `startRemoteWorker` 签名保持兼容，不新增 TLS 参数；新增的 `startRemoteWorkerWithTls(...)` / `start_remote_worker_with_tls(...)` 使用同一控制协议但外层包 TLS，支持 CA bundle、SNI/server name 和 SHA256 leaf pin。`validateMobileTlsPolicy(caCertPath, serverName, certSha256Pin)` / `gpuf_validate_mobile_tls_policy` 可用于提前校验 TLS 配置。Android/iOS target 编译、真机/模拟器 TLS/pinning 握手日志仍是正式移动 SDK 发布 gate。CLI/config 方式的 `gpuf-c` 可通过 `--control-tls` / `control_tls = true` 启用控制连接 TLS。
+gpuf-c/docs/JNI_RemoteWorker_API_CN.md:221:    String serverAddr,
+gpuf-c/docs/JNI_RemoteWorker_API_CN.md:236:| `controlTlsServerName` | String | SNI/server name；为空时回退到 `serverAddr`，生产集成建议显式传 DNS 名 |
+gpuf-c/gpuf_c.h:649:int start_remote_worker(const char *server_addr,
+gpuf-c/gpuf_c.h:658: * This is additive: `start_remote_worker` keeps the legacy plaintext behavior.
+gpuf-c/gpuf_c.h:661:int start_remote_worker_with_tls(const char *server_addr,
+gpuf-c/gpuf_c.h:667:                                 const char *control_tls_server_name,
+gpuf-c/gpuf_c.h:670:int start_remote_worker_with_tls(const char *_server_addr,
+gpuf-c/gpuf_c.h:676:                                 const char *_control_tls_server_name,
+gpuf-c/gpuf_c.h:679:int start_remote_worker(const char *_server_addr,
+gpuf-c/gpuf_c.h:716:int start_remote_worker_tasks(void);
+gpuf-c/gpuf_c.h:718:int start_remote_worker_tasks(void);
+gpuf-c/gpuf_c.h:723:int start_remote_worker_tasks_with_callback_ptr(void (*callback)(const char*, void*));
+gpuf-c/gpuf_c.h:725:int start_remote_worker_tasks_with_callback_ptr(void (*_callback)(const char*, void*));
+gpuf-c/gpuf_c.h:731: * start_remote_worker_tasks_with_callback_ptr for backward compatibility.
+gpuf-c/gpuf_c.h:1098:jint Java_com_gpuf_c_RemoteWorker_startRemoteWorkerTasksWithJavaCallback(JNIEnv _env,
+gpuf-c/gpuf_c.h:1106: *     String serverAddr,
+gpuf-c/gpuf_c.h:1113: * @param serverAddr Server IP address or hostname
+gpuf-c/gpuf_c.h:1120:jint Java_com_gpuf_c_RemoteWorker_startRemoteWorker(JNIEnv env,
+gpuf-c/gpuf_c.h:1133: *     String serverAddr,
+gpuf-c/gpuf_c.h:1143:jint Java_com_gpuf_c_RemoteWorker_startRemoteWorkerWithTls(JNIEnv env,
+gpuf-c/gpuf_c.h:1151:                                                           JString control_tls_server_name,
+gpuf-c/gpuf_c.h:1163:jint Java_com_gpuf_c_RemoteWorker_startRemoteWorkerTasks(JNIEnv _env,
+gpuf-c/docs/mobile/MOBILE_SDK_CHECKLIST.md:197:- [x] Android/iOS `start_remote_worker` Args construction remains source-compatible with new control TLS fields defaulted off
+gpuf-c/docs/mobile/MOBILE_SDK_CHECKLIST.md:200:- [x] Additive C/JNI mobile remote worker TLS transport documented: `start_remote_worker_with_tls` / `startRemoteWorkerWithTls`
+docs/mobile-sdk/IOS_SDK_REGRESSION_REPORT_2026-06-10.md:86:- `start_remote_worker`
+docs/mobile-sdk/IOS_SDK_REGRESSION_REPORT_2026-06-10.md:87:- `start_remote_worker_with_tls`
+docs/mobile-sdk/IOS_SDK_REGRESSION_REPORT_2026-06-10.md:89:- `start_remote_worker_tasks`
+docs/mobile-sdk/IOS_SDK_REGRESSION_REPORT_2026-06-10.md:102:3. Plain flow: `start_remote_worker(server, controlPort, proxyPort, "TCP", clientId)`.
+docs/mobile-sdk/IOS_SDK_REGRESSION_REPORT_2026-06-10.md:103:4. TLS flow: `start_remote_worker_with_tls(server, controlPort, proxyPort, "TCP", clientId, caCertPath, serverName, certSha256Pin)`.
+docs/mobile-sdk/IOS_SDK_REGRESSION_REPORT_2026-06-10.md:105:6. Worker task start with `start_remote_worker_tasks`.
+docs/mobile-sdk/IOS_SDK_REGRESSION_REPORT_2026-06-10.md:117:- C: `start_remote_worker_with_tls`
+docs/mobile-sdk/IOS_SDK_REGRESSION_REPORT_2026-06-10.md:119:- Plain `start_remote_worker` remains available for compatibility.
+docs/mobile-sdk/README.md:11:The native SDK interface remains compatible after the 2026-06-04 remediation. Release packages must be verified with `SHA256SUMS`; explicit server addresses are required for remote worker integrations. Existing C/JNI remote worker start APIs remain unchanged for plaintext compatibility. Production mobile wrappers can opt into TLS with the additive `start_remote_worker_with_tls` / `RemoteWorker.startRemoteWorkerWithTls` APIs after preflighting CA/SNI/SHA256 pin inputs with `gpuf_validate_mobile_tls_policy` / `RemoteWorker.validateMobileTlsPolicy`. The iOS SDK build now uses the additive `ios-sdk` feature by default and compiles with `--no-default-features` so it links prebuilt llama.cpp archives from `target/llama-ios/`; generated `build_ios/dist/`, `build_ios/package/`, `build_llama_ios/`, and Xcode `DerivedData/` outputs are ignored and must be distributed through release artifacts, not committed. Android arm64 target compile passes locally with NDK 25.1; Android Keystore/iOS Keychain storage, iOS target builds, Android/iOS device TLS/pinning handshake logs, instrumentation tests, and sanitizer runs remain mobile release gates tracked in `../../gpuf-c/docs/mobile/MOBILE_SDK_CHECKLIST.md`. Use `scripts/mobile_sdk_release_gate.sh` in release jobs; set `GPUF_REQUIRE_MOBILE_EVIDENCE=1` for formal mobile SDK distribution. Android SDK archive/SHA256 evidence is available locally for `target/gpufabric-android-sdk-v9.0.0.tar.gz`; production signing remains a release gate.
+docs/mobile-sdk/INTEGRATION_GUIDE_EN.md:61:- Configure remote worker `serverAddr` explicitly; the SDK no longer falls back to a hardcoded public server.
+docs/mobile-sdk/INTEGRATION_GUIDE_EN.md:63:- Keep TLS certificate validation enabled. Self-signed deployments should use a CA bundle or pinning strategy, not disabled validation. Existing C/JNI `start_remote_worker` / `startRemoteWorker` calls remain available for plaintext compatibility. Production mobile wrappers should preflight CA/SNI/SHA256 pin inputs with `gpuf_validate_mobile_tls_policy` / `RemoteWorker.validateMobileTlsPolicy`, then call the additive TLS start API `start_remote_worker_with_tls` / `RemoteWorker.startRemoteWorkerWithTls`.
+docs/mobile-sdk/INTEGRATION_GUIDE_EN.md:607:| `start_remote_worker_with_tls(serverAddr, controlPort, proxyPort, workerType, clientId, caCertPath, controlTlsServerName, certSha256Pin)` | Start the C remote worker over TLS while keeping the old plaintext API unchanged | `0`=success, `-1`=argument/connect/login failure, `-2`=invalid TLS policy |
+docs/mobile-sdk/INTEGRATION_GUIDE_EN.md:610:Pass an empty CA path when using pin-only trust, or an empty pin when using a CA bundle only. `controlTlsServerName` may be empty to use `serverAddr` as SNI, but production apps should pass the expected DNS name explicitly.

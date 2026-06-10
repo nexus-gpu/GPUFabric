@@ -1,0 +1,1 @@
+No forbidden mobile source sensitive-pattern matches were found by scripts/mobile_sdk_release_gate.sh.

@@ -1,0 +1,5 @@
+generated_at_utc=2026-06-10T02:51:55Z
+repo=<repo>
+GPUF_REQUIRE_MOBILE_EVIDENCE=1
+evidence_dir=security-release-evidence/mobile-sdk/evidence
+git_head=4d5eaa1cd5ad5485b35d1dba4c4d12d6bed617bd

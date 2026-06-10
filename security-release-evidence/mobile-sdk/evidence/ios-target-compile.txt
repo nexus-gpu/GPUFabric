@@ -1,0 +1,83 @@
+status: PASS_WITH_LIMITATIONS
+generated_at_utc: 2026-06-10T02:31:17Z
+branch: optimize/gpuf-c
+commit: e1fc8b9eb58867f4e3749b827eca5b399ef45c7d
+
+Purpose:
+  iOS SDK compile and packaging evidence for GPUFabric gpuf-c SDK regression.
+
+Host/toolchain:
+  macOS: 26.3.1 (25D2128)
+  Xcode: 26.3 (17C529)
+  iPhoneOS SDK: /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.2.sdk
+  iPhoneSimulator SDK: /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator26.2.sdk
+  rustc: 1.93.1 (01f6ddf75 2026-02-11), host aarch64-apple-darwin
+  cargo: 1.93.1 (083ac5135 2025-12-15)
+
+Command:
+  cd <repo>/gpuf-c
+  GPUF_SKIP_CBINDGEN=1 bash generate_ios_sdk.sh
+
+Observed result:
+  exit_code: 0
+  aarch64-apple-ios release staticlib: succeeded
+  aarch64-apple-ios-sim release staticlib: succeeded
+  x86_64-apple-ios: skipped because target/llama-ios/x86_64-apple-ios is missing
+  merged device archive: gpuf-c/build_ios/dist/ios-arm64/libgpuf_c_sdk.a
+  merged simulator archive: gpuf-c/build_ios/dist/ios-arm64-simulator/libgpuf_c_sdk.a
+  XCFramework: gpuf-c/build_ios/dist/gpuf_c_sdk.xcframework
+  headers: gpuf-c/build_ios/dist/include/gpuf_c.h and gpuf_c_minimal.h
+
+Build output excerpt:
+  Finished release profile for aarch64-apple-ios.
+  Finished release profile for aarch64-apple-ios-sim.
+  Skipping x86_64-apple-ios build: missing llama.cpp libs at <repo>/target/llama-ios/x86_64-apple-ios.
+  xcframework successfully written out to <repo>/gpuf-c/build_ios/dist/gpuf_c_sdk.xcframework.
+
+XCFramework slices:
+  ios-arm64:
+    LibraryPath: libgpuf_c_sdk.a
+    HeadersPath: Headers
+    SupportedPlatform: ios
+    SupportedArchitectures: arm64
+  ios-arm64-simulator:
+    LibraryPath: libgpuf_c_sdk.a
+    HeadersPath: Headers
+    SupportedPlatform: ios
+    SupportedPlatformVariant: simulator
+    SupportedArchitectures: arm64
+
+Archive architecture check:
+  gpuf-c/build_ios/dist/ios-arm64/libgpuf_c_sdk.a: arm64
+  gpuf-c/build_ios/dist/ios-arm64-simulator/libgpuf_c_sdk.a: arm64
+
+SHA256:
+  0ae77c1a27832b1ba671f87e595c9a6c5357a64cc96ba2573be43ad2284e7715  gpuf_c_sdk.xcframework/ios-arm64/libgpuf_c_sdk.a
+  a249be9d2835b28acbe67d1ac8be4518a27a1d5c627addb2f5882a6e581358f8  gpuf_c_sdk.xcframework/ios-arm64-simulator/libgpuf_c_sdk.a
+  958424e62774868335dc4dbdc27701dc24260bfa7dccf2d70a4d2f4f4f970d27  gpuf_c_sdk.xcframework/Info.plist
+  36443743991985fc4a38bade73037e062c25d3a365e09d8548f7407b90f9aded  gpuf_c_sdk.xcframework/*/Headers/gpuf_c.h
+  7f5bdf408fc16d1d283c9e55f7e1e8b6e72c2a0c7c0601cbcb3fc0890c5aafbd  gpuf_c_sdk.xcframework/*/Headers/gpuf_c_minimal.h
+
+C ABI/symbol check:
+  Expected symbols found in ios-arm64-simulator archive:
+    gpuf_init
+    gpuf_cleanup
+    gpuf_version
+    gpuf_system_info
+    gpuf_load_model
+    gpuf_create_context
+    gpuf_generate_final_solution_text
+    llama_model_free
+    llama_free
+    set_remote_worker_model
+    start_remote_worker
+    start_remote_worker_with_tls
+    gpuf_register_remote_worker_callback
+    start_remote_worker_tasks
+    get_remote_worker_status
+    stop_remote_worker
+  Note: Apple nm emitted LLVM attribute warnings for Rust compiler_builtins objects, but still listed expected gpuf/llama external symbols.
+
+Limitations:
+  Intel simulator slice ios-x86_64-simulator is not included in this local artifact.
+  The generated XCFramework currently contains gpuf_c.h and gpuf_c_minimal.h; gpuf_c_ios.h is copied into the package as gpuf_c.h by generate_ios_sdk.sh.

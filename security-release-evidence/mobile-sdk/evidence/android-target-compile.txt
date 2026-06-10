@@ -1,0 +1,21 @@
+status: NOT_RERUN_ON_2026_06_10
+generated_at_utc: 2026-06-10T02:31:17Z
+branch: optimize/gpuf-c
+commit: e1fc8b9eb58867f4e3749b827eca5b399ef45c7d
+
+Purpose:
+  Android target compile evidence placeholder for the mobile SDK release gate bundle.
+
+Current host check:
+  rustup target list --installed did not show aarch64-linux-android, armv7-linux-androideabi, or x86_64-linux-android.
+  ANDROID_NDK_HOME was not set.
+  ANDROID_NDK_ROOT was not set.
+  adb was not found on PATH.
+  cargo-ndk was not found on PATH.
+
+Historical project note:
+  docs/mobile-sdk/README.md and gpuf-c/docs/mobile/MOBILE_SDK_CHECKLIST.md state that Android arm64 target compile had passed locally with NDK 25.1 in earlier remediation work.
+
+Release conclusion:
+  Android compile was not rerun in this iOS SDK regression capture.
+  For a full mobile SDK release, replace this file with fresh Android target compile logs, including NDK version, target ABI, command, exit code, archive path, and SHA256.
