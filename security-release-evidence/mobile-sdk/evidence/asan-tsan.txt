@@ -1,19 +1,44 @@
-status: NOT_RUN_REQUIRES_RELEASE_DECISION
-generated_at_utc: 2026-06-10T02:31:17Z
+status: NOT_RUN_SUBSTITUTE_EVIDENCE_ATTACHED_RELEASE_SIGNOFF_REQUIRED
+generated_at_utc: 2026-06-10T06:33:50Z
 branch: optimize/gpuf-c
-commit: e1fc8b9eb58867f4e3749b827eca5b399ef45c7d
+commit: 51395bcd77c30d96b00843e0bf2eab6bed648a4f
 
 Purpose:
   ASAN/TSAN evidence for mobile FFI, callback lifecycle, model/context ownership, and Remote Worker task start/stop lifecycle.
 
-Current result:
+Sanitizer/Miri result:
   ASAN was not run for iOS or Android in this evidence capture.
   TSAN was not run for iOS or Android in this evidence capture.
+  Active Rust toolchain: stable-x86_64-unknown-linux-gnu from rust-toolchain.toml.
+  Installed Rust components relevant to this check: rust-src only.
+  cargo miri --version result: miri is not available for the stable-x86_64-unknown-linux-gnu toolchain.
+
+Targeted non-sanitizer regression result:
+  Command: cargo test -p gpuf-c mobile_ --lib
+  Result: 10 passed, 0 failed, 35 filtered out.
+  Covered Rust unit tests include mobile TLS policy validation, stable FFI error-code mapping, plaintext control-stream config, and TLS control-stream CA/pin config parsing.
+
+Full lib test attempt:
+  Command attempted: cargo test -p gpuf-c --lib
+  Result: not used as release evidence in this capture.
+  Reason: the full lib suite entered external Ollama/VLLM container/model paths; one VLLM pull test failed and an Ollama pull path remained long-running until the local test process was stopped. This does not invalidate the targeted mobile tests above, but it is not a sanitizer substitute.
 
 Related evidence:
   iOS SDK static build succeeded for ios-arm64 and ios-arm64-simulator.
   C ABI symbols for model/context/free, Remote Worker, TLS Remote Worker, and callback registration are present.
   TLS policy unit suite passed on 2026-06-10 Linux re-check: 7 passed, 0 failed.
+  Android packaged SDK local inference raw log: security-release-evidence/mobile-sdk/evidence/android-real-device-inference-runtime.log
+  Android plaintext Remote Worker raw log: security-release-evidence/mobile-sdk/evidence/android-remote-worker-plain-runtime.log
+  Android TLS Remote Worker raw log: security-release-evidence/mobile-sdk/evidence/android-remote-worker-tls-runtime.log
+
+Android C harness runtime coverage:
+  Model load and context creation succeeded on an Android 10 arm64 device.
+  gpuf_generate_final_solution_text and gpuf_generate_with_sampling succeeded.
+  Legacy start_remote_worker plaintext path succeeded.
+  Additive start_remote_worker_with_tls path succeeded with CA/SNI validation.
+  start_remote_worker_tasks_with_callback_ptr succeeded and emitted callback lifecycle events.
+  get_remote_worker_status returned Worker is running.
+  stop_remote_worker returned 0 and emitted handler stop callback.
 
 Risk:
   Callback and FFI lifecycle bugs can survive compile/link checks.
@@ -25,5 +50,5 @@ Risk:
     TLS control stream setup and teardown
 
 Release recommendation:
-  Treat this file as evidence that sanitizer status is explicitly known, not as a sanitizer pass.
-  Either run ASAN/TSAN and replace this file with logs, or document an approved substitute such as focused Miri/loom/unit integration coverage plus manual lifecycle review.
+  Treat this file as evidence that sanitizer status is explicitly known and that Android runtime substitute evidence is attached, not as an ASAN/TSAN pass.
+  Formal release should either run ASAN/TSAN on supported platform jobs, or have a release owner explicitly approve the Android C harness logs plus targeted mobile unit tests as the sanitizer substitute.
