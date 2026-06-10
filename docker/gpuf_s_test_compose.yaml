@@ -1,0 +1,249 @@
+name: gpuf-s-test
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: gpuf-s-test-postgres
+    environment:
+      POSTGRES_USER: ${GPUF_TEST_POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${GPUF_TEST_POSTGRES_PASSWORD:?GPUF_TEST_POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${GPUF_TEST_POSTGRES_DB:-GPUFabric}
+      PGDATA: /var/lib/postgresql/data/pgdata
+      GPUF_TEST_GATEWAY_TOKEN: ${GPUF_TEST_GATEWAY_TOKEN:?GPUF_TEST_GATEWAY_TOKEN is required}
+      GPUF_TEST_CLIENT_ID_HEX: ${GPUF_TEST_CLIENT_ID_HEX:?GPUF_TEST_CLIENT_ID_HEX is required}
+      GPUF_TEST_USER_ID: ${GPUF_TEST_USER_ID:-1}
+    ports:
+      - "127.0.0.1:${GPUF_TEST_POSTGRES_PORT:-15432}:5432"
+    volumes:
+      - gpuf_s_test_postgres_data:/var/lib/postgresql/data
+      - ../scripts/db.sql:/docker-entrypoint-initdb.d/001-schema.sql:ro
+      - ../scripts/device_points_daily_incremental.sql:/docker-entrypoint-initdb.d/002-device-points.sql:ro
+      - ../scripts/gpuf_s_test_seed.sh:/docker-entrypoint-initdb.d/002-test-seed.sh:ro
+    networks:
+      - gpuf-s-test-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-postgres} -d $${POSTGRES_DB:-GPUFabric}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: gpuf-s-test-redis
+    command: redis-server --appendonly yes
+    ports:
+      - "127.0.0.1:${GPUF_TEST_REDIS_PORT:-16379}:6379"
+    volumes:
+      - gpuf_s_test_redis_data:/data
+    networks:
+      - gpuf-s-test-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.0.1
+    container_name: gpuf-s-test-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+      ZOOKEEPER_DATA_DIR: /var/lib/zookeeper/data
+      ZOOKEEPER_DATA_LOG_DIR: /var/lib/zookeeper/log
+    ports:
+      - "127.0.0.1:${GPUF_TEST_ZOOKEEPER_PORT:-12181}:2181"
+    volumes:
+      - gpuf_s_test_zookeeper_data:/var/lib/zookeeper/data
+      - gpuf_s_test_zookeeper_logs:/var/lib/zookeeper/log
+    networks:
+      - gpuf-s-test-net
+    restart: unless-stopped
+
+  kafka:
+    image: confluentinc/cp-kafka:7.0.1
+    container_name: gpuf-s-test-kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "127.0.0.1:${GPUF_TEST_KAFKA_HOST_PORT:-39092}:9092"
+    volumes:
+      - gpuf_s_test_kafka_data:/var/lib/kafka/data
+      - gpuf_s_test_kafka_logs:/var/log/kafka
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_HEAP_OPTS: "-Xmx1G -Xms512M"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_LISTENERS: PLAINTEXT://:29092,PLAINTEXT_HOST://:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:${GPUF_TEST_KAFKA_HOST_PORT:-39092}
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_SOCKET_REQUEST_MAX_BYTES: 104857600
+      KAFKA_SOCKET_SEND_BUFFER_BYTES: 1048576
+      KAFKA_SOCKET_RECEIVE_BUFFER_BYTES: 1048576
+      KAFKA_MESSAGE_MAX_BYTES: 104857600
+    networks:
+      - gpuf-s-test-net
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+    restart: unless-stopped
+
+  kafka-init:
+    image: confluentinc/cp-kafka:7.0.1
+    container_name: gpuf-s-test-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - gpuf-s-test-net
+    entrypoint: ["bash", "-ec"]
+    command:
+      - |
+        kafka-topics --create --if-not-exists --topic client-heartbeats --bootstrap-server kafka:29092 --partitions 3 --replication-factor 1 --config retention.ms=604800000 --config segment.bytes=104857600
+        kafka-topics --create --if-not-exists --topic request-message --bootstrap-server kafka:29092 --partitions 3 --replication-factor 1 --config retention.ms=604800000
+        kafka-topics --list --bootstrap-server kafka:29092
+    restart: "no"
+
+  gpuf-s:
+    image: GPUFabric/gpuf-s:latest
+    container_name: gpuf-s-test
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.runtime
+      args:
+        BIN: gpuf-s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:${GPUF_TEST_CONTROL_PORT:-17100}:17000"
+      - "127.0.0.1:${GPUF_TEST_PROXY_PORT:-17101}:17001"
+      - "127.0.0.1:${GPUF_TEST_PUBLIC_PORT:-18180}:18080"
+      - "127.0.0.1:${GPUF_TEST_INFERENCE_GATEWAY_PORT:-18182}:8081"
+    volumes:
+      - ./cert.pem:/app/cert.pem:ro
+      - ./key.pem:/app/key.pem:ro
+    environment:
+      DATABASE_URL: postgres://${GPUF_TEST_POSTGRES_USER:-postgres}:${GPUF_TEST_POSTGRES_PASSWORD}@postgres:5432/${GPUF_TEST_POSTGRES_DB:-GPUFabric}
+      REDIS_URL: redis://redis:6379
+      RUST_LOG: ${GPUF_TEST_RUST_LOG:-gpuf-s=info}
+    command: >
+      --control-port 17000
+      --proxy-port 17001
+      --public-port 18080
+      --inference-gateway-port 8081
+      --database-url postgres://${GPUF_TEST_POSTGRES_USER:-postgres}:${GPUF_TEST_POSTGRES_PASSWORD}@postgres:5432/${GPUF_TEST_POSTGRES_DB:-GPUFabric}
+      --redis-url redis://redis:6379
+      --bootstrap-server kafka:29092
+      --api-key test-local-only-public-listener-key
+      --proxy-cert-chain-path /app/cert.pem
+      --proxy-private-key-path /app/key.pem
+      --control-tls
+    networks:
+      - gpuf-s-test-net
+    healthcheck:
+      test: ["CMD", "pgrep", "-x", "gpuf-s"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  api-server:
+    image: GPUFabric/api_server:latest
+    container_name: gpuf-s-test-api-server
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.runtime
+      args:
+        BIN: api_server
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${GPUF_TEST_API_PORT:-18181}:18081"
+    environment:
+      DATABASE_URL: postgres://${GPUF_TEST_POSTGRES_USER:-postgres}:${GPUF_TEST_POSTGRES_PASSWORD}@postgres:5432/${GPUF_TEST_POSTGRES_DB:-GPUFabric}
+      REDIS_URL: redis://redis:6379
+      RUST_LOG: ${GPUF_TEST_RUST_LOG:-api_server=info}
+    command: >
+      --bind-addr 0.0.0.0
+      --port 18081
+      --database-url postgres://${GPUF_TEST_POSTGRES_USER:-postgres}:${GPUF_TEST_POSTGRES_PASSWORD}@postgres:5432/${GPUF_TEST_POSTGRES_DB:-GPUFabric}
+      --redis-url redis://redis:6379
+    networks:
+      - gpuf-s-test-net
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:18081/api/models/get"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  heartbeat-consumer:
+    image: GPUFabric/heartbeat_consumer:latest
+    container_name: gpuf-s-test-heartbeat-consumer
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.runtime
+      args:
+        BIN: heartbeat_consumer
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    environment:
+      GPUF_DATABASE_URL: postgres://${GPUF_TEST_POSTGRES_USER:-postgres}:${GPUF_TEST_POSTGRES_PASSWORD}@postgres:5432/${GPUF_TEST_POSTGRES_DB:-GPUFabric}
+      RUST_LOG: ${GPUF_TEST_RUST_LOG:-heartbeat_consumer=info}
+    command: >
+      --batch-size 100
+      --batch-timeout 5
+      --database-url postgres://${GPUF_TEST_POSTGRES_USER:-postgres}:${GPUF_TEST_POSTGRES_PASSWORD}@postgres:5432/${GPUF_TEST_POSTGRES_DB:-GPUFabric}
+      --bootstrap-server kafka:29092
+    networks:
+      - gpuf-s-test-net
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "heartbeat_consumer"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+networks:
+  gpuf-s-test-net:
+    driver: bridge
+    name: gpuf-s-test-network
+
+volumes:
+  gpuf_s_test_postgres_data:
+    name: gpuf-s-test-postgres-data
+  gpuf_s_test_redis_data:
+    name: gpuf-s-test-redis-data
+  gpuf_s_test_zookeeper_data:
+    name: gpuf-s-test-zookeeper-data
+  gpuf_s_test_zookeeper_logs:
+    name: gpuf-s-test-zookeeper-logs
+  gpuf_s_test_kafka_data:
+    name: gpuf-s-test-kafka-data
+  gpuf_s_test_kafka_logs:
+    name: gpuf-s-test-kafka-logs

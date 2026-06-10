@@ -62,3 +62,4 @@ SECURITY_REMEDIATION_PLAN.md
 security-release-evidence/*
 !security-release-evidence/mobile-sdk/
 !security-release-evidence/mobile-sdk/**
+backups/
