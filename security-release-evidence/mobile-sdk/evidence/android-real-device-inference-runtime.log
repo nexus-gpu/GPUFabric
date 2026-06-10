@@ -1,0 +1,865 @@
+🚀 GPUFabric Android Inference Test
+===================================
+Test Target: Model Loading + Text Inference + generateTextWithSampling API
+
+Starting Android device inference test...
+
+[0;34m🔧 Checking test environment...[0m
+[0;32m✅ Environment check passed[0m
+   📱 Device: HMA-AL00
+   🤖 Android Version: 10
+   🏗️ Architecture: arm64-v8a
+[0;34m🔧 Deploying SDK to Android device...[0m
+   📤 Pushing main library file...
+<repo>/target/gpufabric-android-sdk-v9.0.0/libs/libgpuf_c_sdk_v9.so: 1 file pushed, 0 skipped. 37.0 MB/s (60769960 bytes in 1.567s)
+   📤 Pushing C++ runtime library...
+<repo>/target/gpufabric-android-sdk-v9.0.0/libs/libc++_shared.so: 1 file pushed, 0 skipped. 75.4 MB/s (6764968 bytes in 0.086s)
+[0;32m✅ SDK deployment completed[0m
+[0;34m🔧 Preparing test model...[0m
+   📤 Pushing model file to device...
+<model.gguf>: 1 file pushed, 0 skipped. 34.9 MB/s (667822976 bytes in 18.251s)
+[0;32m✅ Model preparation completed (Size: 636MB)[0m
+[0;34m🔧 Creating Android test program...[0m
+   🔨 Compiling test program...
+   📤 Pushing test program to device...
+/tmp/test_inference: 1 file pushed, 0 skipped. 220.1 MB/s (9184 bytes in 0.000s)
+[0;32m✅ Test program creation completed[0m
+[0;34m🔧 Running detailed JNI API test...[0m
+/tmp/test_jni_api.sh: 1 file pushed, 0 skipped. 42.8 MB/s (1326 bytes in 0.000s)
+🧪 Detailed JNI API Test
+==================
+📦 Testing library loading...
+✅ Library file exists
+
+🔍 Checking key symbols...
+   ⚠️ nm command not available, skipping symbol check
+
+📁 Testing model file...
+WARNING: linker: Warning: "/data/local/tmp/gpuf_test/libc++_shared.so" unused DT entry: unknown processor-specific (type 0x70000001 arg 0x0) (ignoring)
+✅ Model file exists (size: 636MB)
+
+✅ JNI API environment check completed
+[0;32m✅ JNI API test completed[0m
+[0;34m🔧 Running inference test...[0m
+
+🧪 Starting Android device inference test...
+==================================
+🔥 GPUFabric Android LLaMA.cpp solution initialized
+✅ Memory pool initialized: 64MB
+⚠️ C++ runtime library not found, may cause issues
+✅ GGML backend symbols verified
+🔧 Loading model with safe parameters...
+📍 About to call real_llama_model_load_from_file...
+llama_model_loader: loaded meta data with 20 key-value pairs and 201 tensors from /data/local/tmp/gpuf_test/model.gguf (version GGUF V2)
+llama_model_loader: Dumping metadata keys/values. Note: KV overrides do not apply in this output.
+llama_model_loader: - kv   0:                       general.architecture str              = llama
+llama_model_loader: - kv   1:                               general.name str              = py007_tinyllama-1.1b-chat-v0.3
+llama_model_loader: - kv   2:                       llama.context_length u32              = 2048
+llama_model_loader: - kv   3:                     llama.embedding_length u32              = 2048
+llama_model_loader: - kv   4:                          llama.block_count u32              = 22
+llama_model_loader: - kv   5:                  llama.feed_forward_length u32              = 5632
+llama_model_loader: - kv   6:                 llama.rope.dimension_count u32              = 64
+llama_model_loader: - kv   7:                 llama.attention.head_count u32              = 32
+llama_model_loader: - kv   8:              llama.attention.head_count_kv u32              = 4
+llama_model_loader: - kv   9:     llama.attention.layer_norm_rms_epsilon f32              = 0.000010
+llama_model_loader: - kv  10:                       llama.rope.freq_base f32              = 10000.000000
+llama_model_loader: - kv  11:                          general.file_type u32              = 15
+llama_model_loader: - kv  12:                       tokenizer.ggml.model str              = llama
+llama_model_loader: - kv  13:                      tokenizer.ggml.tokens arr[str,32003]   = ["<unk>", "<s>", "</s>", "<0x00>", "<...
+llama_model_loader: - kv  14:                      tokenizer.ggml.scores arr[f32,32003]   = [0.000000, 0.000000, 0.000000, 0.0000...
+llama_model_loader: - kv  15:                  tokenizer.ggml.token_type arr[i32,32003]   = [2, 3, 3, 6, 6, 6, 6, 6, 6, 6, 6, 6, ...
+llama_model_loader: - kv  16:                tokenizer.ggml.bos_token_id u32              = 1
+llama_model_loader: - kv  17:                tokenizer.ggml.eos_token_id u32              = 2
+llama_model_loader: - kv  18:            tokenizer.ggml.unknown_token_id u32              = 0
+llama_model_loader: - kv  19:               general.quantization_version u32              = 2
+llama_model_loader: - type  f32:   45 tensors
+llama_model_loader: - type q4_K:  135 tensors
+llama_model_loader: - type q6_K:   21 tensors
+print_info: file format = GGUF V2
+print_info: file type   = Q4_K - Medium
+print_info: file size   = 636.18 MiB (4.85 BPW) 
+init_tokenizer: initializing tokenizer for type 1
+load: control-looking token:  32002 '<|im_end|>' was not control-type; this is probably a bug in the model. its type will be overridden
+load: control-looking token:  32000 '[PAD]' was not control-type; this is probably a bug in the model. its type will be overridden
+load: 0 unused tokens
+load: control token:      1 '<s>' is not marked as EOG
+load: printing all EOG tokens:
+load:   - 2 ('</s>')
+load:   - 32000 ('[PAD]')
+load:   - 32002 ('<|im_end|>')
+load: special tokens cache size = 6
+load: token to piece cache size = 0.1684 MB
+print_info: arch                  = llama
+print_info: vocab_only            = 0
+print_info: no_alloc              = 0
+print_info: n_ctx_train           = 2048
+print_info: n_embd                = 2048
+print_info: n_embd_inp            = 2048
+print_info: n_layer               = 22
+print_info: n_head                = 32
+print_info: n_head_kv             = 4
+print_info: n_rot                 = 64
+print_info: n_swa                 = 0
+print_info: is_swa_any            = 0
+print_info: n_embd_head_k         = 64
+print_info: n_embd_head_v         = 64
+print_info: n_gqa                 = 8
+print_info: n_embd_k_gqa          = 256
+print_info: n_embd_v_gqa          = 256
+print_info: f_norm_eps            = 0.0e+00
+print_info: f_norm_rms_eps        = 1.0e-05
+print_info: f_clamp_kqv           = 0.0e+00
+print_info: f_max_alibi_bias      = 0.0e+00
+print_info: f_logit_scale         = 0.0e+00
+print_info: f_attn_scale          = 0.0e+00
+print_info: n_ff                  = 5632
+print_info: n_expert              = 0
+print_info: n_expert_used         = 0
+print_info: n_expert_groups       = 0
+print_info: n_group_used          = 0
+print_info: causal attn           = 1
+print_info: pooling type          = -1
+print_info: rope type             = 0
+print_info: rope scaling          = linear
+print_info: freq_base_train       = 10000.0
+print_info: freq_scale_train      = 1
+print_info: n_ctx_orig_yarn       = 2048
+print_info: rope_yarn_log_mul     = 0.0000
+print_info: rope_finetuned        = unknown
+print_info: model type            = 1B
+print_info: model params          = 1.10 B
+print_info: general.name          = py007_tinyllama-1.1b-chat-v0.3
+print_info: vocab type            = SPM
+print_info: n_vocab               = 32003
+print_info: n_merges              = 0
+print_info: BOS token             = 1 '<s>'
+print_info: EOS token             = 2 '</s>'
+print_info: EOT token             = 32002 '<|im_end|>'
+print_info: UNK token             = 0 '<unk>'
+print_info: LF token              = 13 '<0x0A>'
+print_info: FIM PAD token         = 32000 '[PAD]'
+print_info: EOG token             = 2 '</s>'
+print_info: EOG token             = 32000 '[PAD]'
+print_info: EOG token             = 32002 '<|im_end|>'
+print_info: max token length      = 48
+load_tensors: loading model tensors, this can take a while... (mmap = true, direct_io = false)
+load_tensors: layer   0 assigned to device CPU, is_swa = 0
+load_tensors: layer   1 assigned to device CPU, is_swa = 0
+load_tensors: layer   2 assigned to device CPU, is_swa = 0
+load_tensors: layer   3 assigned to device CPU, is_swa = 0
+load_tensors: layer   4 assigned to device CPU, is_swa = 0
+load_tensors: layer   5 assigned to device CPU, is_swa = 0
+load_tensors: layer   6 assigned to device CPU, is_swa = 0
+load_tensors: layer   7 assigned to device CPU, is_swa = 0
+load_tensors: layer   8 assigned to device CPU, is_swa = 0
+load_tensors: layer   9 assigned to device CPU, is_swa = 0
+load_tensors: layer  10 assigned to device CPU, is_swa = 0
+load_tensors: layer  11 assigned to device CPU, is_swa = 0
+load_tensors: layer  12 assigned to device CPU, is_swa = 0
+load_tensors: layer  13 assigned to device CPU, is_swa = 0
+load_tensors: layer  14 assigned to device CPU, is_swa = 0
+load_tensors: layer  15 assigned to device CPU, is_swa = 0
+load_tensors: layer  16 assigned to device CPU, is_swa = 0
+load_tensors: layer  17 assigned to device CPU, is_swa = 0
+load_tensors: layer  18 assigned to device CPU, is_swa = 0
+load_tensors: layer  19 assigned to device CPU, is_swa = 0
+load_tensors: layer  20 assigned to device CPU, is_swa = 0
+load_tensors: layer  21 assigned to device CPU, is_swa = 0
+load_tensors: layer  22 assigned to device CPU, is_swa = 0
+create_tensor: loading tensor token_embd.weight
+create_tensor: loading tensor output_norm.weight
+create_tensor: loading tensor output.weight
+create_tensor: loading tensor blk.0.attn_norm.weight
+create_tensor: loading tensor blk.0.attn_q.weight
+create_tensor: loading tensor blk.0.attn_k.weight
+create_tensor: loading tensor blk.0.attn_v.weight
+create_tensor: loading tensor blk.0.attn_output.weight
+create_tensor: loading tensor blk.0.ffn_norm.weight
+create_tensor: loading tensor blk.0.ffn_gate.weight
+create_tensor: loading tensor blk.0.ffn_down.weight
+create_tensor: loading tensor blk.0.ffn_up.weight
+create_tensor: loading tensor blk.1.attn_norm.weight
+create_tensor: loading tensor blk.1.attn_q.weight
+create_tensor: loading tensor blk.1.attn_k.weight
+create_tensor: loading tensor blk.1.attn_v.weight
+create_tensor: loading tensor blk.1.attn_output.weight
+create_tensor: loading tensor blk.1.ffn_norm.weight
+create_tensor: loading tensor blk.1.ffn_gate.weight
+create_tensor: loading tensor blk.1.ffn_down.weight
+create_tensor: loading tensor blk.1.ffn_up.weight
+create_tensor: loading tensor blk.2.attn_norm.weight
+create_tensor: loading tensor blk.2.attn_q.weight
+create_tensor: loading tensor blk.2.attn_k.weight
+create_tensor: loading tensor blk.2.attn_v.weight
+create_tensor: loading tensor blk.2.attn_output.weight
+create_tensor: loading tensor blk.2.ffn_norm.weight
+create_tensor: loading tensor blk.2.ffn_gate.weight
+create_tensor: loading tensor blk.2.ffn_down.weight
+create_tensor: loading tensor blk.2.ffn_up.weight
+create_tensor: loading tensor blk.3.attn_norm.weight
+create_tensor: loading tensor blk.3.attn_q.weight
+create_tensor: loading tensor blk.3.attn_k.weight
+create_tensor: loading tensor blk.3.attn_v.weight
+create_tensor: loading tensor blk.3.attn_output.weight
+create_tensor: loading tensor blk.3.ffn_norm.weight
+create_tensor: loading tensor blk.3.ffn_gate.weight
+create_tensor: loading tensor blk.3.ffn_down.weight
+create_tensor: loading tensor blk.3.ffn_up.weight
+create_tensor: loading tensor blk.4.attn_norm.weight
+create_tensor: loading tensor blk.4.attn_q.weight
+create_tensor: loading tensor blk.4.attn_k.weight
+create_tensor: loading tensor blk.4.attn_v.weight
+create_tensor: loading tensor blk.4.attn_output.weight
+create_tensor: loading tensor blk.4.ffn_norm.weight
+create_tensor: loading tensor blk.4.ffn_gate.weight
+create_tensor: loading tensor blk.4.ffn_down.weight
+create_tensor: loading tensor blk.4.ffn_up.weight
+create_tensor: loading tensor blk.5.attn_norm.weight
+create_tensor: loading tensor blk.5.attn_q.weight
+create_tensor: loading tensor blk.5.attn_k.weight
+create_tensor: loading tensor blk.5.attn_v.weight
+create_tensor: loading tensor blk.5.attn_output.weight
+create_tensor: loading tensor blk.5.ffn_norm.weight
+create_tensor: loading tensor blk.5.ffn_gate.weight
+create_tensor: loading tensor blk.5.ffn_down.weight
+create_tensor: loading tensor blk.5.ffn_up.weight
+create_tensor: loading tensor blk.6.attn_norm.weight
+create_tensor: loading tensor blk.6.attn_q.weight
+create_tensor: loading tensor blk.6.attn_k.weight
+create_tensor: loading tensor blk.6.attn_v.weight
+create_tensor: loading tensor blk.6.attn_output.weight
+create_tensor: loading tensor blk.6.ffn_norm.weight
+create_tensor: loading tensor blk.6.ffn_gate.weight
+create_tensor: loading tensor blk.6.ffn_down.weight
+create_tensor: loading tensor blk.6.ffn_up.weight
+create_tensor: loading tensor blk.7.attn_norm.weight
+create_tensor: loading tensor blk.7.attn_q.weight
+create_tensor: loading tensor blk.7.attn_k.weight
+create_tensor: loading tensor blk.7.attn_v.weight
+create_tensor: loading tensor blk.7.attn_output.weight
+create_tensor: loading tensor blk.7.ffn_norm.weight
+create_tensor: loading tensor blk.7.ffn_gate.weight
+create_tensor: loading tensor blk.7.ffn_down.weight
+create_tensor: loading tensor blk.7.ffn_up.weight
+create_tensor: loading tensor blk.8.attn_norm.weight
+create_tensor: loading tensor blk.8.attn_q.weight
+create_tensor: loading tensor blk.8.attn_k.weight
+create_tensor: loading tensor blk.8.attn_v.weight
+create_tensor: loading tensor blk.8.attn_output.weight
+create_tensor: loading tensor blk.8.ffn_norm.weight
+create_tensor: loading tensor blk.8.ffn_gate.weight
+create_tensor: loading tensor blk.8.ffn_down.weight
+create_tensor: loading tensor blk.8.ffn_up.weight
+create_tensor: loading tensor blk.9.attn_norm.weight
+create_tensor: loading tensor blk.9.attn_q.weight
+create_tensor: loading tensor blk.9.attn_k.weight
+create_tensor: loading tensor blk.9.attn_v.weight
+create_tensor: loading tensor blk.9.attn_output.weight
+create_tensor: loading tensor blk.9.ffn_norm.weight
+create_tensor: loading tensor blk.9.ffn_gate.weight
+create_tensor: loading tensor blk.9.ffn_down.weight
+create_tensor: loading tensor blk.9.ffn_up.weight
+create_tensor: loading tensor blk.10.attn_norm.weight
+create_tensor: loading tensor blk.10.attn_q.weight
+create_tensor: loading tensor blk.10.attn_k.weight
+create_tensor: loading tensor blk.10.attn_v.weight
+create_tensor: loading tensor blk.10.attn_output.weight
+create_tensor: loading tensor blk.10.ffn_norm.weight
+create_tensor: loading tensor blk.10.ffn_gate.weight
+create_tensor: loading tensor blk.10.ffn_down.weight
+create_tensor: loading tensor blk.10.ffn_up.weight
+create_tensor: loading tensor blk.11.attn_norm.weight
+create_tensor: loading tensor blk.11.attn_q.weight
+create_tensor: loading tensor blk.11.attn_k.weight
+create_tensor: loading tensor blk.11.attn_v.weight
+create_tensor: loading tensor blk.11.attn_output.weight
+create_tensor: loading tensor blk.11.ffn_norm.weight
+create_tensor: loading tensor blk.11.ffn_gate.weight
+create_tensor: loading tensor blk.11.ffn_down.weight
+create_tensor: loading tensor blk.11.ffn_up.weight
+create_tensor: loading tensor blk.12.attn_norm.weight
+create_tensor: loading tensor blk.12.attn_q.weight
+create_tensor: loading tensor blk.12.attn_k.weight
+create_tensor: loading tensor blk.12.attn_v.weight
+create_tensor: loading tensor blk.12.attn_output.weight
+create_tensor: loading tensor blk.12.ffn_norm.weight
+create_tensor: loading tensor blk.12.ffn_gate.weight
+create_tensor: loading tensor blk.12.ffn_down.weight
+create_tensor: loading tensor blk.12.ffn_up.weight
+create_tensor: loading tensor blk.13.attn_norm.weight
+create_tensor: loading tensor blk.13.attn_q.weight
+create_tensor: loading tensor blk.13.attn_k.weight
+create_tensor: loading tensor blk.13.attn_v.weight
+create_tensor: loading tensor blk.13.attn_output.weight
+create_tensor: loading tensor blk.13.ffn_norm.weight
+create_tensor: loading tensor blk.13.ffn_gate.weight
+create_tensor: loading tensor blk.13.ffn_down.weight
+create_tensor: loading tensor blk.13.ffn_up.weight
+create_tensor: loading tensor blk.14.attn_norm.weight
+create_tensor: loading tensor blk.14.attn_q.weight
+create_tensor: loading tensor blk.14.attn_k.weight
+create_tensor: loading tensor blk.14.attn_v.weight
+create_tensor: loading tensor blk.14.attn_output.weight
+create_tensor: loading tensor blk.14.ffn_norm.weight
+create_tensor: loading tensor blk.14.ffn_gate.weight
+create_tensor: loading tensor blk.14.ffn_down.weight
+create_tensor: loading tensor blk.14.ffn_up.weight
+create_tensor: loading tensor blk.15.attn_norm.weight
+create_tensor: loading tensor blk.15.attn_q.weight
+create_tensor: loading tensor blk.15.attn_k.weight
+create_tensor: loading tensor blk.15.attn_v.weight
+create_tensor: loading tensor blk.15.attn_output.weight
+create_tensor: loading tensor blk.15.ffn_norm.weight
+create_tensor: loading tensor blk.15.ffn_gate.weight
+create_tensor: loading tensor blk.15.ffn_down.weight
+create_tensor: loading tensor blk.15.ffn_up.weight
+create_tensor: loading tensor blk.16.attn_norm.weight
+create_tensor: loading tensor blk.16.attn_q.weight
+create_tensor: loading tensor blk.16.attn_k.weight
+create_tensor: loading tensor blk.16.attn_v.weight
+create_tensor: loading tensor blk.16.attn_output.weight
+create_tensor: loading tensor blk.16.ffn_norm.weight
+create_tensor: loading tensor blk.16.ffn_gate.weight
+create_tensor: loading tensor blk.16.ffn_down.weight
+create_tensor: loading tensor blk.16.ffn_up.weight
+create_tensor: loading tensor blk.17.attn_norm.weight
+create_tensor: loading tensor blk.17.attn_q.weight
+create_tensor: loading tensor blk.17.attn_k.weight
+create_tensor: loading tensor blk.17.attn_v.weight
+create_tensor: loading tensor blk.17.attn_output.weight
+create_tensor: loading tensor blk.17.ffn_norm.weight
+create_tensor: loading tensor blk.17.ffn_gate.weight
+create_tensor: loading tensor blk.17.ffn_down.weight
+create_tensor: loading tensor blk.17.ffn_up.weight
+create_tensor: loading tensor blk.18.attn_norm.weight
+create_tensor: loading tensor blk.18.attn_q.weight
+create_tensor: loading tensor blk.18.attn_k.weight
+create_tensor: loading tensor blk.18.attn_v.weight
+create_tensor: loading tensor blk.18.attn_output.weight
+create_tensor: loading tensor blk.18.ffn_norm.weight
+create_tensor: loading tensor blk.18.ffn_gate.weight
+create_tensor: loading tensor blk.18.ffn_down.weight
+create_tensor: loading tensor blk.18.ffn_up.weight
+create_tensor: loading tensor blk.19.attn_norm.weight
+create_tensor: loading tensor blk.19.attn_q.weight
+create_tensor: loading tensor blk.19.attn_k.weight
+create_tensor: loading tensor blk.19.attn_v.weight
+create_tensor: loading tensor blk.19.attn_output.weight
+create_tensor: loading tensor blk.19.ffn_norm.weight
+create_tensor: loading tensor blk.19.ffn_gate.weight
+create_tensor: loading tensor blk.19.ffn_down.weight
+create_tensor: loading tensor blk.19.ffn_up.weight
+create_tensor: loading tensor blk.20.attn_norm.weight
+create_tensor: loading tensor blk.20.attn_q.weight
+create_tensor: loading tensor blk.20.attn_k.weight
+create_tensor: loading tensor blk.20.attn_v.weight
+create_tensor: loading tensor blk.20.attn_output.weight
+create_tensor: loading tensor blk.20.ffn_norm.weight
+create_tensor: loading tensor blk.20.ffn_gate.weight
+create_tensor: loading tensor blk.20.ffn_down.weight
+create_tensor: loading tensor blk.20.ffn_up.weight
+create_tensor: loading tensor blk.21.attn_norm.weight
+create_tensor: loading tensor blk.21.attn_q.weight
+create_tensor: loading tensor blk.21.attn_k.weight
+create_tensor: loading tensor blk.21.attn_v.weight
+create_tensor: loading tensor blk.21.attn_output.weight
+create_tensor: loading tensor blk.21.ffn_norm.weight
+create_tensor: loading tensor blk.21.ffn_gate.weight
+create_tensor: loading tensor blk.21.ffn_down.weight
+create_tensor: loading tensor blk.21.ffn_up.weight
+done_getting_tensors: tensor 'token_embd.weight' (q4_K) (and 200 others) cannot be used with preferred buffer type CPU_REPACK, using CPU instead
+load_tensors:   CPU_Mapped model buffer size =   636.18 MiB
+......................................................................................
+✅ real_llama_model_load_from_file returned: 0x7977c6f600
+🔧 Creating context with correct llama.cpp parameters...
+📍 About to call real_llama_init_from_model...
+llama_context: constructing llama_context
+llama_context: n_seq_max     = 1
+llama_context: n_ctx         = 4096
+llama_context: n_ctx_seq     = 4096
+llama_context: n_batch       = 128
+llama_context: n_ubatch      = 128
+llama_context: causal_attn   = 1
+llama_context: flash_attn    = auto
+llama_context: kv_unified    = false
+llama_context: freq_base     = 10000.0
+llama_context: freq_scale    = 1
+llama_context: n_ctx_seq (4096) > n_ctx_train (2048) -- possible training context overflow
+set_abort_callback: call
+llama_context:        CPU  output buffer size =     0.12 MiB
+llama_kv_cache: layer   0: dev = CPU
+llama_kv_cache: layer   1: dev = CPU
+llama_kv_cache: layer   2: dev = CPU
+llama_kv_cache: layer   3: dev = CPU
+llama_kv_cache: layer   4: dev = CPU
+llama_kv_cache: layer   5: dev = CPU
+llama_kv_cache: layer   6: dev = CPU
+llama_kv_cache: layer   7: dev = CPU
+llama_kv_cache: layer   8: dev = CPU
+llama_kv_cache: layer   9: dev = CPU
+llama_kv_cache: layer  10: dev = CPU
+llama_kv_cache: layer  11: dev = CPU
+llama_kv_cache: layer  12: dev = CPU
+llama_kv_cache: layer  13: dev = CPU
+llama_kv_cache: layer  14: dev = CPU
+llama_kv_cache: layer  15: dev = CPU
+llama_kv_cache: layer  16: dev = CPU
+llama_kv_cache: layer  17: dev = CPU
+llama_kv_cache: layer  18: dev = CPU
+llama_kv_cache: layer  19: dev = CPU
+llama_kv_cache: layer  20: dev = CPU
+llama_kv_cache: layer  21: dev = CPU
+llama_kv_cache:        CPU KV buffer size =    88.00 MiB
+llama_kv_cache: size =   88.00 MiB (  4096 cells,  22 layers,  1/1 seqs), K (f16):   44.00 MiB, V (f16):   44.00 MiB
+llama_kv_cache: attn_rot_k = 0, n_embd_head_k_all = 64
+llama_kv_cache: attn_rot_v = 0, n_embd_head_k_all = 64
+llama_context: enumerating backends
+llama_context: backend_ptrs.size() = 1
+sched_reserve: reserving ...
+sched_reserve: max_nodes = 1608
+sched_reserve: reserving full memory module
+sched_reserve: worst-case: n_tokens = 128, n_seqs = 1, n_outputs = 1
+graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+sched_reserve: Flash Attention was auto, set to enabled
+sched_reserve: resolving fused Gated Delta Net support:
+graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+sched_reserve: fused Gated Delta Net (autoregressive) enabled
+graph_reserve: reserving a graph for ubatch with n_tokens =   16, n_seqs =  1, n_outputs =   16
+sched_reserve: fused Gated Delta Net (chunked) enabled
+graph_reserve: reserving a graph for ubatch with n_tokens =  128, n_seqs =  1, n_outputs =  128
+graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+graph_reserve: reserving a graph for ubatch with n_tokens =  128, n_seqs =  1, n_outputs =  128
+sched_reserve:        CPU compute buffer size =    18.63 MiB
+sched_reserve: graph nodes  = 689
+sched_reserve: graph splits = 1
+sched_reserve: reserve took 7.80 ms, sched copies = 1
+✅ Context created: 0x7977c8b000
+🔥 Using manual completion like llama.rn implements
+🎛️ Sampling params: temp=0.80, top_k=40, top_p=0.90, repeat_penalty=1.10
+ RAW INPUT DEBUG:
+  Pointer: 0x630b4fab27
+  Length: 19 bytes
+  Content: <redacted>
+  Bytes as hex: <redacted>
+🔥🔥🔥 safe_tokenize FUNCTION CALLED!!! 🔥🔥🔥
+🎯 Using CORRECTED llama.cpp tokenization for input (19 bytes)
+ Calling CORRECTED llama_tokenize with vocab pointer
+ CORRECTED tokenizer success: 7 tokens
+ Token mapping redacted (7 tokens)
+ Safe tokenization successful! Got 7 tokens
+ INPUT DEBUG - Prompt token ids redacted (7 tokens)
+ Using 7 tokens for inference
+ KV cache cleared successfully
+ GLOBAL CONTEXT: Reset to position 0 for clean inference
+🔍 Creating initial batch with 7 tokens
+🔍 Initial batch created, about to decode...
+ Created batch with 7 tokens, positions 0 to 6
+ Initial decode successful
+ Generation limit: 50 (requested: 50, context_available: 4089, max_safe: 4096)
+ Creating sampler with params: temp=0.8, top_k=40, top_p=0.9, repeat_penalty=1.1
+ Added Repeat penalty sampler (penalty: 1.1)
+ Added Top-K sampler (k: 40)
+ Added Top-P sampler (p: 0.9)
+ Added Temperature sampler (temp: 0.8)
+ Added Distribution sampler
+ Sampler chain configured with all parameters
+ Sampling iteration 0: from logits index 6 (batch_size: 7)
+ Sampled token: 1244 at position 7
+ Generated token 1244 at sequence position 7 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (5 bytes)
+ Clearing batch and adding new token at position 7
+ Completed iteration 0, batch_size reset to 1, next_pos: 8
+ Sampling iteration 1: from logits index 0 (batch_size: 1)
+ Sampled token: 29991 at position 8
+ Generated token 29991 at sequence position 8 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (1 bytes)
+ Clearing batch and adding new token at position 8
+ Completed iteration 1, batch_size reset to 1, next_pos: 9
+ Sampling iteration 2: from logits index 0 (batch_size: 1)
+ Sampled token: 13 at position 9
+ Generated token 13 at sequence position 9 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (1 bytes)
+ Clearing batch and adding new token at position 9
+ Completed iteration 2, batch_size reset to 1, next_pos: 10
+ Sampling iteration 3: from logits index 0 (batch_size: 1)
+ Sampled token: 6132 at position 10
+ Generated token 6132 at sequence position 10 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (2 bytes)
+ Clearing batch and adding new token at position 10
+ Completed iteration 3, batch_size reset to 1, next_pos: 11
+ Sampling iteration 4: from logits index 0 (batch_size: 1)
+ Sampled token: 366 at position 11
+ Generated token 366 at sequence position 11 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (4 bytes)
+ Clearing batch and adding new token at position 11
+ Completed iteration 4, batch_size reset to 1, next_pos: 12
+ Sampling iteration 5: from logits index 0 (batch_size: 1)
+ Sampled token: 1348 at position 12
+ Generated token 1348 at sequence position 12 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (6 bytes)
+ Clearing batch and adding new token at position 12
+ Completed iteration 5, batch_size reset to 1, next_pos: 13
+ Sampling iteration 6: from logits index 0 (batch_size: 1)
+ Sampled token: 319 at position 13
+ Generated token 319 at sequence position 13 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (2 bytes)
+ Clearing batch and adding new token at position 13
+ Completed iteration 6, batch_size reset to 1, next_pos: 14
+ Sampling iteration 7: from logits index 0 (batch_size: 1)
+ Sampled token: 29902 at position 14
+ Generated token 29902 at sequence position 14 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (1 bytes)
+ Clearing batch and adding new token at position 14
+ Completed iteration 7, batch_size reset to 1, next_pos: 15
+ Sampling iteration 8: from logits index 0 (batch_size: 1)
+ Sampled token: 338 at position 15
+ Generated token 338 at sequence position 15 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (3 bytes)
+ Clearing batch and adding new token at position 15
+ Completed iteration 8, batch_size reset to 1, next_pos: 16
+ Sampling iteration 9: from logits index 0 (batch_size: 1)
+ Sampled token: 1244 at position 16
+ Generated token 1244 at sequence position 16 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (5 bytes)
+ Clearing batch and adding new token at position 16
+ Completed iteration 9, batch_size reset to 1, next_pos: 17
+ Sampling iteration 10: from logits index 0 (batch_size: 1)
+ Sampled token: 2307 at position 17
+ Generated token 2307 at sequence position 17 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (8 bytes)
+ Clearing batch and adding new token at position 17
+ Completed iteration 10, batch_size reset to 1, next_pos: 18
+ Sampling iteration 11: from logits index 0 (batch_size: 1)
+ Sampled token: 29973 at position 18
+ Generated token 29973 at sequence position 18 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (1 bytes)
+ Clearing batch and adding new token at position 18
+ Completed iteration 11, batch_size reset to 1, next_pos: 19
+ Sampling iteration 12: from logits index 0 (batch_size: 1)
+ Sampled token: 13 at position 19
+ Generated token 13 at sequence position 19 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (1 bytes)
+ Clearing batch and adding new token at position 19
+ Completed iteration 12, batch_size reset to 1, next_pos: 20
+ Sampling iteration 13: from logits index 0 (batch_size: 1)
+ Sampled token: 5618 at position 20
+ Generated token 5618 at sequence position 20 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (4 bytes)
+ Clearing batch and adding new token at position 20
+ Completed iteration 13, batch_size reset to 1, next_pos: 21
+ Sampling iteration 14: from logits index 0 (batch_size: 1)
+ Sampled token: 319 at position 21
+ Generated token 319 at sequence position 21 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (2 bytes)
+ Clearing batch and adding new token at position 21
+ Completed iteration 14, batch_size reset to 1, next_pos: 22
+ Sampling iteration 15: from logits index 0 (batch_size: 1)
+ Sampled token: 29902 at position 22
+ Generated token 29902 at sequence position 22 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (1 bytes)
+ Clearing batch and adding new token at position 22
+ Completed iteration 15, batch_size reset to 1, next_pos: 23
+ Sampling iteration 16: from logits index 0 (batch_size: 1)
+ Sampled token: 338 at position 23
+ Generated token 338 at sequence position 23 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (3 bytes)
+ Clearing batch and adding new token at position 23
+ Completed iteration 16, batch_size reset to 1, next_pos: 24
+ Sampling iteration 17: from logits index 0 (batch_size: 1)
+ Sampled token: 5279 at position 24
+ Generated token 5279 at sequence position 24 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (10 bytes)
+ Clearing batch and adding new token at position 24
+ Completed iteration 17, batch_size reset to 1, next_pos: 25
+ Sampling iteration 18: from logits index 0 (batch_size: 1)
+ Sampled token: 2599 at position 25
+ Generated token 2599 at sequence position 25 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (6 bytes)
+ Clearing batch and adding new token at position 25
+ Completed iteration 18, batch_size reset to 1, next_pos: 26
+ Sampling iteration 19: from logits index 0 (batch_size: 1)
+ Sampled token: 29973 at position 26
+ Generated token 29973 at sequence position 26 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (1 bytes)
+ Clearing batch and adding new token at position 26
+ Completed iteration 19, batch_size reset to 1, next_pos: 27
+ Sampling iteration 20: from logits index 0 (batch_size: 1)
+ Sampled token: 13 at position 27
+ Generated token 13 at sequence position 27 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (1 bytes)
+ Clearing batch and adding new token at position 27
+ Completed iteration 20, batch_size reset to 1, next_pos: 28
+ Sampling iteration 21: from logits index 0 (batch_size: 1)
+ Sampled token: 5618 at position 28
+ Generated token 5618 at sequence position 28 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (4 bytes)
+ Clearing batch and adding new token at position 28
+ Completed iteration 21, batch_size reset to 1, next_pos: 29
+ Sampling iteration 22: from logits index 0 (batch_size: 1)
+ Sampled token: 437 at position 29
+ Generated token 437 at sequence position 29 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (3 bytes)
+ Clearing batch and adding new token at position 29
+ Completed iteration 22, batch_size reset to 1, next_pos: 30
+ Sampling iteration 23: from logits index 0 (batch_size: 1)
+ Sampled token: 366 at position 30
+ Generated token 366 at sequence position 30 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (4 bytes)
+ Clearing batch and adding new token at position 30
+ Completed iteration 23, batch_size reset to 1, next_pos: 31
+ Sampling iteration 24: from logits index 0 (batch_size: 1)
+ Sampled token: 763 at position 31
+ Generated token 763 at sequence position 31 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (5 bytes)
+ Clearing batch and adding new token at position 31
+ Completed iteration 24, batch_size reset to 1, next_pos: 32
+ Sampling iteration 25: from logits index 0 (batch_size: 1)
+ Sampled token: 1048 at position 32
+ Generated token 1048 at sequence position 32 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (6 bytes)
+ Clearing batch and adding new token at position 32
+ Completed iteration 25, batch_size reset to 1, next_pos: 33
+ Sampling iteration 26: from logits index 0 (batch_size: 1)
+ Sampled token: 319 at position 33
+ Generated token 319 at sequence position 33 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (2 bytes)
+ Clearing batch and adding new token at position 33
+ Completed iteration 26, batch_size reset to 1, next_pos: 34
+ Sampling iteration 27: from logits index 0 (batch_size: 1)
+ Sampled token: 29902 at position 34
+ Generated token 29902 at sequence position 34 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (1 bytes)
+ Clearing batch and adding new token at position 34
+ Completed iteration 27, batch_size reset to 1, next_pos: 35
+ Sampling iteration 28: from logits index 0 (batch_size: 1)
+ Sampled token: 29973 at position 35
+ Generated token 29973 at sequence position 35 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (1 bytes)
+ Clearing batch and adding new token at position 35
+ Completed iteration 28, batch_size reset to 1, next_pos: 36
+ Sampling iteration 29: from logits index 0 (batch_size: 1)
+ Sampled token: 13 at position 36
+ Generated token 13 at sequence position 36 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (1 bytes)
+ Clearing batch and adding new token at position 36
+ Completed iteration 29, batch_size reset to 1, next_pos: 37
+ Sampling iteration 30: from logits index 0 (batch_size: 1)
+ Sampled token: 5618 at position 37
+ Generated token 5618 at sequence position 37 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (4 bytes)
+ Clearing batch and adding new token at position 37
+ Completed iteration 30, batch_size reset to 1, next_pos: 38
+ Sampling iteration 31: from logits index 0 (batch_size: 1)
+ Sampled token: 437 at position 38
+ Generated token 437 at sequence position 38 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (3 bytes)
+ Clearing batch and adding new token at position 38
+ Completed iteration 31, batch_size reset to 1, next_pos: 39
+ Sampling iteration 32: from logits index 0 (batch_size: 1)
+ Sampled token: 366 at position 39
+ Generated token 366 at sequence position 39 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (4 bytes)
+ Clearing batch and adding new token at position 39
+ Completed iteration 32, batch_size reset to 1, next_pos: 40
+ Sampling iteration 33: from logits index 0 (batch_size: 1)
+ Sampled token: 451 at position 40
+ Generated token 451 at sequence position 40 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (4 bytes)
+ Clearing batch and adding new token at position 40
+ Completed iteration 33, batch_size reset to 1, next_pos: 41
+ Sampling iteration 34: from logits index 0 (batch_size: 1)
+ Sampled token: 763 at position 41
+ Generated token 763 at sequence position 41 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (5 bytes)
+ Clearing batch and adding new token at position 41
+ Completed iteration 34, batch_size reset to 1, next_pos: 42
+ Sampling iteration 35: from logits index 0 (batch_size: 1)
+ Sampled token: 1048 at position 42
+ Generated token 1048 at sequence position 42 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (6 bytes)
+ Clearing batch and adding new token at position 42
+ Completed iteration 35, batch_size reset to 1, next_pos: 43
+ Sampling iteration 36: from logits index 0 (batch_size: 1)
+ Sampled token: 319 at position 43
+ Generated token 319 at sequence position 43 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (2 bytes)
+ Clearing batch and adding new token at position 43
+ Completed iteration 36, batch_size reset to 1, next_pos: 44
+ Sampling iteration 37: from logits index 0 (batch_size: 1)
+ Sampled token: 29902 at position 44
+ Generated token 29902 at sequence position 44 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (1 bytes)
+ Clearing batch and adding new token at position 44
+ Completed iteration 37, batch_size reset to 1, next_pos: 45
+ Sampling iteration 38: from logits index 0 (batch_size: 1)
+ Sampled token: 29973 at position 45
+ Generated token 29973 at sequence position 45 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (1 bytes)
+ Clearing batch and adding new token at position 45
+ Completed iteration 38, batch_size reset to 1, next_pos: 46
+ Sampling iteration 39: from logits index 0 (batch_size: 1)
+ Sampled token: 13 at position 46
+ Generated token 13 at sequence position 46 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (1 bytes)
+ Clearing batch and adding new token at position 46
+ Completed iteration 39, batch_size reset to 1, next_pos: 47
+ Sampling iteration 40: from logits index 0 (batch_size: 1)
+ Sampled token: 5328 at position 47
+ Generated token 5328 at sequence position 47 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (3 bytes)
+ Clearing batch and adding new token at position 47
+ Completed iteration 40, batch_size reset to 1, next_pos: 48
+ Sampling iteration 41: from logits index 0 (batch_size: 1)
+ Sampled token: 437 at position 48
+ Generated token 437 at sequence position 48 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (3 bytes)
+ Clearing batch and adding new token at position 48
+ Completed iteration 41, batch_size reset to 1, next_pos: 49
+ Sampling iteration 42: from logits index 0 (batch_size: 1)
+ Sampled token: 366 at position 49
+ Generated token 366 at sequence position 49 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (4 bytes)
+ Clearing batch and adding new token at position 49
+ Completed iteration 42, batch_size reset to 1, next_pos: 50
+ Sampling iteration 43: from logits index 0 (batch_size: 1)
+ Sampled token: 1348 at position 50
+ Generated token 1348 at sequence position 50 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (6 bytes)
+ Clearing batch and adding new token at position 50
+ Completed iteration 43, batch_size reset to 1, next_pos: 51
+ Sampling iteration 44: from logits index 0 (batch_size: 1)
+ Sampled token: 319 at position 51
+ Generated token 319 at sequence position 51 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (2 bytes)
+ Clearing batch and adding new token at position 51
+ Completed iteration 44, batch_size reset to 1, next_pos: 52
+ Sampling iteration 45: from logits index 0 (batch_size: 1)
+ Sampled token: 29902 at position 52
+ Generated token 29902 at sequence position 52 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (1 bytes)
+ Clearing batch and adding new token at position 52
+ Completed iteration 45, batch_size reset to 1, next_pos: 53
+ Sampling iteration 46: from logits index 0 (batch_size: 1)
+ Sampled token: 674 at position 53
+ Generated token 674 at sequence position 53 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (5 bytes)
+ Clearing batch and adding new token at position 53
+ Completed iteration 46, batch_size reset to 1, next_pos: 54
+ Sampling iteration 47: from logits index 0 (batch_size: 1)
+ Sampled token: 1735 at position 54
+ Generated token 1735 at sequence position 54 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (7 bytes)
+ Clearing batch and adding new token at position 54
+ Completed iteration 47, batch_size reset to 1, next_pos: 55
+ Sampling iteration 48: from logits index 0 (batch_size: 1)
+ Sampled token: 278 at position 55
+ Generated token 278 at sequence position 55 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (4 bytes)
+ Clearing batch and adding new token at position 55
+ Completed iteration 48, batch_size reset to 1, next_pos: 56
+ Sampling iteration 49: from logits index 0 (batch_size: 1)
+ Sampled token: 3186 at position 56
+ Generated token 3186 at sequence position 56 (temp:0.8, top_k:40, top_p:0.9)
+ Token text redacted (6 bytes)
+ Clearing batch and adding new token at position 56
+ Completed iteration 49, batch_size reset to 1, next_pos: 57
+ Cleaned up persistent sampler
+ GLOBAL CONTEXT: Updated position to 57
+ CONTINUOUS CONTEXT: Generated 50 tokens from pos 0 (next: 57)
+🧹 GPUFabric Android LLaMA.cpp solution cleaned up
+✅ Memory pool cleaned up
+🚀 GPUFabric Android Inference Test
+==================================
+
+✅ Library loaded successfully
+
+🔧 Step 1: Initialize engine...
+✅ Engine initialized successfully (code: 1)
+
+📊 Version Information:
+   Version: 9.0.0-x86_64-android-FINAL-LLAMA-SOLUTION
+   System Information: GPUFabric Android LLaMA.cpp Engine
+
+🔧 Step 2: Load model...
+✅ Model loaded successfully
+
+🔧 Step 2b: Create context...
+✅ Context created successfully
+
+🔧 Step 3: Basic text generation test...
+✅ Basic generation successful
+   Prompt: Once upon a time,
+   Generated: Real inference working (prompt 17 bytes, tokens: 1, ctx: 4096)
+
+🔧 Step 4: Sampling parameter generation test...
+   Sampling params: temp=0.8, top_k=40, top_p=0.9, repeat=1.1
+✅ Sampling generation successful
+   Prompt: The future of AI is
+   Generated:  here!
+Do you think AI is here already?
+What AI is currently doing?
+What do you like about AI?
+What do you not like about AI?
+How do you think AI will change the world
+
+🧹 Cleaning up resources...
+✅ Cleanup completed
+
+🎉 Test completed!
+[0;32m✅ Inference test passed![0m
+[0;34m🔧 Running performance test...[0m
+/tmp/test_performance.sh: 1 file pushed, 0 skipped. 12.9 MB/s (1004 bytes in 0.000s)
+⚡ Performance Test
+==========
+🕐 Testing initialization time...
+WARNING: linker: Warning: "/data/local/tmp/gpuf_test/libc++_shared.so" unused DT entry: unknown processor-specific (type 0x70000001 arg 0x0) (ignoring)
+WARNING: linker: Warning: "/data/local/tmp/gpuf_test/libc++_shared.so" unused DT entry: unknown processor-specific (type 0x70000001 arg 0x0) (ignoring)
+WARNING: linker: Warning: "/data/local/tmp/gpuf_test/libc++_shared.so" unused DT entry: unknown processor-specific (type 0x70000001 arg 0x0) (ignoring)
+   Initialization time: 1031ms
+
+🕐 Testing model loading time...
+WARNING: linker: Warning: "/data/local/tmp/gpuf_test/libc++_shared.so" unused DT entry: unknown processor-specific (type 0x70000001 arg 0x0) (ignoring)
+WARNING: linker: Warning: "/data/local/tmp/gpuf_test/libc++_shared.so" unused DT entry: unknown processor-specific (type 0x70000001 arg 0x0) (ignoring)
+WARNING: linker: Warning: "/data/local/tmp/gpuf_test/libc++_shared.so" unused DT entry: unknown processor-specific (type 0x70000001 arg 0x0) (ignoring)
+   Model loading time: 2039ms
+
+🕐 Testing inference time...
+WARNING: linker: Warning: "/data/local/tmp/gpuf_test/libc++_shared.so" unused DT entry: unknown processor-specific (type 0x70000001 arg 0x0) (ignoring)
+WARNING: linker: Warning: "/data/local/tmp/gpuf_test/libc++_shared.so" unused DT entry: unknown processor-specific (type 0x70000001 arg 0x0) (ignoring)
+WARNING: linker: Warning: "/data/local/tmp/gpuf_test/libc++_shared.so" unused DT entry: unknown processor-specific (type 0x70000001 arg 0x0) (ignoring)
+   Single inference time: 1038ms
+
+✅ Performance test completed
+[0;32m✅ Performance test completed[0m
+
+[0;32m🎉 Android device inference test completed![0m
+
+📊 Test Summary:
+- ✅ SDK deployment successful
+- ✅ Model loading verified
+- ✅ Basic text generation test
+- ✅ generateTextWithSampling API test
+- ✅ JNI API functionality verified
+- ✅ Performance baseline test
+
+📱 Device Information:
+- Device Model: HMA-AL00
+- Android Version: 10
+- Architecture: arm64-v8a
+
+📁 Test File Locations:
+- Device test directory: /data/local/tmp/gpuf_test
+- Main library file: /data/local/tmp/gpuf_test/libgpuf_c.so
+- Model file: /data/local/tmp/gpuf_test/model.gguf
+
+🔍 Debug Commands:
+- View logs: adb logcat | grep 'GPUFabric'
+- Enter device: adb shell
+- Test directory: cd /data/local/tmp/gpuf_test
+
+✅ Test verified the following key functions:
+1. Java_com_gpuf_c_GPUEngine_initialize() - Engine initialization
+2. Java_com_gpuf_c_GPUEngine_loadModelNew() - Model loading
+3. gpuf_generate_final_solution_text() - Basic generation
+4. gpuf_generate_with_sampling() - Sampling generation ⭐
+5. Model state management and resource cleanup

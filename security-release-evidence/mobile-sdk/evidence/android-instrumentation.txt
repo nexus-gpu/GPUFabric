@@ -1,15 +1,35 @@
-status: NOT_RUN_REQUIRES_DEVICE_OR_EMULATOR_LOG
-generated_at_utc: 2026-06-10T02:31:17Z
+status: PARTIAL_ANDROID_DEVICE_INFERENCE_PASS_INSTRUMENTATION_PENDING
+generated_at_utc: 2026-06-10T05:32:01Z
 branch: optimize/gpuf-c
-commit: e1fc8b9eb58867f4e3749b827eca5b399ef45c7d
+commit: 04d0d8f3e041a79459f7ed8738764639199b8a16
 
 Purpose:
   Android instrumentation lifecycle/security evidence for the mobile SDK release gate bundle.
 
 Current result:
-  Android instrumentation was not run in this iOS SDK regression capture.
-  adb is not available on the current host PATH.
-  No Android emulator/device runtime log was captured.
+  Android real-device packaged SDK inference was rerun on 2026-06-10 and passed.
+  Raw runtime log: security-release-evidence/mobile-sdk/evidence/android-real-device-inference-runtime.log
+  adb device: 66J5T19611000157, model HMA-AL00, Android 10, arm64-v8a.
+  SDK under test: target/gpufabric-android-sdk-v9.0.0.
+  Model under test: TinyLlama GGUF test model, path redacted in the evidence log.
+
+Observed passing coverage from gpuf-c/scripts/test_android_inference.sh:
+  SDK deployment to /data/local/tmp/gpuf_test.
+  Native library load through dlopen.
+  gpuf_init.
+  gpuf_load_model.
+  gpuf_create_context.
+  gpuf_generate_final_solution_text.
+  gpuf_generate_with_sampling.
+  Resource cleanup.
+  JNI environment file/model checks.
+
+Observed limitations:
+  This is a raw Android real-device SDK inference/runtime log, not an AndroidJUnitRunner instrumentation suite.
+  It does not exercise Remote Worker plaintext startup.
+  It does not exercise Remote Worker TLS startup with CA/SNI/SHA256 pin inputs.
+  It does not validate callback registration or worker task lifecycle on Android.
+  The device did not provide nm, so the script skipped its optional on-device symbol count.
 
 Expected instrumentation coverage:
   Load native library.
@@ -21,5 +41,5 @@ Expected instrumentation coverage:
   Confirm no token, secret, full client ID, prompt, or model path leaks into logs.
 
 Release conclusion:
-  Replace this file with fresh Android instrumentation output before a full mobile SDK release.
-  This file exists to keep the release-gate evidence bundle structurally complete while making the Android runtime gap explicit.
+  Android packaged SDK local inference is now backed by a fresh raw real-device runtime log.
+  Full mobile SDK release still requires Android instrumentation or equivalent app-layer runtime evidence for Remote Worker plaintext/TLS, callback lifecycle, task start/stop, and production logging redaction.

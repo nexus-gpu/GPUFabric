@@ -22,3 +22,7 @@ Files in this bundle:
 - `mobile-sdk-symbols.txt`: SDK compatibility and control TLS reference search.
 - `mobile-evidence-status.txt`: required release evidence presence check.
 - `mobile-release-gate-status.txt`: present only when a required gate failed.
+
+Additional attached evidence:
+
+- `evidence/android-real-device-inference-runtime.log`: raw Android 10 arm64 device runtime log for packaged SDK deployment, model loading, local generation, sampling generation, and cleanup.
