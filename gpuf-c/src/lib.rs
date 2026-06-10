@@ -2451,6 +2451,10 @@ pub extern "C" fn gpuf_generate_multimodal_stream(
         return -1;
     }
 
+    // SAFETY: This Android FFI entrypoint validates the required non-null
+    // pointers above. The caller owns the model/context/image/callback storage
+    // for the duration of the call, and all llama.cpp/libmtmd pointers are
+    // checked before use or released only when this function created them.
     unsafe {
         let model_ref = &*multimodal_model;
         let mtmd_ctx = model_ref.mtmd_context;
@@ -2717,6 +2721,8 @@ pub extern "C" fn gpuf_free_multimodal_model(_multimodal_model: *mut gpuf_multim
 #[cfg(target_os = "android")]
 pub extern "C" fn gpuf_free_multimodal_model(multimodal_model: *mut gpuf_multimodal_model) {
     if !multimodal_model.is_null() {
+        // SAFETY: Ownership of `multimodal_model` is transferred back from the
+        // C caller exactly once; nested llama.cpp/libmtmd pointers are checked.
         unsafe {
             let model = Box::from_raw(multimodal_model);
             if !model.text_model.is_null() {
@@ -2739,6 +2745,8 @@ pub extern "C" fn gpuf_multimodal_supports_vision(
         return false;
     }
 
+    // SAFETY: `multimodal_model` was checked for null and is expected to point
+    // to a live SDK-owned `gpuf_multimodal_model` for the duration of the call.
     unsafe {
         let model_ref = &*multimodal_model;
         if model_ref.mtmd_context.is_null() {
@@ -2768,6 +2776,9 @@ pub extern "C" fn gpuf_get_multimodal_info(
         return -1;
     }
 
+    // SAFETY: Both output and model pointers were checked for null. The caller
+    // must provide writable storage for `has_vision`, and the model/context must
+    // remain live for the duration of the call.
     unsafe {
         let model_ref = &*multimodal_model;
         if model_ref.mtmd_context.is_null() {
@@ -2802,6 +2813,9 @@ pub extern "C" fn gpuf_get_vision_tokens(
         return -1;
     }
 
+    // SAFETY: `multimodal_model` was checked for null. Optional output buffers
+    // are checked before writes, and each copy is capped by `max_length` and the
+    // NUL-terminated source length.
     unsafe {
         let model_ref = &*multimodal_model;
         let vision_tokens = model_ref.projector_type.get_vision_tokens();
@@ -2859,6 +2873,8 @@ fn generate_multimodal_response(
     repeat_penalty: f32,
 ) -> String {
     // Try to get vocab from context first
+    // SAFETY: The caller passes a live llama.cpp context for the duration of
+    // this helper; this block only queries context metadata.
     unsafe {
         let vocab_size = llama_n_vocab(ctx);
         if vocab_size == 0 {
@@ -3141,6 +3157,10 @@ fn generate_multimodal_response_with_callbacks(
 ) -> String {
     println!("🔍 generate_multimodal_response_with_callbacks: ENTRY");
 
+    // SAFETY: The caller supplies live llama.cpp context/vocab pointers and
+    // callback/user_data storage for the duration of this synchronous helper.
+    // Temporary CString pointers are passed only during callback invocation, and
+    // sampler ownership is released before returning.
     unsafe {
         println!("🔍 Initializing samplers...");
 
@@ -3309,6 +3329,9 @@ pub extern "C" fn gpuf_generate_final_solution_text(
         return -1;
     }
 
+    // SAFETY: The FFI caller provided non-null model/context/prompt/output
+    // pointers. `prompt` must be NUL-terminated, and `output` must be writable
+    // for `output_len` bytes.
     unsafe {
         let prompt_str = match CStr::from_ptr(prompt).to_str() {
             Ok(s) => s,
@@ -3370,27 +3393,26 @@ pub extern "C" fn gpuf_generate_with_sampling(
         return -2;
     }
 
-    unsafe {
-        println!("🔥 Using manual completion like llama.rn implements");
-        println!(
-            "🎛️ Sampling params: temp={:.2}, top_k={}, top_p={:.2}, repeat_penalty={:.2}",
-            temperature, top_k, top_p, repeat_penalty
-        );
+    println!("🔥 Using manual completion like llama.rn implements");
+    println!(
+        "🎛️ Sampling params: temp={:.2}, top_k={}, top_p={:.2}, repeat_penalty={:.2}",
+        temperature, top_k, top_p, repeat_penalty
+    );
 
-        // Use manual completion implementation based on actual llama.cpp API
-        manual_llama_completion(
-            model,
-            ctx,
-            prompt,
-            max_tokens,
-            temperature,
-            top_k,
-            top_p,
-            repeat_penalty,
-            output,
-            output_len,
-        )
-    }
+    // Use manual completion implementation based on actual llama.cpp API. Raw
+    // pointer invariants are checked here and revalidated inside the helper.
+    manual_llama_completion(
+        model,
+        ctx,
+        prompt,
+        max_tokens,
+        temperature,
+        top_k,
+        top_p,
+        repeat_penalty,
+        output,
+        output_len,
+    )
 }
 
 #[no_mangle]
@@ -3454,17 +3476,15 @@ pub extern "C" fn gpuf_init() -> c_int {
         // Step 3: Initialize llama.cpp backend
         real_llama_backend_init();
 
-        // Force reference to GGML backend symbols to ensure they are linked
-        unsafe {
-            let _ggml_backend_dev_by_type_ptr = ggml_backend_dev_by_type as *const ();
-            let _ggml_backend_load_all_ptr = ggml_backend_load_all as *const ();
+        // Force reference to GGML backend symbols to ensure they are linked.
+        let _ggml_backend_dev_by_type_ptr = ggml_backend_dev_by_type as *const ();
+        let _ggml_backend_load_all_ptr = ggml_backend_load_all as *const ();
 
-            if !_ggml_backend_dev_by_type_ptr.is_null() && !_ggml_backend_load_all_ptr.is_null() {
-                println!("✅ GGML backend symbols verified");
-            } else {
-                println!("❌ GGML backend symbols missing");
-                return -1;
-            }
+        if !_ggml_backend_dev_by_type_ptr.is_null() && !_ggml_backend_load_all_ptr.is_null() {
+            println!("✅ GGML backend symbols verified");
+        } else {
+            println!("❌ GGML backend symbols missing");
+            return -1;
         }
     }
 
@@ -3959,6 +3979,9 @@ pub extern "C" fn gpuf_generate_single_token(
         return -2;
     }
 
+    // SAFETY: The FFI caller provided non-null model/context/prompt/output
+    // pointers. `prompt` must be NUL-terminated, and `output` must be writable
+    // for `output_len` bytes.
     unsafe {
         println!("🔥 Single token sampling test");
 
@@ -4514,6 +4537,8 @@ pub extern "C" fn set_remote_worker_model(model_path: *const c_char) -> c_int {
         eprintln!("❌ C API: Model path is null");
         return -2;
     } else {
+        // SAFETY: `model_path` was checked for null and must point to a
+        // NUL-terminated string owned by the caller for this call.
         unsafe {
             match std::ffi::CStr::from_ptr(model_path).to_str() {
                 Ok(s) => s,
@@ -4546,7 +4571,8 @@ pub extern "C" fn set_remote_worker_model(model_path: *const c_char) -> c_int {
         eprintln!("❌ C API: Failed to create context");
         let mut status = MODEL_STATUS.lock().unwrap();
         status.set_error("Failed to create context");
-        unsafe { llama_model_free(model_ptr) }; // Clean up loaded model
+        // SAFETY: `model_ptr` was returned by `gpuf_load_model` above.
+        unsafe { llama_model_free(model_ptr) };
         return -4;
     }
     println!("✅ C API: Context created");
@@ -4573,10 +4599,12 @@ pub extern "C" fn set_remote_worker_model(model_path: *const c_char) -> c_int {
             println!("🧹 C API: Cleaning up previous model/context");
 
             if !old_context.is_null() {
+                // SAFETY: Old context pointer came from this SDK global state.
                 unsafe { llama_free(old_context) };
                 println!("✅ C API: Old context freed");
             }
             if !old_model.is_null() {
+                // SAFETY: Old model pointer came from this SDK global state.
                 unsafe { llama_model_free(old_model) };
                 println!("✅ C API: Old model freed");
             }
@@ -4824,6 +4852,8 @@ pub extern "C" fn get_remote_worker_status(buffer: *mut c_char, buffer_size: siz
         return -1;
     }
 
+    // SAFETY: `buffer` is non-null, `buffer_size` was checked above, and the
+    // copy length is bounded by `buffer_size` including the trailing NUL.
     unsafe {
         std::ptr::copy_nonoverlapping(status_bytes.as_ptr(), buffer as *mut u8, status_bytes.len());
     }
@@ -4839,6 +4869,8 @@ pub extern "C" fn get_remote_worker_status(buffer: *mut c_char, buffer_size: siz
         return -1;
     }
 
+    // SAFETY: `buffer` is non-null and at least one byte is writable because
+    // `buffer_size > 0`; the unsupported-platform status is the empty string.
     unsafe {
         *buffer = 0;
     }
