@@ -19,7 +19,7 @@ This guide provides detailed instructions for building GPUFabric Mobile SDK, sup
 
 ### Android Requirements
 - **Android Studio**: Latest version
-- **Android NDK**: r21+; current local validation uses NDK 25.1.8937393 at `/home/jack/Android/Sdk/ndk/25.1.8937393`
+- **Android NDK**: r21+; current local validation uses NDK 25.1.8937393
 - **Android SDK**: API 24+ 
 - **CMake**: 3.18+ (auto-installed)
 
@@ -210,10 +210,10 @@ gpuf_c.h                           # C header file (common for all platforms)
 
 Example:
 ```bash
-env ANDROID_NDK_ROOT=/home/jack/Android/Sdk/ndk/25.1.8937393 \
-    ANDROID_NDK_HOME=/home/jack/Android/Sdk/ndk/25.1.8937393 \
-    SDK_DIR=/home/jack/codedir/GPUFabric/target/gpufabric-android-sdk-v9.0.0 \
-    TEST_MODEL_PATH=/home/jack/models/tinyllama-1.1b-chat-v0.3.gguf \
+env ANDROID_NDK_ROOT=<android-ndk> \
+    ANDROID_NDK_HOME=<android-ndk> \
+    SDK_DIR=<repo>/target/gpufabric-android-sdk-v9.0.0 \
+    TEST_MODEL_PATH=<model.gguf> \
     gpuf-c/scripts/test_android_inference.sh
 ```
 
