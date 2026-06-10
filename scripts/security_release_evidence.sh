@@ -6,6 +6,8 @@ ARTIFACT_DIR="${2:-}"
 SIGNING_TOOL="${GPUF_SIGNING_TOOL:-}"
 REQUIRE_ARTIFACTS="${GPUF_REQUIRE_ARTIFACTS:-0}"
 REQUIRE_SIGNING="${GPUF_REQUIRE_SIGNING:-0}"
+REPO_ROOT="$(pwd)"
+HOME_DIR="${HOME:-}"
 
 mkdir -p "$OUT_DIR"
 rm -f \
@@ -24,6 +26,14 @@ is_truthy() {
     1|true|TRUE|yes|YES|on|ON) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+redact_repo_paths() {
+  if [[ -n "$HOME_DIR" ]]; then
+    sed -e "s|$REPO_ROOT|<repo>|g" -e "s|$HOME_DIR|<home>|g"
+  else
+    sed "s|$REPO_ROOT|<repo>|g"
+  fi
 }
 
 fail_gate() {
@@ -49,7 +59,7 @@ run_or_note() {
 
 {
   echo "generated_at_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  echo "repo=$(pwd)"
+  echo "repo=<repo>"
   git rev-parse HEAD 2>/dev/null | sed 's/^/git_head=/' || true
   git status --short 2>/dev/null | sed 's/^/git_status=/' || true
 } >"$OUT_DIR/release-context.txt"
@@ -57,7 +67,20 @@ run_or_note() {
 run_or_note toolchain.txt rustc -Vv
 cargo -V >>"$OUT_DIR/toolchain.txt" 2>&1 || true
 
-run_or_note sbom-cargo-metadata.json cargo metadata --format-version 1
+rm -f "$OUT_DIR/sbom-cargo-metadata.json.tmp" "$OUT_DIR/sbom-cargo-metadata.stderr.txt"
+if cargo metadata --format-version 1 >"$OUT_DIR/sbom-cargo-metadata.json.tmp" 2>"$OUT_DIR/sbom-cargo-metadata.stderr.txt"; then
+  redact_repo_paths <"$OUT_DIR/sbom-cargo-metadata.json.tmp" >"$OUT_DIR/sbom-cargo-metadata.json"
+  redact_repo_paths <"$OUT_DIR/sbom-cargo-metadata.stderr.txt" >"$OUT_DIR/sbom-cargo-metadata.stderr.txt.tmp" || true
+  mv "$OUT_DIR/sbom-cargo-metadata.stderr.txt.tmp" "$OUT_DIR/sbom-cargo-metadata.stderr.txt"
+  rm -f "$OUT_DIR/sbom-cargo-metadata.json.tmp"
+else
+  status=$?
+  redact_repo_paths <"$OUT_DIR/sbom-cargo-metadata.json.tmp" >"$OUT_DIR/sbom-cargo-metadata.json" || true
+  redact_repo_paths <"$OUT_DIR/sbom-cargo-metadata.stderr.txt" >"$OUT_DIR/sbom-cargo-metadata.stderr.txt.tmp" || true
+  mv "$OUT_DIR/sbom-cargo-metadata.stderr.txt.tmp" "$OUT_DIR/sbom-cargo-metadata.stderr.txt"
+  rm -f "$OUT_DIR/sbom-cargo-metadata.json.tmp"
+  echo "exit status: $status" >>"$OUT_DIR/sbom-cargo-metadata.stderr.txt"
+fi
 
 if command -v rg >/dev/null 2>&1; then
   rg -n 'vllm/vllm-openai|ollama/ollama|HF_TOKEN_PATH|no-new-privileges|cap-drop' \
@@ -198,6 +221,7 @@ Files:
 - \`release-context.txt\`: git and generation context.
 - \`toolchain.txt\`: Rust toolchain versions.
 - \`sbom-cargo-metadata.json\`: Cargo metadata SBOM baseline.
+- \`sbom-cargo-metadata.stderr.txt\`: Cargo metadata warnings or failure status, if any.
 - \`docker-runtime-evidence.txt\`: Docker image and runtime hardening references.
 - \`SHA256SUMS\` or \`SHA256SUMS.status\`: release artifact checksum manifest.
 - \`signing-tool.txt\` / \`signing-status.txt\`: signing result or missing-signing explanation.
