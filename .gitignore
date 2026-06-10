@@ -59,4 +59,6 @@ gpuf-c/**/*.tmp
 gpuf-c/**/*.tmp.*
 SECURITY_REMEDIATION_PLAN.md
 !gpuf-c/SECURITY_REMEDIATION_PLAN.md
-security-release-evidence/
+security-release-evidence/*
+!security-release-evidence/mobile-sdk/
+!security-release-evidence/mobile-sdk/**
