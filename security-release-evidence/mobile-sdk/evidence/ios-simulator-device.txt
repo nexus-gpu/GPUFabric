@@ -52,3 +52,31 @@ Current 2026-06-10 simulator re-query:
 
 Release note:
   Previous local regression validated the iOS Remote Worker path with a real model for both plaintext and TLS control stream, but the raw runtime Console output was not persisted into this evidence directory. For a formal release review, attach a saved run_ios_sim_test.sh and run_ios_sim_tls_test.sh log, or an Xcode Console export containing model load, worker start, callback, status, and stop lifecycle events.
+
+Expected raw runtime log attachment format:
+  File format: UTF-8 text .log or .txt, not JSON and not a rewritten summary.
+  Preferred files:
+    security-release-evidence/mobile-sdk/evidence/ios-simulator-plain-runtime.log
+    security-release-evidence/mobile-sdk/evidence/ios-simulator-tls-runtime.log
+    security-release-evidence/mobile-sdk/evidence/ios-device-plain-runtime.log
+    security-release-evidence/mobile-sdk/evidence/ios-device-tls-runtime.log
+  Header fields:
+    run_type: simulator_plain | simulator_tls | device_plain | device_tls
+    generated_at_utc: <timestamp>
+    repo_commit: <commit>
+    xcode_version: <xcodebuild -version>
+    ios_runtime: <simulator-or-device-runtime>
+    bundle_id: com.gpuf.iossimtest
+    model: Llama-3.2-1B-Instruct-Q8_0.gguf
+    server_addr: <redacted-or-local>
+    control_port: <port>
+    proxy_port: <port>
+    tls: true | false
+    tls_server_name: <name, for TLS runs>
+    cert_sha256_pin: <redacted-or-test-pin, if used>
+    command: <run script or Xcode action>
+    exit_code: 0
+  Body sections:
+    --- raw script output ---
+    --- raw iOS Console / log stream output ---
+  Required signal: model discovery/loading, remote worker start, TLS flag for TLS runs, callback or status update, and get_remote_worker_status/started state. Logs must redact production client IDs, tokens, private keys, and production endpoint secrets.

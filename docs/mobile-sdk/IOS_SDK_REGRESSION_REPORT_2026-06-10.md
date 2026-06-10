@@ -107,6 +107,41 @@ The simulator sample app at `gpuf-c/examples/ios_sim_test` exercises:
 
 Previous local regression flow used a real GGUF model (`Llama-3.2-1B-Instruct-Q8_0.gguf`) and covered plain and TLS Remote Worker startup. The raw runtime console logs were not persisted under the evidence directory, so final release evidence should add a saved `run_ios_sim_test.sh` / `run_ios_sim_tls_test.sh` log or Xcode Console export.
 
+Expected raw runtime log attachments are UTF-8 text `.log` or `.txt` files, not JSON summaries. Preferred filenames:
+
+- `security-release-evidence/mobile-sdk/evidence/ios-simulator-plain-runtime.log`
+- `security-release-evidence/mobile-sdk/evidence/ios-simulator-tls-runtime.log`
+- `security-release-evidence/mobile-sdk/evidence/ios-device-plain-runtime.log`
+- `security-release-evidence/mobile-sdk/evidence/ios-device-tls-runtime.log`
+
+Each file should keep raw script stdout and raw iOS unified-log or Xcode Console output, with only a short metadata header:
+
+```text
+run_type: simulator_tls
+generated_at_utc: <timestamp>
+repo_commit: <commit>
+xcode_version: <xcodebuild -version>
+ios_runtime: <simulator-or-device-runtime>
+bundle_id: com.gpuf.iossimtest
+model: Llama-3.2-1B-Instruct-Q8_0.gguf
+server_addr: <redacted-or-local>
+control_port: 17100
+proxy_port: 17101
+tls: true
+tls_server_name: localhost
+cert_sha256_pin: <redacted-or-test-pin>
+command: gpuf-c/examples/ios_sim_test/run_ios_sim_tls_test.sh
+exit_code: 0
+
+--- raw script output ---
+<unmodified run_ios_sim_test.sh or run_ios_sim_tls_test.sh output>
+
+--- raw iOS Console / log stream output ---
+<unmodified Xcode Console export or log stream output>
+```
+
+The raw log must show model discovery/loading, `Starting remote worker ... tls: true/false`, callback or status updates, and `get_remote_worker_status`/started state. It must not contain `Model not found`, `start_remote_worker failed`, callback registration failure, task-start failure, TLS policy errors, private keys, tokens, production client IDs, or production endpoint secrets.
+
 Current sandbox re-query of `xcrun simctl list devices` failed with `CoreSimulatorService connection became invalid`, so this report does not claim a new simulator runtime pass on 2026-06-10.
 
 ## TLS Evidence
