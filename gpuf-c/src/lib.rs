@@ -601,11 +601,11 @@ fn real_llama_free(ctx: *mut llama_context) {
 //
 #[cfg(target_os = "android")]
 fn safe_llama_tokenize_with_pool(
-    ctx: *mut llama_context,
-    text: *const c_char,
-    tokens: *mut LlamaToken,
-    n_max_tokens: c_int,
-    add_bos: bool,
+    _ctx: *mut llama_context,
+    _text: *const c_char,
+    _tokens: *mut LlamaToken,
+    _n_max_tokens: c_int,
+    _add_bos: bool,
 ) -> c_int {
     // Temporarily disabled - use safe_tokenize instead
     0
@@ -1954,7 +1954,7 @@ pub extern "C" fn gpuf_load_multimodal_model(
         }
 
         // Initialize libmtmd context
-        let ctx_params = MtmdContextParams {
+        let _ctx_params = MtmdContextParams {
             use_gpu: true,
             print_timings: false,
             n_threads: DEFAULT_MTMD_THREADS,
@@ -2182,7 +2182,7 @@ pub extern "C" fn gpuf_generate_multimodal(
             return -1;
         }
 
-        let mut result = 0;
+        let result: c_int;
 
         // Check if we have image data
         if !image_data.is_null() && image_size > 0 {
@@ -2201,9 +2201,8 @@ pub extern "C" fn gpuf_generate_multimodal(
                     println!("🔍 Starting multimodal encoding process...");
 
                     // Encode all tokenized chunks into the context
-                    let mut encode_result = 0;
-                    let mut chunk_count = 0;
-                    let mut current_pos: MtmdLlamaPos = 0;
+                    let chunk_count = 0;
+                    let current_pos: MtmdLlamaPos = 0;
 
                     // 🆕 Define new_n_past at higher scope to fix variable access issue
                     let mut new_n_past: MtmdLlamaPos = 0;
@@ -2222,7 +2221,7 @@ pub extern "C" fn gpuf_generate_multimodal(
                         pre_encode_n_ctx, pre_encode_vocab
                     );
 
-                    encode_result = mtmd_helper_eval_chunks(
+                    let encode_result = mtmd_helper_eval_chunks(
                         mtmd_ctx,
                         ctx,
                         chunks as *mut c_void,
@@ -2256,8 +2255,6 @@ pub extern "C" fn gpuf_generate_multimodal(
 
                     if encode_result == 0 {
                         println!("✅ Multimodal evaluation successful!");
-                        // Update position for generation
-                        current_pos = new_n_past;
                     } else {
                         println!("❌ Multimodal evaluation failed: {}", encode_result);
                     }
@@ -2609,7 +2606,7 @@ pub extern "C" fn gpuf_generate_multimodal_stream(
             llama_sampler_chain_add(sampler, dist_sampler);
 
             let n_ctx = llama_n_ctx(ctx);
-            let vocab_size = llama_vocab_n_tokens(vocab);
+            let _vocab_size = llama_vocab_n_tokens(vocab);
 
             let mut n_past = new_n_past;
             let mut generated_text = String::new();
@@ -4222,6 +4219,7 @@ pub extern "C" fn start_remote_worker(
     };
 
     // Create args
+    #[cfg_attr(target_os = "android", allow(unused_variables))]
     let args = Args {
         server_addr: server_addr_str.to_string(),
         control_port: control_port as u16,
