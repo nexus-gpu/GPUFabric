@@ -1,19 +1,28 @@
-status: NOT_RUN_SUBSTITUTE_EVIDENCE_ATTACHED_RELEASE_SIGNOFF_REQUIRED
-generated_at_utc: 2026-06-10T06:33:50Z
+status: PASS_LINUX_NIGHTLY_ASAN_TSAN_MOBILE_UNIT_ANDROID_IOS_RUNTIME_SIGNOFF_REQUIRED
+generated_at_utc: 2026-06-10T07:02:54Z
 branch: optimize/gpuf-c
-commit: 51395bcd77c30d96b00843e0bf2eab6bed648a4f
+commit: 66b48fc
 
 Purpose:
   ASAN/TSAN evidence for mobile FFI, callback lifecycle, model/context ownership, and Remote Worker task start/stop lifecycle.
 
 Sanitizer/Miri result:
-  ASAN was not run for iOS or Android in this evidence capture.
-  TSAN was not run for iOS or Android in this evidence capture.
+  Linux nightly ASAN mobile unit coverage was run and passed.
+  Linux nightly TSAN mobile unit coverage was run and passed.
+  Android/iOS device or simulator sanitizer runtime coverage was not run in this evidence capture.
   Active Rust toolchain: stable-x86_64-unknown-linux-gnu from rust-toolchain.toml.
-  Installed Rust components relevant to this check: rust-src only.
-  cargo miri --version result: miri is not available for the stable-x86_64-unknown-linux-gnu toolchain.
+  Sanitizer Rust toolchain: rustc 1.93.0-nightly (3ff30e7ea 2025-11-29), host x86_64-unknown-linux-gnu.
+  Installed nightly components relevant to this check: rust-src, rust-std-x86_64-unknown-linux-gnu.
 
-Targeted non-sanitizer regression result:
+ASAN command/result:
+  Command: env RUSTFLAGS=-Zsanitizer=address ASAN_OPTIONS=detect_leaks=0 cargo +nightly test -Z build-std --target x86_64-unknown-linux-gnu -p gpuf-c mobile_ --lib
+  Result: 10 passed, 0 failed, 35 filtered out.
+
+TSAN command/result:
+  Command: env RUSTFLAGS=-Zsanitizer=thread TSAN_OPTIONS=halt_on_error=1 cargo +nightly test -Z build-std --target x86_64-unknown-linux-gnu -p gpuf-c mobile_ --lib
+  Result: 10 passed, 0 failed, 35 filtered out.
+
+Targeted stable non-sanitizer regression result:
   Command: cargo test -p gpuf-c mobile_ --lib
   Result: 10 passed, 0 failed, 35 filtered out.
   Covered Rust unit tests include mobile TLS policy validation, stable FFI error-code mapping, plaintext control-stream config, and TLS control-stream CA/pin config parsing.
@@ -41,14 +50,15 @@ Android C harness runtime coverage:
   stop_remote_worker returned 0 and emitted handler stop callback.
 
 Risk:
-  Callback and FFI lifecycle bugs can survive compile/link checks.
-  Formal release should run sanitizer coverage for:
+  Callback and FFI lifecycle bugs can survive compile/link checks and host-only unit sanitizers.
+  Formal release should still collect Android/iOS runtime sanitizer or owner-approved substitute coverage for:
     gpuf_register_remote_worker_callback
     start_remote_worker_tasks
     stop_remote_worker
     gpuf_load_model / gpuf_create_context / llama_free / llama_model_free
     TLS control stream setup and teardown
+  The Linux ASAN/TSAN unit runs cover mobile TLS policy/config parsing and stable C ABI error-code mapping, but they do not exercise Android/iOS app wrapper storage, JNI object lifetime, or raw device/simulator callback teardown under sanitizer runtime.
 
 Release recommendation:
-  Treat this file as evidence that sanitizer status is explicitly known and that Android runtime substitute evidence is attached, not as an ASAN/TSAN pass.
-  Formal release should either run ASAN/TSAN on supported platform jobs, or have a release owner explicitly approve the Android C harness logs plus targeted mobile unit tests as the sanitizer substitute.
+  Treat this file as ASAN/TSAN pass evidence for the Linux nightly mobile unit subset.
+  Formal release should additionally attach Android/iOS runtime sanitizer evidence, or have a release owner explicitly approve the Linux ASAN/TSAN unit subset plus Android C harness logs as the mobile runtime sanitizer substitute.
