@@ -390,24 +390,19 @@ impl LlamaEngine {
                     // Sample using the sampler chain
                     let new_token = sampler.sample(&context, -1);
                     sampler.accept(new_token);
+                    let mut token_decoder = encoding_rs::UTF_8.new_decoder();
+                    let piece = model_guard
+                        .token_to_piece(new_token, &mut token_decoder, true, None)
+                        .ok();
 
-                    debug!(
-                        "Token {}: id={}, text={:?}",
-                        i,
-                        new_token,
-                        model_guard
-                            .token_to_str(new_token, llama_cpp_2::model::Special::Tokenize)
-                            .ok()
-                    );
+                    debug!("Token {}: id={}, text={:?}", i, new_token, piece);
 
                     // Check for EOS token
                     if new_token == model_guard.token_eos() {
                         break;
                     }
-
                     // Convert token to string and append
-                    use llama_cpp_2::model::Special;
-                    if let Ok(piece) = model_guard.token_to_str(new_token, Special::Tokenize) {
+                    if let Some(piece) = piece {
                         // Check for stop sequences (ChatML, Llama3, etc.)
                         if piece.contains("<|im_end|>")
                             || piece.contains("<|eot_id|>")
@@ -490,7 +485,7 @@ impl LlamaEngine {
 
             tokio::task::spawn_blocking(move || {
                 use llama_cpp_2::llama_batch::LlamaBatch;
-                use llama_cpp_2::model::{AddBos, Special};
+                use llama_cpp_2::model::AddBos;
                 use llama_cpp_2::sampling::LlamaSampler;
 
                 let context_params = LlamaContextParams::default()
@@ -553,8 +548,10 @@ impl LlamaEngine {
                     if new_token == model_guard.token_eos() {
                         break;
                     }
-
-                    if let Ok(piece) = model_guard.token_to_str(new_token, Special::Tokenize) {
+                    let mut token_decoder = encoding_rs::UTF_8.new_decoder();
+                    if let Ok(piece) =
+                        model_guard.token_to_piece(new_token, &mut token_decoder, true, None)
+                    {
                         if piece.contains("<|im_end|>")
                             || piece.contains("<|eot_id|>")
                             || piece.contains("<|end_of_text|>")

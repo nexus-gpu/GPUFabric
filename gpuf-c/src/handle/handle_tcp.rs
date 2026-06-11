@@ -1231,7 +1231,6 @@ impl ClientWorker {
                                     &mut outbound_seq,
                                 )
                                 .await?;
-                                seq = seq.wrapping_add(1);
                             }
                         }
                     }
@@ -3810,7 +3809,7 @@ impl WorkerHandle for ClientWorker {
                                     }
                                 }
 
-                                if let Some(e) = last_err {
+                                if last_err.is_some() {
                                     #[cfg(not(target_os = "android"))]
                                     {
                                         if let Some(turn_config) =
@@ -3897,10 +3896,15 @@ impl WorkerHandle for ClientWorker {
                                         }
                                     }
 
+                                    let error_message = last_err
+                                        .as_ref()
+                                        .map(|e| e.to_string())
+                                        .unwrap_or_else(|| "unknown error".to_string());
+
                                     let failed = CommandV2::P2PConnectionFailed {
                                         peer_id: source_client_id,
                                         connection_id,
-                                        error: format!("connect failed: {}", e),
+                                        error: format!("connect failed: {}", error_message),
                                     };
                                     self.send_command_v2(failed).await?;
                                 }

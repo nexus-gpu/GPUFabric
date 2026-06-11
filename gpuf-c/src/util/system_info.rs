@@ -432,7 +432,7 @@ fn read_disk_usage() -> Option<u32> {
     not(target_os = "android"),
     not(feature = "cuda")
 ))]
-pub async fn collect_device_info(engine_type: common::EngineType) -> Result<(DevicesInfo, u32)> {
+pub async fn collect_device_info(_engine_type: common::EngineType) -> Result<(DevicesInfo, u32)> {
     debug!("Using system API for device info (NVML available but not CUDA-specific).");
 
     #[cfg(feature = "vulkan")]
