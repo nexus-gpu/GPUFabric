@@ -1,13 +1,17 @@
 use super::Engine;
 use anyhow::{anyhow, Result};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+#[cfg(not(target_os = "android"))]
+use std::sync::Mutex;
 use tokio::fs;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 use futures_util::Stream;
+#[cfg(not(target_os = "android"))]
 use tokio::sync::mpsc;
+#[cfg(not(target_os = "android"))]
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::util::cmd::LlamaSplitModeArg;
@@ -276,6 +280,9 @@ impl LlamaEngine {
         if !self.is_initialized {
             return Err(anyhow!("Engine not initialized - call load_model() first"));
         }
+
+        #[cfg(target_os = "android")]
+        let _ = sampling;
 
         #[cfg(target_os = "android")]
         {
@@ -689,9 +696,9 @@ impl LlamaEngine {
             // On Android, check if SDK has loaded the model
             if self.check_sdk_model_loaded() {
                 self.is_initialized = true;
-                return Ok(());
+                Ok(())
             } else {
-                return Err(anyhow!("Android: Model not loaded by SDK yet"));
+                Err(anyhow!("Android: Model not loaded by SDK yet"))
             }
         }
 
@@ -702,6 +709,7 @@ impl LlamaEngine {
                 self.initialize_model().await?;
             }
         }
+        #[cfg(not(target_os = "android"))]
         Ok(())
     }
 
@@ -817,16 +825,14 @@ impl LlamaEngine {
             let mut output = vec![0u8; 8192];
 
             debug!("Calling SDK inference function");
-            let result = unsafe {
-                crate::gpuf_generate_final_solution_text(
-                    model_ptr,
-                    context_ptr,
-                    prompt_cstr.as_ptr(),
-                    max_tokens as i32,
-                    output.as_mut_ptr() as *mut c_char,
-                    output.len() as i32, // Add missing output_len parameter
-                )
-            };
+            let result = crate::gpuf_generate_final_solution_text(
+                model_ptr,
+                context_ptr,
+                prompt_cstr.as_ptr(),
+                max_tokens as i32,
+                output.as_mut_ptr() as *mut c_char,
+                output.len() as i32, // Add missing output_len parameter
+            );
 
             // Check return code (0 = success)
             if result != 0 {
@@ -875,17 +881,14 @@ impl Engine for LlamaEngine {
                     if !model_ptr.is_null() && !context_ptr.is_null() {
                         info!("Android: Model and context already loaded by SDK");
                         self.is_initialized = true;
-                        return Ok(());
                     } else {
                         info!(
                             "Android: Model not yet loaded by SDK, waiting for SDK initialization"
                         );
-                        // Don't mark as initialized, SDK will handle it
-                        return Ok(());
+                        // Do not mark as initialized; SDK loading is handled externally.
                     }
                 } else {
                     warn!("Android: No model path specified, waiting for SDK to load model");
-                    return Ok(());
                 }
             }
 
@@ -993,9 +996,8 @@ impl Engine for LlamaEngine {
                     status: "loaded_by_sdk".to_string(),
                 });
 
-                // Note: Don't call ensure_initialized() here - SDK will handle model loading
+                // Note: Do not call ensure_initialized() here; SDK will handle model loading.
                 info!("Model path stored for Android SDK loading");
-                return Ok(());
             }
 
             #[cfg(not(target_os = "android"))]

@@ -107,10 +107,7 @@ pub extern "C" fn Java_com_gpuf_c_GPUEngine_cleanup(_env: JNIEnv, _class: JClass
 /// public static native String getSystemInfo();
 #[cfg(target_os = "android")]
 #[no_mangle]
-pub extern "C" fn Java_com_gpuf_c_GPUEngine_getSystemInfo(
-    mut env: JNIEnv,
-    _class: JClass,
-) -> jstring {
+pub extern "C" fn Java_com_gpuf_c_GPUEngine_getSystemInfo(env: JNIEnv, _class: JClass) -> jstring {
     println!("🔥 GPUFabric JNI: Getting system info");
 
     let info_cstr = gpuf_system_info();
@@ -538,7 +535,7 @@ pub extern "C" fn Java_com_gpuf_c_GPUEngine_loadModelNew(
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_gpuf_c_GPUEngine_getCurrentModel(
-    mut env: JNIEnv,
+    env: JNIEnv,
     _class: JClass,
 ) -> jstring {
     println!("🔥 GPUFabric JNI: Getting current model");
@@ -560,7 +557,7 @@ pub extern "C" fn Java_com_gpuf_c_GPUEngine_getCurrentModel(
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_gpuf_c_GPUEngine_getModelLoadingStatus(
-    mut env: JNIEnv,
+    env: JNIEnv,
     _class: JClass,
 ) -> jstring {
     println!("🔥 GPUFabric JNI: Getting model loading status");
@@ -802,7 +799,7 @@ pub extern "C" fn Java_com_gpuf_c_GPUEngine_generateTextWithSampling(
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_gpuf_c_GPUEngine_isInferenceServiceHealthy(
-    mut env: JNIEnv,
+    env: JNIEnv,
     _class: JClass,
 ) -> jstring {
     println!("🔥 GPUFabric JNI: Checking inference service health");

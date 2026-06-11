@@ -6,11 +6,13 @@ use sha1::Sha1;
 use sha2::Sha256;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
+#[cfg(not(target_os = "android"))]
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncReadExt;
 use tokio::net::UdpSocket;
 use tokio::time::timeout;
+#[cfg(not(target_os = "android"))]
 use url::Url;
 
 use anyhow::{anyhow, Result};

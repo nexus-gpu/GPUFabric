@@ -21,13 +21,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 #[cfg(target_os = "android")]
-use super::{Args, AutoWorker, WorkerHandle};
+use super::{Args, WorkerHandle};
 #[cfg(target_os = "android")]
 use common::{DevicesInfo, EngineType};
 #[cfg(target_os = "android")]
 use std::io::Write;
-#[cfg(target_os = "android")]
-use tokio::task::JoinHandle;
 #[cfg(target_os = "android")]
 use tracing::info;
 
@@ -804,7 +802,7 @@ pub async fn perform_android_login_with_tls(
             .await
             .map_err(|e| anyhow!("Failed to collect system info: {}", e))?;
 
-    let (devices_info, device_count) =
+    let (devices_info, _device_count) =
         crate::util::system_info::collect_device_info(common::EngineType::Llama)
             .await
             .map_err(|e| anyhow!("Failed to collect device info: {}", e))?;
@@ -962,9 +960,9 @@ pub async fn start_worker_tasks() -> Result<()> {
         .map_err(|_| anyhow!("Failed to set stop signal"))?;
 
     // Spawn heartbeat task using native thread with full heartbeat logic
-    let heartbeat_stream = tcp_stream.clone();
+    let _heartbeat_stream = tcp_stream.clone();
     let heartbeat_stop_signal = stop_signal.clone();
-    let heartbeat_handle = thread::spawn(move || {
+    let _heartbeat_handle = thread::spawn(move || {
         println!("🔧 Android: Heartbeat thread started");
 
         loop {
@@ -1100,7 +1098,7 @@ pub async fn start_worker_tasks() -> Result<()> {
     // Spawn integrated handler task using native thread
     let handler_stream = tcp_stream.clone();
     let handler_stop_signal = stop_signal.clone();
-    let handler_handle = thread::spawn(move || -> Result<()> {
+    let _handler_handle = thread::spawn(move || -> Result<()> {
         println!("🔧 Android: Integrated handler thread started");
         std::io::stdout().flush().ok();
 
@@ -1828,7 +1826,7 @@ pub async fn start_worker_tasks_with_callback_ptr(callback: Option<StatusCallbac
 
     // Collect device information dynamically in async context
     println!("🔧 Android: Collecting device information...");
-    let (devices_info, device_count) =
+    let (devices_info, _device_count) =
         crate::util::system_info::collect_device_info(common::EngineType::Llama)
             .await
             .map_err(|e| anyhow!("Failed to collect device info: {}", e))?;
@@ -1844,10 +1842,10 @@ pub async fn start_worker_tasks_with_callback_ptr(callback: Option<StatusCallbac
 
     // Clone device info for use in threads
     let device_info_for_heartbeat = devices_info.clone();
-    let device_info_for_handler = devices_info.clone();
+    let _device_info_for_handler = devices_info.clone();
 
     // Spawn heartbeat task using native thread with full heartbeat logic
-    let heartbeat_stream = tcp_stream.clone();
+    let _heartbeat_stream = tcp_stream.clone();
     let heartbeat_callback = callback;
     let heartbeat_stop_signal = stop_signal.clone();
     let heartbeat_handle = thread::spawn(move || {
@@ -2044,7 +2042,7 @@ pub async fn start_worker_tasks_with_callback_ptr(callback: Option<StatusCallbac
         // Ensure blocking reads wake up periodically so stop signal can be observed
         // (read_command_sync uses read_exact and can otherwise block forever)
         {
-            if let Ok(mut stream) = handler_stream.lock() {
+            if let Ok(stream) = handler_stream.lock() {
                 let _ = stream.set_read_timeout(Some(Duration::from_secs(1)));
             }
         }

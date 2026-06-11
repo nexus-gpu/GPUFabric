@@ -169,7 +169,7 @@ pub fn get_gpu_count() -> Result<usize, Box<dyn std::error::Error>> {
 }
 
 #[cfg(target_os = "android")]
-pub async fn collect_device_info(engine_type: common::EngineType) -> Result<(DevicesInfo, u32)> {
+pub async fn collect_device_info(_engine_type: common::EngineType) -> Result<(DevicesInfo, u32)> {
     #[cfg(feature = "vulkan")]
     {
         collect_device_info_vulkan().await
@@ -194,8 +194,6 @@ async fn collect_device_info_vulkan() -> Result<(DevicesInfo, u32)> {
 /// Collect real Android device information without Vulkan
 #[cfg(target_os = "android")]
 async fn collect_android_device_info() -> Result<DevicesInfo> {
-    use std::fs;
-
     // Get memory information from /proc/meminfo
     let memtotal_gb = read_memory_info().unwrap_or(0);
 
@@ -206,7 +204,7 @@ async fn collect_android_device_info() -> Result<DevicesInfo> {
     let temp = read_thermal_info().unwrap_or(0);
 
     // Get system usage information
-    let (cpu_usage, memory_usage, disk_usage) = read_system_usage().unwrap_or((25, 45, 60));
+    let (cpu_usage, memory_usage, _disk_usage) = read_system_usage().unwrap_or((25, 45, 60));
 
     // ARM vendor ID for Android devices
     let vendor_id = 0x41; // ARM
@@ -418,7 +416,7 @@ fn read_disk_usage() -> Option<u32> {
     use std::fs;
 
     // Try to get disk usage for the data partition
-    if let Ok(metadata) = fs::metadata("/data") {
+    if fs::metadata("/data").is_ok() {
         // On Android, we can't easily get disk usage without additional syscalls
         // For now, return a reasonable default or try to estimate
         // This is a simplified implementation

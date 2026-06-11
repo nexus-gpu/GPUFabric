@@ -9,6 +9,7 @@ use common::{DevicesInfo, EngineType, OsType};
 #[cfg(feature = "vulkan")]
 use sysinfo;
 
+#[cfg(not(target_os = "android"))]
 use super::log_icon;
 
 // Conditional debug printing: print in all builds
@@ -493,6 +494,8 @@ fn get_accurate_gpu_metrics(
     total_tflops: u16,
     total_memory_gb: u32,
 ) -> (u64, u64, u64, u64) {
+    #[cfg(target_os = "android")]
+    let _ = vendor_id;
     // Try NVML first (most accurate for NVIDIA GPUs)
     #[cfg(all(feature = "nvml", not(target_os = "macos"), not(target_os = "android")))]
     {

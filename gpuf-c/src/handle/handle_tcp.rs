@@ -1,4 +1,5 @@
 use super::*;
+#[cfg(not(target_os = "android"))]
 use crate::handle::handle_udp::{P2PReplayWindow, P2PUdpReassemblyState};
 // LLM engine is not available in lightweight Android version
 #[cfg(not(target_os = "android"))]
@@ -16,14 +17,18 @@ use common::{
 };
 use tokio::io::AsyncWriteExt;
 
+#[cfg(not(target_os = "android"))]
 use futures_util::StreamExt;
 
 use bytes::BytesMut;
 use std::collections::HashMap;
-use std::collections::{HashSet, VecDeque};
+use std::collections::HashSet;
+#[cfg(not(target_os = "android"))]
+use std::collections::VecDeque;
 use std::fs::File;
 use std::io::BufReader;
 use std::net::ToSocketAddrs;
+#[cfg(not(target_os = "android"))]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -399,6 +404,15 @@ impl ClientWorker {
         repeat_last_n: i32,
         min_keep: u32,
     ) -> Result<String> {
+        #[cfg(target_os = "android")]
+        let _ = (
+            temperature,
+            top_k,
+            top_p,
+            repeat_penalty,
+            repeat_last_n,
+            min_keep,
+        );
         #[cfg(not(target_os = "android"))]
         {
             let engine_guard = self.engine.lock().await;
@@ -1408,7 +1422,7 @@ impl ClientWorker {
         #[cfg(not(target_os = "android"))]
         let mut engine: Option<AnyEngine> = None;
         #[cfg(target_os = "android")]
-        let mut engine: Option<()> = None;
+        let _engine: Option<()> = None;
         #[cfg(all(not(target_os = "macos"), not(target_os = "android")))]
         {
             if args.engine_type == EngineType::VLLM {
@@ -3754,6 +3768,8 @@ impl WorkerHandle for ClientWorker {
                                         .await
                                     {
                                         Ok(Ok(stream)) => {
+                                            #[cfg(target_os = "android")]
+                                            let _ = &stream;
                                             let established = CommandV2::P2PConnectionEstablished {
                                                 peer_id: source_client_id,
                                                 connection_id,
@@ -3988,6 +4004,7 @@ pub async fn create_proxy_connection(
     proxy_conn_id: [u8; 16],
     cert_chain_path: String,
 ) -> Result<()> {
+    let _ = &cert_chain_path;
     // DONE: addr is sent to server addr
     let addr_str = format!("{}:{}", addr.to_string(), args.proxy_port);
     let addr = addr_str.to_socket_addrs()?.next().ok_or_else(|| {
@@ -4120,7 +4137,7 @@ pub async fn create_proxy_connection(
     args: Args,
     addr: std::net::IpAddr,
     proxy_conn_id: [u8; 16],
-    cert_chain_path: String,
+    _cert_chain_path: String,
 ) -> Result<()> {
     // Android implementation using native TLS - simplified version
     warn!("Android TLS proxy connections are simplified - full TLS support requires additional configuration");

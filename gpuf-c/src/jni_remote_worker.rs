@@ -10,11 +10,10 @@
 
 #[cfg(target_os = "android")]
 use jni::objects::{GlobalRef, JClass, JObject, JString, JValue};
-use jni::sys::{jboolean, jbyteArray, jfloat, jint, jlong, jstring};
+use jni::sys::{jint, jlong, jstring};
 #[cfg(target_os = "android")]
 use jni::{JNIEnv, JavaVM};
 use std::ffi::{c_char, c_void};
-use std::ptr;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 
@@ -258,7 +257,7 @@ pub extern "C" fn Java_com_gpuf_c_RemoteWorker_setRemoteWorkerModel(
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_gpuf_c_RemoteWorker_registerCallbackEmitter(
-    mut env: JNIEnv,
+    env: JNIEnv,
     _class: JClass,
     emitter: JObject,
 ) -> jint {
@@ -575,7 +574,7 @@ pub extern "C" fn Java_com_gpuf_c_RemoteWorker_startRemoteWorkerTasks(
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_gpuf_c_RemoteWorker_getRemoteWorkerStatus(
-    mut env: JNIEnv,
+    env: JNIEnv,
     _class: JClass,
 ) -> jstring {
     println!("🔥 GPUFabric JNI: Getting remote worker status");
