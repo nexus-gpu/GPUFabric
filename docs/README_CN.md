@@ -127,7 +127,7 @@ cargo run --release --bin gpuf-s -- \
   --proxy-port 17001 \
   --public-port 18080 \
   --api-port 18081 \
-  --database-url "postgres://postgres:password@localhost:5432/GPUFabric" \
+  --database-url "postgres://<db-user>:<db-password>@localhost:5432/<db-name>" \
   --redis-url "redis://127.0.0.1:6379" \
   --bootstrap-server "localhost:9092" \
   --api-key "your-secure-api-key" \
@@ -141,8 +141,8 @@ cargo run --release --bin gpuf-s -- \
 
 ```bash
 cargo run --release --bin gpuf-c -- \
-  --client-id client_A \
-  --server-addr 192.168.1.100 \
+  --client-id <client-id-32-hex> \
+  --server-addr <gpuf-s-host> \
   --control-tls \
   --control-tls-server-name "gpuf.example.internal" \
   --cert-chain-path "ca-cert.pem" \
@@ -185,7 +185,7 @@ docker compose -f docker/gpuf_s_compose.yaml up -d
 
 ```bash
 cargo run --release --bin heartbeat_consumer -- \
-  --database-url "postgres://postgres:password@localhost:5432/GPUFabric" \
+  --database-url "postgres://<db-user>:<db-password>@localhost:5432/<db-name>" \
   --bootstrap-server "localhost:9092" \
   --batch-size 100 \
   --batch-timeout 5
@@ -249,7 +249,7 @@ v1.1.0 为兼容保留明文控制 TCP 默认值；非 loopback 明文连接会�
 你也可以使用环境变量进行配置：
 
 ```bash
-export DATABASE_URL="postgres://postgres:password@localhost:5432/GPUFabric"
+export DATABASE_URL="postgres://<db-user>:<db-password>@localhost:5432/<db-name>"
 export REDIS_URL="redis://localhost:6379"
 export API_KEY="your-api-key"
 export RUST_LOG="gpuf-s=info"

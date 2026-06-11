@@ -150,7 +150,7 @@ cargo build --release --bin heartbeat_consumer
 ./heartbeat_consumer \
   --batch-size 100 \
   --batch-timeout 5 \
-  --database-url "postgres://user:password@localhost/dbname" \
+  --database-url "postgres://<db-user>:<db-password>@localhost/<db-name>" \
   --bootstrap-server "localhost:9092"
 ```
 
@@ -158,7 +158,7 @@ cargo build --release --bin heartbeat_consumer
 |----------|------|---------|-------------|
 | `--batch-size` | usize | 100 | Number of messages to batch before processing |
 | `--batch-timeout` | u64 | 5 | Timeout in seconds before flushing incomplete batches |
-| `--database-url` | string | `postgres://username:password@localhost/database` | PostgreSQL connection string |
+| `--database-url` | string | `postgres://<db-user>:<db-password>@localhost/<db-name>` | PostgreSQL connection string |
 | `--bootstrap-server` | string | `localhost:9092` | Kafka broker address |
 
 ### Environment Variables
@@ -186,7 +186,7 @@ RUST_LOG=info
 ./heartbeat_consumer \
   --batch-size 200 \
   --batch-timeout 10 \
-  --database-url "postgres://postgres:password@localhost:5432/GPUFabric" \
+  --database-url "postgres://<db-user>:<db-password>@localhost:5432/<db-name>" \
   --bootstrap-server "kafka.example.com:9092"
 
 # With custom log level
@@ -582,4 +582,3 @@ psql -U postgres -d GPUFabric -f scripts/db.sql
 
 See [LICENSE](../LICENSE) file for details.
 ```
-

@@ -34,7 +34,7 @@ Examples:
   scripts/create_mobile_tls_cert.sh \
     --out-dir /tmp/gpuf-cert \
     --server-name localhost \
-    --ip 8.140.251.142 \
+    --ip <test-server-ip> \
     --force
 
   # Preferred for a real test environment: validate by DNS name.
@@ -42,7 +42,7 @@ Examples:
     --out-dir /tmp/gpuf-cert \
     --server-name test-gpuf.example.com \
     --dns test-gpuf.example.com \
-    --ip 8.140.251.142 \
+    --ip <test-server-ip> \
     --force
 EOF
 }

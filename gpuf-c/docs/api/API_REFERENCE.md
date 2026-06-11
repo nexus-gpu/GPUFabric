@@ -376,10 +376,10 @@ public class ClientConfig {
 **Example:**
 ```java
 GPUFabricClientSDK sdk = ClientConfig.builder()
-    .serverAddr("192.168.1.100")
+    .serverAddr("<gpuf-s-host>")
     .controlPort(17000)
     .proxyPort(17001)
-    .clientId("android-device-001")
+    .clientId("<client-id-32-hex>")
     .deviceName("My Android Device")
     .autoRegister(true)
     .heartbeatIntervalSecs(30)

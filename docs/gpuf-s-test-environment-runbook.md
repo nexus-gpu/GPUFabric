@@ -105,10 +105,10 @@ proxy address rather than `127.0.0.1` inside the build container:
 env -u http_proxy -u https_proxy -u all_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
   docker compose --env-file docker/.env.gpuf-s-test \
   -f docker/gpuf_s_test_compose.yaml build \
-  --build-arg HTTP_PROXY=http://172.17.0.1:7897 \
-  --build-arg HTTPS_PROXY=http://172.17.0.1:7897 \
-  --build-arg http_proxy=http://172.17.0.1:7897 \
-  --build-arg https_proxy=http://172.17.0.1:7897 \
+  --build-arg HTTP_PROXY=http://<host-reachable-proxy>:<proxy-port> \
+  --build-arg HTTPS_PROXY=http://<host-reachable-proxy>:<proxy-port> \
+  --build-arg http_proxy=http://<host-reachable-proxy>:<proxy-port> \
+  --build-arg https_proxy=http://<host-reachable-proxy>:<proxy-port> \
   gpuf-s api-server heartbeat-consumer
 ```
 

@@ -827,7 +827,7 @@ main() {
             curl -O https://pub-3ff97e8b168145679bc0e4e373287108.r2.dev/mac/gpuf-c
             ;;
         cygwin*|mingw*|msys*|nt|win*)
-            #curl -O https://pub-3ff97e8b168145679bc0e4e373287108.r2.dev/windows/gpuf-c.exe
+            #curl -O https://<artifact-host>/windows/gpuf-c.exe
             ;;
         *)
             log "${RED}not support os: $OS${NC}"

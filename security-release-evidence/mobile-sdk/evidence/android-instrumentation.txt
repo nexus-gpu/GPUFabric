@@ -13,7 +13,7 @@ Current result:
   Raw runtime log: security-release-evidence/mobile-sdk/evidence/android-real-device-inference-runtime.log
   Raw plaintext worker log: security-release-evidence/mobile-sdk/evidence/android-remote-worker-plain-runtime.log
   Raw TLS worker log: security-release-evidence/mobile-sdk/evidence/android-remote-worker-tls-runtime.log
-  adb device: 66J5T19611000157, model HMA-AL00, Android 10, arm64-v8a.
+  adb device: <android-device-id-redacted>, model HMA-AL00, Android 10, arm64-v8a.
   SDK under test: target/gpufabric-android-sdk-v9.0.0.
   Model under test: TinyLlama GGUF test model, path redacted in the evidence log.
   TLS trust material: docker/ca-cert.pem copied to /data/local/tmp/gpuf_test/control-ca.pem; server name localhost.

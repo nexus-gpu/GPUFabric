@@ -113,7 +113,7 @@ cargo run --release --bin gpuf-s -- \
   --proxy-port 17001 \
   --public-port 18080 \
   --api-port 18081 \
-  --database-url "postgres://postgres:password@localhost:5432/GPUFabric" \
+  --database-url "postgres://<db-user>:<db-password>@localhost:5432/<db-name>" \
   --redis-url "redis://127.0.0.1:6379" \
   --bootstrap-server "localhost:9092" \
   --api-key "your-secure-api-key" \
@@ -125,12 +125,12 @@ cargo run --release --bin gpuf-s -- \
 
 ```bash
 # Basic client
-cargo run --release --bin gpuf-c -- --client-id client_A
+cargo run --release --bin gpuf-c -- --client-id <client-id-32-hex>
 
 # With custom configuration
 cargo run --release --bin gpuf-c -- \
-  --client-id client_A \
-  --server-addr 192.168.1.100 \
+  --client-id <client-id-32-hex> \
+  --server-addr <gpuf-s-host> \
   --control-tls \
   --control-tls-server-name "gpuf.example.internal" \
   --cert-chain-path "ca-cert.pem" \
@@ -164,7 +164,7 @@ docker compose -f docker/gpuf_s_compose.yaml up -d
 
 ```bash
 cargo run --release --bin heartbeat_consumer -- \
-  --database-url "postgres://postgres:password@localhost:5432/GPUFabric" \
+  --database-url "postgres://<db-user>:<db-password>@localhost:5432/<db-name>" \
   --bootstrap-server "localhost:9092" \
   --batch-size 100 \
   --batch-timeout 5
@@ -245,7 +245,7 @@ The gpuf-s server supports comprehensive configuration via command-line argument
 You can also configure using environment variables:
 
 ```bash
-export DATABASE_URL="postgres://postgres:password@localhost:5432/GPUFabric"
+export DATABASE_URL="postgres://<db-user>:<db-password>@localhost:5432/<db-name>"
 export REDIS_URL="redis://localhost:6379"
 export API_KEY="your-api-key"
 export RUST_LOG="gpuf-s=info"

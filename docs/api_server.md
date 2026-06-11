@@ -120,7 +120,7 @@ Get all clients for a user with support for multiple filter conditions.
     "total": 5,
     "devices": [
       {
-        "client_id": "6e1131b4b9cc454aa6ce3294ab860b2d",
+        "client_id": "<client-id-32-hex>",
         "client_name": "GPU Server 1",
         "client_status": "online",
         "os_type": "Linux",
@@ -246,7 +246,7 @@ Get detailed device information for a specific client, including system informat
 #### Request Example
 
 ```bash
-curl "http://localhost:18081/api/user/client_device_detail?user_id=12&client_id=6e1131b4b9cc454aa6ce3294ab860b2d"
+curl "http://localhost:18081/api/user/client_device_detail?user_id=12&client_id=<client-id-32-hex>"
 ```
 
 ---
@@ -306,7 +306,7 @@ curl -X POST http://localhost:18081/api/user/edit_client_info \
   -H "Content-Type: application/json" \
   -d '{
     "user_id": "12",
-    "client_id": "6e1131b4b9cc454aa6ce3294ab860b2d",
+    "client_id": "<client-id-32-hex>",
     "name": "Updated Client Name",
     "client_status": "maintenance"
   }'
@@ -385,7 +385,7 @@ Get historical monitoring data for clients, including daily statistics.
   "success": true,
   "data": [
     {
-      "client_id": "6e1131b4b9cc454aa6ce3294ab860b2d",
+      "client_id": "<client-id-32-hex>",
       "client_name": "GPU Server 1",
       "created_at": "2025-07-01T10:00:00",
       "updated_at": "2025-07-29T17:55:48",
@@ -429,7 +429,7 @@ Get historical monitoring data for clients, including daily statistics.
 
 ```bash
 curl "http://localhost:18081/api/user/client_monitor?user_id=12"
-curl "http://localhost:18081/api/user/client_monitor?user_id=12&client_id=6e1131b4b9cc454aa6ce3294ab860b2d"
+curl "http://localhost:18081/api/user/client_monitor?user_id=12&client_id=<client-id-32-hex>"
 ```
 
 ---
@@ -456,7 +456,7 @@ Get client heartbeat health information with support for date range queries.
   "success": true,
   "data": [
     {
-      "client_id": "6e1131b4b9cc454aa6ce3294ab860b2d",
+      "client_id": "<client-id-32-hex>",
       "client_name": "GPU Server 1",
       "timestamp": "2025-07-29T17:55:48.826362Z",
       "cpu_usage": 45,
@@ -488,7 +488,7 @@ Get client heartbeat health information with support for date range queries.
 
 ```bash
 curl "http://localhost:18081/api/user/client_health?user_id=12"
-curl "http://localhost:18081/api/user/client_health?user_id=12&client_id=6e1131b4b9cc454aa6ce3294ab860b2d&start_date=2025-07-01&end_date=2025-07-29"
+curl "http://localhost:18081/api/user/client_health?user_id=12&client_id=<client-id-32-hex>&start_date=2025-07-01&end_date=2025-07-29"
 ```
 
 ---
@@ -638,7 +638,7 @@ curl -X POST http://localhost:18081/api/user/insert_client \
   -H "Content-Type: application/json" \
   -d '{
     "user_id": "12",
-    "client_id": "6e1131b4b9cc454aa6ce3294ab860b2d",
+    "client_id": "<client-id-32-hex>",
     "client_status": "online",
     "os_type": "Linux",
     "name": "GPU Server 1"
@@ -648,14 +648,14 @@ curl -X POST http://localhost:18081/api/user/insert_client \
 curl "http://localhost:18081/api/user/client_list?user_id=12"
 
 # 3. Get client details
-curl "http://localhost:18081/api/user/client_device_detail?user_id=12&client_id=6e1131b4b9cc454aa6ce3294ab860b2d"
+curl "http://localhost:18081/api/user/client_device_detail?user_id=12&client_id=<client-id-32-hex>"
 
 # 4. Update client information
 curl -X POST http://localhost:18081/api/user/edit_client_info \
   -H "Content-Type: application/json" \
   -d '{
     "user_id": "12",
-    "client_id": "6e1131b4b9cc454aa6ce3294ab860b2d",
+    "client_id": "<client-id-32-hex>",
     "name": "Updated GPU Server 1",
     "client_status": "maintenance"
   }'

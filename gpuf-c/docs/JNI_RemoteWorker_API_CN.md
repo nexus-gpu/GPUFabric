@@ -181,7 +181,7 @@ public static native int startRemoteWorker(
 | `controlPort` | int | 控制端口号<br>例如: `17000` |
 | `proxyPort` | int | 代理端口号<br>例如: `17001` |
 | `workerType` | String | 工作器类型<br>可选值: `"TCP"` 或 `"WS"` (WebSocket) |
-| `clientId` | String | 客户端唯一标识符（32位十六进制字符）<br>例如: `"50ef7b5e7b5b4c79991087bb9f62cef1"` |
+| `clientId` | String | 客户端唯一标识符（32位十六进制字符）<br>例如: `"<client-id-32-hex>"` |
 
 **返回值**:
 - `0`: 成功连接到服务器
@@ -200,7 +200,7 @@ int result = RemoteWorker.startRemoteWorker(
     17000,            // 控制端口
     17001,            // 代理端口
     "TCP",            // 连接类型
-    "50ef7b5e7b5b4c79991087bb9f62cef1"  // 客户端ID
+    "<client-id-32-hex>"  // 客户端ID
 );
 if (result == 0) {
     Log.i("GPUFabric", "远程工作器启动成功");
@@ -257,7 +257,7 @@ int result = RemoteWorker.startRemoteWorkerWithTls(
     17000,
     17001,
     "TCP",
-    "50ef7b5e7b5b4c79991087bb9f62cef1",
+    "<client-id-32-hex>",
     "/data/user/0/com.example/files/gpuf-ca.pem",
     "gpuf.example.internal",
     ""
@@ -437,7 +437,7 @@ result = RemoteWorker.startRemoteWorker(
     17000,
     17001,
     "TCP",
-    "50ef7b5e7b5b4c79991087bb9f62cef1"
+    "<client-id-32-hex>"
 );
 if (result != 0) {
     Log.e("GPUFabric", "工作器启动失败");
@@ -709,4 +709,4 @@ Android 应用需要以下权限：
 如有问题，请查看：
 - GitHub Issues: https://github.com/your-repo/GPUFabric
 - 文档: https://your-docs-site.com
-- 邮件: support@gpufabric.com
+- 邮件: <support-email>

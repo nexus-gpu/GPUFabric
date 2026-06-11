@@ -36,11 +36,22 @@ Add `gpuf_c_sdk.xcframework` to the iOS target and link these Apple frameworks:
 ```text
 Metal.framework
 Accelerate.framework
+Foundation.framework
+libc++.tbd
 ```
 
 Use the shipped `Headers/gpuf_c.h` from the selected XCFramework slice. The
 iOS header is pure C and does not expose Android/JNI types such as `JNIEnv`,
 `jstring`, `jobject`, or `jclass`.
+
+If Xcode reports Objective-C runtime, pthread, or libSystem symbols explicitly,
+also add `libobjc.tbd` and `libSystem.tbd`; most iOS app targets link these
+automatically.
+
+TLS control-stream support is built into the static archive through the Rust TLS
+dependencies used by `gpuf-c`. App projects do not need to ship separate
+rustls, ring, OpenSSL, or native TLS libraries. The app only supplies trust
+inputs at runtime: CA bundle path, SNI/server name, and optional SHA256 pin.
 
 ## Local Inference API
 
@@ -150,6 +161,69 @@ int start_remote_worker_with_tls(
 If the test or production server still uses plaintext, frontend code does not
 need to call TLS APIs.
 
+TLS policy return codes:
+
+```text
+0   valid
+-1  missing or invalid server name
+-2  missing CA bundle and SHA256 pin
+-3  invalid CA bundle path/content
+-4  invalid SHA256 certificate pin
+-5  invalid UTF-8 in C string inputs
+```
+
+`cert_sha256_pin` accepts 64 hex characters, an optional `sha256:` prefix, or a
+colon-separated SHA256 fingerprint. At least one of `ca_cert_path` or
+`cert_sha256_pin` must be provided.
+
+### Test Environment Parameters
+
+The 2026-06-11 test package includes the test CA bundle at:
+
+```text
+certs/control-ca.pem
+```
+
+Use this template for the current test environment. Fill the concrete endpoint
+and certificate values from the secure deployment handoff, not from committed
+docs:
+
+```text
+server_addr = <test-gpuf-s-host-or-ip>
+control_port = 17100
+proxy_port = 17101
+worker_type = TCP
+control_tls_server_name = <test-control-tls-server-name>
+ca_cert_path = <absolute path to control-ca.pem in the app sandbox or bundle>
+cert_sha256_pin = ""  # optional when the CA bundle is supplied
+client_id = <32-char hex client id assigned by the backend/test environment>
+```
+
+Test CA certificate:
+
+```text
+subject = <test-ca-subject>
+SHA256 fingerprint =
+<test-ca-sha256-fingerprint>
+validity = <test-ca-not-before> to <test-ca-not-after>
+```
+
+Test server certificate:
+
+```text
+subject = <test-server-subject>
+SAN = <test-server-san-list>
+SHA256 fingerprint =
+<test-server-cert-sha256-fingerprint>
+validity = <test-server-not-before> to <test-server-not-after>
+```
+
+Do not use the test CA in production. For production, set `server_addr` to the
+production gpuf-s endpoint, set `control_tls_server_name` to a DNS name covered
+by the production certificate SAN, and ship the production CA bundle or a
+production SHA256 pin. If pinning the leaf server certificate, update the app
+configuration whenever that certificate is rotated.
+
 ## Swift Callback Example
 
 ```swift
@@ -168,8 +242,6 @@ let cb: (@convention(c) (UnsafePointer<CChar>?, UnsafeMutableRawPointer?) -> Voi
 gpuf_register_remote_worker_callback(cb, nil)
 start_remote_worker_tasks()
 ```
-
-## Compatibility Notes
 
 ## Multimodal Status
 

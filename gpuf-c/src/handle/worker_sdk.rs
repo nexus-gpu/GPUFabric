@@ -392,8 +392,12 @@ pub async fn start_worker_tasks_with_callback_ptr(
                 }
             };
 
-            let mut stream = match stream_arc.lock() {
-                Ok(stream) => stream,
+            match stream_arc.lock() {
+                Ok(stream) => {
+                    stream
+                        .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                        .ok();
+                }
                 Err(_) => {
                     consecutive_failures += 1;
                     emit_callback(
@@ -407,15 +411,33 @@ pub async fn start_worker_tasks_with_callback_ptr(
                     std::thread::sleep(std::time::Duration::from_millis(RECONNECT_DELAY_MS));
                     continue;
                 }
-            };
-
-            stream
-                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
-                .ok();
+            }
 
             // Process commands with this stream
             while !handler_stop.load(Ordering::Relaxed) {
-                let cmd = match common::read_command_sync(&mut *stream) {
+                let read_result = {
+                    let mut stream = match stream_arc.lock() {
+                        Ok(stream) => stream,
+                        Err(_) => {
+                            consecutive_failures += 1;
+                            emit_callback(
+                                handler_callback,
+                                &format!(
+                                    "STREAM_ERROR - Control stream mutex poisoned, failures={}",
+                                    consecutive_failures
+                                ),
+                            );
+                            clear_tcp_stream();
+                            std::thread::sleep(std::time::Duration::from_millis(
+                                RECONNECT_DELAY_MS,
+                            ));
+                            break;
+                        }
+                    };
+                    common::read_command_sync(&mut *stream)
+                };
+
+                let cmd = match read_result {
                     Ok(c) => c,
                     Err(e) => {
                         if let Some(ioe) = e.downcast_ref::<std::io::Error>() {
@@ -484,8 +506,33 @@ pub async fn start_worker_tasks_with_callback_ptr(
                             auto_models_device: Vec::new(),
                         };
 
-                        let _ =
-                            common::write_command_sync(&mut *stream, &Command::V1(model_status));
+                        let write_result = {
+                            let mut stream = match stream_arc.lock() {
+                                Ok(stream) => stream,
+                                Err(_) => {
+                                    emit_callback(
+                                        handler_callback,
+                                        "STREAM_ERROR - Control stream mutex poisoned",
+                                    );
+                                    clear_tcp_stream();
+                                    break;
+                                }
+                            };
+                            common::write_command_sync(&mut *stream, &Command::V1(model_status))
+                        };
+
+                        if let Err(e) = write_result {
+                            emit_callback(
+                                handler_callback,
+                                &format!(
+                                    "MODEL_STATUS_FAILED - Error redacted ({} bytes)",
+                                    e.to_string().len()
+                                ),
+                            );
+                            clear_tcp_stream();
+                            break;
+                        }
+
                         emit_callback(handler_callback, "MODEL_STATUS_SENT");
                     }
                     CommandV1::CancelInference { task_id } => {
@@ -517,16 +564,31 @@ pub async fn start_worker_tasks_with_callback_ptr(
                         }
                         emit_callback(handler_callback, &format!("INFERENCE_START - {task_id}"));
                         // Execute inference synchronously and send back chunks.
-                        if let Err(e) = handle_inference_task(
-                            &mut *stream,
-                            task_id.clone(),
-                            &prompt,
-                            effective_max_tokens,
-                            temperature,
-                            std::cmp::min(top_k, i32::MAX as u32) as i32,
-                            top_p,
-                            repeat_penalty,
-                        ) {
+                        let result = {
+                            let mut stream = match stream_arc.lock() {
+                                Ok(stream) => stream,
+                                Err(_) => {
+                                    emit_callback(
+                                        handler_callback,
+                                        "STREAM_ERROR - Control stream mutex poisoned",
+                                    );
+                                    clear_tcp_stream();
+                                    break;
+                                }
+                            };
+                            handle_inference_task(
+                                &mut *stream,
+                                task_id.clone(),
+                                &prompt,
+                                effective_max_tokens,
+                                temperature,
+                                std::cmp::min(top_k, i32::MAX as u32) as i32,
+                                top_p,
+                                repeat_penalty,
+                            )
+                        };
+
+                        if let Err(e) = result {
                             emit_callback(
                                 handler_callback,
                                 &format!("INFERENCE_FAILED - {task_id} - {e}"),
@@ -563,16 +625,31 @@ pub async fn start_worker_tasks_with_callback_ptr(
 
                         let prompt = build_chat_prompt_with_template(&messages);
 
-                        if let Err(e) = handle_inference_task(
-                            &mut *stream,
-                            task_id.clone(),
-                            &prompt,
-                            effective_max_tokens,
-                            temperature,
-                            std::cmp::min(top_k, i32::MAX as u32) as i32,
-                            top_p,
-                            repeat_penalty,
-                        ) {
+                        let result = {
+                            let mut stream = match stream_arc.lock() {
+                                Ok(stream) => stream,
+                                Err(_) => {
+                                    emit_callback(
+                                        handler_callback,
+                                        "STREAM_ERROR - Control stream mutex poisoned",
+                                    );
+                                    clear_tcp_stream();
+                                    break;
+                                }
+                            };
+                            handle_inference_task(
+                                &mut *stream,
+                                task_id.clone(),
+                                &prompt,
+                                effective_max_tokens,
+                                temperature,
+                                std::cmp::min(top_k, i32::MAX as u32) as i32,
+                                top_p,
+                                repeat_penalty,
+                            )
+                        };
+
+                        if let Err(e) = result {
                             emit_callback(
                                 handler_callback,
                                 &format!("INFERENCE_FAILED - {task_id} - {e}"),

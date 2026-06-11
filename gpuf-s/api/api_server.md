@@ -61,7 +61,7 @@ curl -X POST "http://<host>:18081/api/user/insert_client" \
   -H "Content-Type: application/json" \
   -d '{
     "user_id": "1",
-    "client_id": "3c04a52d9e424dcc83c06573227a7bf6",
+    "client_id": "<client-id-32-hex>",
     "client_status": "online",
     "os_type": "linux",
     "name": "node-1"
@@ -154,7 +154,7 @@ Get one client’s system and device detail.
 
 ### Example
 ```bash
-curl "http://<host>:18081/api/user/client_device_detail?user_id=1&client_id=3c04a52d9e424dcc83c06573227a7bf6"
+curl "http://<host>:18081/api/user/client_device_detail?user_id=1&client_id=<client-id-32-hex>"
 ```
 
 ---
@@ -181,7 +181,7 @@ curl -X POST "http://<host>:18081/api/user/edit_client_info" \
   -H "Content-Type: application/json" \
   -d '{
     "user_id": "1",
-    "client_id": "3c04a52d9e424dcc83c06573227a7bf6",
+    "client_id": "<client-id-32-hex>",
     "client_status": "online"
   }'
 ```
@@ -339,7 +339,7 @@ Query a user’s points list (based on materialized view `device_points_daily`).
 ### Example
 ```bash
 curl "http://<host>:18081/api/user/points?user_id=1&page=1&page_size=20"
-curl "http://<host>:18081/api/user/points?user_id=1&client_id=50ef7b5e7b5b4c79991087bb9f62cef1"
+curl "http://<host>:18081/api/user/points?user_id=1&client_id=<client-id-32-hex>"
 curl "http://<host>:18081/api/user/points?user_id=1&client_name=node"
 curl "http://<host>:18081/api/user/points?user_id=1&device_id=9860&start_date=2026-02-01&end_date=2026-02-03"
 ```

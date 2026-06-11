@@ -55,7 +55,7 @@ int main() {
         17000,        // control_port
         17001,        // proxy_port
         "TCP",        // worker_type
-        "50ef7b5e7b5b4c79991087bb9f62cef1"  // client_id (32 hex chars)
+        "00112233445566778899aabbccddeeff"  // dummy client_id (32 hex chars)
     );
     
     if (result == 0) {
@@ -177,7 +177,7 @@ int main() {
         17000,        // control_port
         17001,        // proxy_port
         "TCP",        // worker_type
-        "50ef7b5e7b5b4c79991087bb9f62cef1"  // client_id (32 hex chars)
+        "00112233445566778899aabbccddeeff"  // dummy client_id (32 hex chars)
     );
     
     // 设置新模型
