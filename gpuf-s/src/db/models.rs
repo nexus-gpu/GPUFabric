@@ -31,6 +31,7 @@ impl HotModelClass {
     fn align_gpu_memory(mem_mb: u32) -> u32 {
         (mem_mb / GB50_IN_MB) * GB50_IN_MB
     }
+    #[allow(dead_code)]
     pub async fn get_hot_model(&self, mem_total_gb: u32, engine_type: i16) -> Result<String> {
         let model_info = self
             .get_hot_model_with_details(mem_total_gb, engine_type)

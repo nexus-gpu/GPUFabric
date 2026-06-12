@@ -108,3 +108,20 @@ No exception is valid without an owner and expiry date.
 | TBD | TBD | TBD | TBD | TBD |
 
 Current external prerequisite audit: `cosign` and `minisign` are not installed; `gpg` is installed but has no secret keys; `adb devices` lists Android device `<android-device-id-redacted>`; `xcodebuild` and `xcrun` are unavailable on this Linux host. Android packaged SDK inference plus plaintext/TLS Remote Worker C harness logs and Linux nightly ASAN/TSAN mobile unit sanitizer results are attached under `security-release-evidence/mobile-sdk/evidence/`. Production signing proof, iOS/macOS runtime evidence, Android/iOS runtime sanitizer or release-owner substitute approval, and production app-layer credential/logging sign-off must still be attached before formal publication.
+
+## 2026-06-12 Gate Validation (local)
+
+| Check | Result |
+|-------|--------|
+| `cargo fmt --all --check` | ✅ clean |
+| `cargo check -p gpuf-c --lib` | ✅ zero warnings |
+| `cargo check -p gpuf-c --example p2p_sdk_client` | ✅ compiles |
+| `cargo test -p gpuf-c --lib` | ✅ 45 passed / 0 failed |
+| secret scan `rg` | ✅ clean |
+| `bash -n scripts/*.sh` | ✅ syntax ok |
+| `bash -n gpuf-c/install*.sh` | ✅ syntax ok |
+| `bash -n gpuf-c/generate_*.sh` | ✅ syntax ok |
+| `cargo audit` | ⏸ not locally installed (deferred to CI) |
+| `cargo deny check advisories` | ⏸ not locally installed (deferred to CI) |
+| `gitleaks detect` | ⏸ not locally installed (deferred to CI) |
+| android arm64 target check | ✅ zero gpuf-c warnings (prior evidence: `2b594e9`) |

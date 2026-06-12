@@ -489,6 +489,7 @@ pub struct ChatRequestInfo {
     pub model: Option<String>,
     pub request_id: Option<String>,
     pub api_key: Option<String>,
+    #[allow(dead_code)]
     pub content_type: Option<String>,
     // pub reader: R,
 }

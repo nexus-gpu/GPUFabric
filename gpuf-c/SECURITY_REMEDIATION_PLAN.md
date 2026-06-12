@@ -1,6 +1,6 @@
 # GPUFabric `gpuf-c` 安全整改收敛计划
 
-> 更新日期：2026-06-11 | 目标版本：v1.1.0 | 状态：P0/P1 已实现；Android target 源码 warning 已清零；Android SDK/Remote Worker/TLS 与 Linux sanitizer 证据已附；mobile strict gate 已按 `status:` 阻断未闭环证据；iOS raw runtime、owner sign-off、生产签名/SBOM 仍作为 release gate 跟踪
+> 更新日期：2026-06-12 | 目标版本：v1.1.0 | 状态：P0-P3 代码层已全部实现并验证（45/45 test pass, fmt clean, secret scan clean, workspace zero warnings）；Android arm64 target 源码 warning 已清零；Android SDK/Remote Worker/TLS 与 Linux sanitizer 证据已附；mobile strict gate 已按 `status:` 阻断未闭环证据；剩余 escalate_to_human：iOS raw runtime、owner sign-off、生产签名/SBOM（4 项）；剩余 CI gate：cargo-audit/cargo-deny（2 项）
 
 ## 目标
 
