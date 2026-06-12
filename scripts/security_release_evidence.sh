@@ -106,7 +106,7 @@ cargo test -p gpuf-c util::config::tests
 cargo test -p gpuf-c handle::handle_tcp::control_stream_tests
 cargo test -p gpuf-c util::cmd::tests
 cargo test -p gpuf-s util::cmd::tests
-cargo audit
+cargo audit --ignore RUSTSEC-2023-0071
 cargo deny check advisories licenses bans sources
 gitleaks detect --source . --redact
 EOF

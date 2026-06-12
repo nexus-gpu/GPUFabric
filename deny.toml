@@ -12,7 +12,11 @@ vulnerability = "deny"
 unmaintained = "warn"
 yanked = "deny"
 notice = "warn"
-ignore = []
+# RUSTSEC-2023-0071: rsa Marvin timing sidechannel, pulled into generated
+# lockfiles through sqlx-mysql even though GPUFabric enables PostgreSQL only.
+# RustSec currently lists no fixed upgrade. Re-review by 2026-09-30 or when
+# sqlx/rsa publishes a remediation.
+ignore = ["RUSTSEC-2023-0071"]
 
 [licenses]
 unlicensed = "deny"
