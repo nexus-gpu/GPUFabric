@@ -1256,7 +1256,6 @@ impl ClientWorker {
                             &mut outbound_seq,
                         )
                         .await?;
-                        seq = seq.wrapping_add(1);
                     }
 
                     let done = Command::V2(CommandV2::P2PInferenceDone {

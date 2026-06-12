@@ -40,6 +40,159 @@ fn udp_encode_command(command: &Command) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+fn udp_decode_command(datagram: &[u8]) -> Result<Command> {
+    if datagram.len() < 4 {
+        return Err(anyhow!("udp datagram too short"));
+    }
+    let len = u32::from_be_bytes([datagram[0], datagram[1], datagram[2], datagram[3]]) as usize;
+    if datagram.len() < 4 + len {
+        return Err(anyhow!("udp datagram truncated"));
+    }
+    let config = bincode::config::standard()
+        .with_fixed_int_encoding()
+        .with_little_endian();
+    let (cmd, _) = bincode::decode_from_slice(&datagram[4..4 + len], config)
+        .map_err(|e| anyhow!("Failed to deserialize command: {}", e))?;
+    Ok(cmd)
+}
+
+fn parse_client_id_hex(s: &str) -> Result<[u8; 16]> {
+    let s = s.trim();
+    if s.len() != 32 {
+        return Err(anyhow!(
+            "client_id must be 32 hex characters, got {}",
+            s.len()
+        ));
+    }
+    let mut out = [0u8; 16];
+    for i in 0..16 {
+        out[i] = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16)
+            .map_err(|e| anyhow!("invalid hex in client_id: {}", e))?;
+    }
+    Ok(out)
+}
+
+fn stun_new_txid() -> [u8; 12] {
+    uuid::Uuid::new_v4().as_bytes()[..12]
+        .try_into()
+        .unwrap_or([0u8; 12])
+}
+
+fn stun_write_attr(buf: &mut Vec<u8>, attr_type: u16, value: &[u8]) {
+    buf.extend_from_slice(&attr_type.to_be_bytes());
+    buf.extend_from_slice(&(value.len() as u16).to_be_bytes());
+    buf.extend_from_slice(value);
+    let pad = (4 - (value.len() % 4)) % 4;
+    if pad != 0 {
+        buf.extend(std::iter::repeat_n(0u8, pad));
+    }
+}
+
+fn stun_build_message(
+    msg_type: u16,
+    txid: [u8; 12],
+    attrs: &[(&u16, Vec<u8>)],
+    mi: Option<(&str, &str, &str)>,
+    fingerprint: bool,
+) -> Vec<u8> {
+    let mut body = Vec::new();
+    for (t, v) in attrs {
+        stun_write_attr(&mut body, **t, v);
+    }
+
+    let mut header = Vec::with_capacity(20);
+    header.extend_from_slice(&msg_type.to_be_bytes());
+    header.extend_from_slice(&0u16.to_be_bytes());
+    header.extend_from_slice(&0x2112A442u32.to_be_bytes());
+    header.extend_from_slice(&txid);
+
+    let mut msg = header;
+    msg.extend_from_slice(&body);
+
+    if let Some((username, realm, password)) = mi {
+        let key_src = format!("{}:{}:{}", username, realm, password);
+        let key = md5::compute(key_src.as_bytes());
+
+        let mi_attr_len = 20usize;
+        let mi_total = 4 + mi_attr_len;
+        let fp_total = if fingerprint { 8 } else { 0 };
+        let new_len = (msg.len() - 20 + mi_total + fp_total) as u16;
+        msg[2..4].copy_from_slice(&new_len.to_be_bytes());
+
+        let mut tmp = msg.clone();
+        tmp.extend_from_slice(&0x0008u16.to_be_bytes());
+        tmp.extend_from_slice(&(mi_attr_len as u16).to_be_bytes());
+        tmp.extend_from_slice(&[0u8; 20]);
+
+        let mut mac = Hmac::<Sha1>::new_from_slice(&key.0).expect("hmac key");
+        mac.update(&tmp);
+        let out = mac.finalize().into_bytes();
+
+        msg.extend_from_slice(&0x0008u16.to_be_bytes());
+        msg.extend_from_slice(&(mi_attr_len as u16).to_be_bytes());
+        msg.extend_from_slice(&out);
+    } else {
+        let new_len = (msg.len() - 20) as u16;
+        msg[2..4].copy_from_slice(&new_len.to_be_bytes());
+    }
+
+    if fingerprint {
+        let new_len = (msg.len() - 20 + 8) as u16;
+        msg[2..4].copy_from_slice(&new_len.to_be_bytes());
+
+        let mut crc = Crc32::new();
+        crc.update(&msg);
+        let fp = crc.finalize() ^ 0x5354554e;
+        msg.extend_from_slice(&0x8028u16.to_be_bytes());
+        msg.extend_from_slice(&4u16.to_be_bytes());
+        msg.extend_from_slice(&fp.to_be_bytes());
+    }
+
+    msg
+}
+
+async fn stun_read_message<S: tokio::io::AsyncRead + Unpin>(stream: &mut S) -> Result<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
+    let mut header = [0u8; 20];
+    AsyncReadExt::read_exact(stream, &mut header).await?;
+    let len = u16::from_be_bytes([header[2], header[3]]) as usize;
+    let mut body = vec![0u8; len];
+    AsyncReadExt::read_exact(stream, &mut body).await?;
+    let mut msg = Vec::with_capacity(20 + len);
+    msg.extend_from_slice(&header);
+    msg.extend_from_slice(&body);
+    Ok(msg)
+}
+
+fn stun_parse_xor_addr(v: &[u8], txid: &[u8; 12]) -> Option<std::net::SocketAddr> {
+    if v.len() < 8 {
+        return None;
+    }
+    let family = v[1];
+    let xport = u16::from_be_bytes([v[2], v[3]]);
+    let port = xport ^ 0x2112;
+    if family == 0x01 {
+        let xaddr = u32::from_be_bytes([v[4], v[5], v[6], v[7]]);
+        let addr = xaddr ^ 0x2112A442;
+        let ip = std::net::Ipv4Addr::from(addr);
+        return Some(std::net::SocketAddr::new(ip.into(), port));
+    }
+    if family == 0x02 && v.len() >= 20 {
+        let mut x = [0u8; 16];
+        x.copy_from_slice(&v[4..20]);
+        let mut mask = [0u8; 16];
+        mask[..4].copy_from_slice(&0x2112A442u32.to_be_bytes());
+        mask[4..].copy_from_slice(txid);
+        let mut out = [0u8; 16];
+        for i in 0..16 {
+            out[i] = x[i] ^ mask[i];
+        }
+        let ip = std::net::Ipv6Addr::from(out);
+        return Some(std::net::SocketAddr::new(ip.into(), port));
+    }
+    None
+}
+
 const P2P_UDP_MAGIC: [u8; 4] = *b"P2PU";
 const P2P_UDP_VERSION: u8 = 2;
 const P2P_UDP_FLAG_ACK: u8 = 0x01;
@@ -855,6 +1008,22 @@ async fn turn_connection_bind(
     Ok(tls)
 }
 
+#[derive(Parser, Debug, Clone)]
+struct Args {
+    #[arg(long)]
+    target_client_id: String,
+    #[arg(long)]
+    source_client_id: Option<String>,
+    #[arg(long, default_value = "127.0.0.1")]
+    server_addr: String,
+    #[arg(long, default_value_t = 11434)]
+    control_port: u16,
+    #[arg(long, default_value = "Hello, world!")]
+    prompt: String,
+    #[arg(long, default_value_t = 50)]
+    max_tokens: u32,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -902,10 +1071,10 @@ async fn main() -> Result<()> {
                 turn_urls,
                 turn_username,
                 turn_password,
-                data_plane_secret,
+                data_plane_secret: secret,
                 ..
             }) if cid == connection_id => {
-                data_plane_secret = Some(data_plane_secret.into_inner());
+                data_plane_secret = Some(secret.into_inner());
                 turn_cfg = Some((turn_urls, turn_username, turn_password.into_inner()));
             }
             Command::V2(CommandV2::P2PCandidates {

@@ -424,7 +424,7 @@ impl Engine for VLLMEngine {
 #[tokio::test]
 async fn test_pull_model_success() {
     use crate::util;
-    util::init_logging();
+    let _ = tracing_subscriber::fmt().try_init();
 
     let mut engine = VLLMEngine::new(None, None);
     engine.models_name = vec!["facebook/opt-125m".to_string()];
