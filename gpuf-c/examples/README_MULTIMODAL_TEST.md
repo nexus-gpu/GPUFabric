@@ -10,7 +10,7 @@
 ### 方法 1: 使用自动化脚本（推荐）
 
 ```bash
-cd /home/jack/codedir/GPUFabric/gpuf-c/examples
+cd <repo>/gpuf-c/examples
 ./build_and_test_multimodal.sh
 ```
 
@@ -26,7 +26,7 @@ cd /home/jack/codedir/GPUFabric/gpuf-c/examples
 #### 1. 编译测试程序
 
 ```bash
-cd /home/jack/codedir/GPUFabric/gpuf-c/examples
+cd <repo>/gpuf-c/examples
 
 $NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang \
   test_multimodal_android.c \
@@ -48,8 +48,8 @@ adb push test_multimodal_android /data/local/tmp/
 adb shell chmod +x /data/local/tmp/test_multimodal_android
 
 # 推送模型文件
-adb push /home/jack/SmolVLM-500M-Instruct-Q8_0.gguf /data/local/tmp/
-adb push /home/jack/mmproj-SmolVLM-500M-Instruct-Q8_0.gguf /data/local/tmp/
+adb push "$HOME/SmolVLM-500M-Instruct-Q8_0.gguf" /data/local/tmp/
+adb push "$HOME/mmproj-SmolVLM-500M-Instruct-Q8_0.gguf" /data/local/tmp/
 ```
 
 #### 3. 运行测试

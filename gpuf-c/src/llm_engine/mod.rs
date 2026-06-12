@@ -8,7 +8,7 @@ pub mod vllm_engine;
 
 // Re-export commonly used types
 use crate::util::cmd::EngineType;
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 
 #[cfg(not(target_os = "ios"))]
 pub use llama_engine::LlamaEngine;
@@ -27,18 +27,30 @@ impl LlamaEngine {
 #[cfg(target_os = "ios")]
 impl Engine for LlamaEngine {
     fn init(&mut self) -> impl std::future::Future<Output = Result<()>> + Send {
-        async move { Err(anyhow!("LlamaEngine is not available on iOS in this build")) }
+        async move {
+            Err(anyhow::anyhow!(
+                "LlamaEngine is not available on iOS in this build"
+            ))
+        }
     }
 
     fn set_models(
         &mut self,
         _models: Vec<String>,
     ) -> impl std::future::Future<Output = Result<()>> + Send {
-        async move { Err(anyhow!("LlamaEngine is not available on iOS in this build")) }
+        async move {
+            Err(anyhow::anyhow!(
+                "LlamaEngine is not available on iOS in this build"
+            ))
+        }
     }
 
     fn start_worker(&mut self) -> impl std::future::Future<Output = Result<()>> + Send {
-        async move { Err(anyhow!("LlamaEngine is not available on iOS in this build")) }
+        async move {
+            Err(anyhow::anyhow!(
+                "LlamaEngine is not available on iOS in this build"
+            ))
+        }
     }
 
     fn stop_worker(&mut self) -> impl std::future::Future<Output = Result<()>> + Send {
@@ -49,10 +61,12 @@ use reqwest::Client;
 
 const OLLAMA_DEFAULT_PORT: u16 = 11434;
 const OLLAMA_CONTAINER_NAME: &str = "ollama_engine_container";
+pub(crate) const OLLAMA_DEFAULT_IMAGE: &str = "ollama/ollama:0.5.7";
 
 const VLLM_DEFAULT_PORT: u16 = 8000;
 const VLLM_CONTAINER_NAME: &str = "vllm_engine_container";
 const VLLM_CONTAINER_PATH: &str = "/app/default_template.jinja";
+pub(crate) const VLLM_DEFAULT_IMAGE: &str = "vllm/vllm-openai:v0.8.5";
 
 const DEFAULT_CHAT_TEMPLATE: &str = r#"
 {% if not add_generation_prompt is defined %}
@@ -109,6 +123,7 @@ pub struct VLLMEngine {
     container_id: Option<String>,
     //HUGGING_FACE_HUB_TOKEN
     hugging_face_hub_token: Option<String>,
+    hf_token_file: Option<std::path::PathBuf>,
     chat_template_path: Option<String>,
 }
 
@@ -129,6 +144,7 @@ impl Clone for VLLMEngine {
             gpu_count: self.gpu_count,
             container_id: self.container_id.clone(),
             hugging_face_hub_token: self.hugging_face_hub_token.clone(),
+            hf_token_file: self.hf_token_file.clone(),
             chat_template_path: self.chat_template_path.clone(),
         }
     }

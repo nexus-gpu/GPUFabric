@@ -1,6 +1,7 @@
 use crate::util::system_info;
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use tokio::process::Command;
@@ -11,7 +12,7 @@ use tracing::{debug, error, info, warn};
 
 use super::{
     Engine, VLLMEngine, DEFAULT_CHAT_TEMPLATE, VLLM_CONTAINER_NAME, VLLM_CONTAINER_PATH,
-    VLLM_DEFAULT_PORT,
+    VLLM_DEFAULT_IMAGE, VLLM_DEFAULT_PORT,
 };
 
 macro_rules! setup_tensor_parallel {
@@ -46,6 +47,7 @@ impl VLLMEngine {
             show_worker_log: false,
             base_url: format!("http://localhost:{}", VLLM_DEFAULT_PORT),
             container_id: None,
+            hf_token_file: None,
             #[cfg(not(target_os = "macos"))]
             gpu_count: system_info::get_gpu_count().unwrap_or(0) as u32,
             #[cfg(target_os = "macos")]
@@ -90,7 +92,7 @@ impl VLLMEngine {
 
         // Check if VLLM image exists
         let image_check = Command::new("docker")
-            .args(["inspect", "--type=image", "vllm/vllm-openai:latest"])
+            .args(["inspect", "--type=image", VLLM_DEFAULT_IMAGE])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
@@ -100,7 +102,7 @@ impl VLLMEngine {
         if image_check.is_err() || !image_check.unwrap().success() {
             info!("Pulling VLLM image...");
             let pull_output = Command::new("docker")
-                .args(["pull", "vllm/vllm-openai:latest"])
+                .args(["pull", VLLM_DEFAULT_IMAGE])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()?
@@ -131,17 +133,21 @@ impl VLLMEngine {
         let port = VLLM_DEFAULT_PORT.to_string();
         let volume_flag = format!("{}:/root/.cache/huggingface/hub", model_dir);
 
-        let mut args = vec!["run", "-d", "--rm", &name_flag];
-        #[cfg(not(target_os = "macos"))]
-        {
-            args.extend(["--network", "host", "--ipc", "host"]);
-        }
-
-        // Port mapping for macOS and Windows (host network not supported)
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
-        let port_flag = format!("-p{}:{}", VLLM_DEFAULT_PORT, VLLM_DEFAULT_PORT);
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
-        args.push(&port_flag);
+        let port_flag = format!("127.0.0.1:{}:{}", VLLM_DEFAULT_PORT, VLLM_DEFAULT_PORT);
+        let mut args = vec![
+            "run",
+            "-d",
+            "--rm",
+            &name_flag,
+            "--security-opt",
+            "no-new-privileges:true",
+            "--cap-drop",
+            "ALL",
+            "--ipc",
+            "private",
+            "-p",
+            &port_flag,
+        ];
 
         args.extend(["-v", &volume_flag]);
 
@@ -161,12 +167,17 @@ impl VLLMEngine {
         args.push(template_path.as_str());
 
         let tensor_parallel = setup_tensor_parallel!(args, self.gpu_count);
+        let hf_token_mount;
         if let Some(hugging_face_hub_token) = &self.hugging_face_hub_token {
+            let token_path = write_hf_token_file(hugging_face_hub_token)?;
+            hf_token_mount = format!("{}:/run/secrets/hf_token:ro", token_path.display());
+            self.hf_token_file = Some(token_path);
+            args.push("-v");
+            args.push(&hf_token_mount);
             args.push("-e");
-            args.push("HUGGING_FACE_HUB_TOKEN");
-            args.push(hugging_face_hub_token);
+            args.push("HF_TOKEN_PATH=/run/secrets/hf_token");
         }
-        args.push("vllm/vllm-openai:latest");
+        args.push(VLLM_DEFAULT_IMAGE);
         args.push("--host");
         args.push("0.0.0.0");
         args.push("--port");
@@ -188,7 +199,11 @@ impl VLLMEngine {
             args.push(model);
         }
 
-        debug!("VLLM args: {:?}", args);
+        debug!(
+            "Starting VLLM container with image {}, auth_token_configured={}",
+            VLLM_DEFAULT_IMAGE,
+            self.hugging_face_hub_token.is_some()
+        );
         let output = Command::new("docker")
             .args(&args)
             .stdout(Stdio::piped())
@@ -221,6 +236,9 @@ impl VLLMEngine {
                 .output()
                 .await?;
             info!("VLLM container stopped");
+        }
+        if let Some(path) = &self.hf_token_file {
+            let _ = std::fs::remove_file(path);
         }
         Ok(())
     }
@@ -305,6 +323,48 @@ impl VLLMEngine {
     }
 }
 
+fn write_hf_token_file(token: &str) -> Result<PathBuf> {
+    if token.contains('\0') || token.trim().is_empty() {
+        return Err(anyhow!("invalid HuggingFace token"));
+    }
+
+    let token_dir = std::env::temp_dir().join("gpuf-c-secrets");
+    std::fs::create_dir_all(&token_dir)?;
+    let token_path = token_dir.join(format!(
+        "hf-token-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4().simple()
+    ));
+
+    write_secret_file(&token_path, token.as_bytes())?;
+    Ok(token_path)
+}
+
+#[cfg(unix)]
+fn write_secret_file(path: &Path, contents: &[u8]) -> Result<()> {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(contents)?;
+    file.write_all(b"\n")?;
+    file.sync_all()?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn write_secret_file(path: &Path, contents: &[u8]) -> Result<()> {
+    let mut data = contents.to_vec();
+    data.push(b'\n');
+    std::fs::write(path, data)?;
+    Ok(())
+}
+
 impl Engine for VLLMEngine {
     fn init(&mut self) -> impl std::future::Future<Output = Result<()>> + Send {
         async move {
@@ -364,7 +424,7 @@ impl Engine for VLLMEngine {
 #[tokio::test]
 async fn test_pull_model_success() {
     use crate::util;
-    util::init_logging();
+    let _ = tracing_subscriber::fmt().try_init();
 
     let mut engine = VLLMEngine::new(None, None);
     engine.models_name = vec!["facebook/opt-125m".to_string()];

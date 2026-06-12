@@ -13,10 +13,10 @@ extern "C" {
 #endif
 
 #include <stdint.h>
+#include <stddef.h>
 
 // Basic type definitions
-typedef int32_t jint;
-typedef int64_t jlong;
+typedef void (*gpuf_status_callback)(const char* message, void* user_data);
 
 // Remote Worker Management C API Functions
 
@@ -36,7 +36,7 @@ int set_remote_worker_model(const char* model_path);
  * @param client_id Client ID (32 hex characters)
  * @return 0 on success, negative error code on failure
  */
-int start_remote_worker(const char* server_addr, jint control_port, jint proxy_port, 
+int start_remote_worker(const char* server_addr, int control_port, int proxy_port,
                        const char* worker_type, const char* client_id);
 
 /**
@@ -47,7 +47,7 @@ int start_remote_worker_tasks(void);
 
 /**
  * Start remote worker background tasks with callback support
- * @param callback_ptr Function pointer for status callbacks (cast to jlong)
+ * @param callback Function pointer for status callbacks
  * @return 0 on success, negative error code on failure
  * 
  * Callback signature: void callback(const char* message, void* user_data)
@@ -61,7 +61,18 @@ int start_remote_worker_tasks(void);
  * - "INFERENCE_SUCCESS - Task: xxx-xxx-xxx in XXXms"
  * - "INFERENCE_FAILED - Task: xxx-xxx-xxx - error message"
  */
-int start_remote_worker_tasks_with_callback_ptr(jlong callback_ptr);
+int start_remote_worker_tasks_with_callback_ptr(gpuf_status_callback callback);
+
+/**
+ * Register remote worker status callback.
+ * This is the preferred iOS/Objective-C++ API because the callback is passed as
+ * a typed C function pointer instead of an integer-cast pointer.
+ *
+ * @param callback Function pointer for status callbacks
+ * @param user_data Opaque pointer passed back to the callback
+ * @return 0 on success, negative error code on failure
+ */
+int gpuf_register_remote_worker_callback(gpuf_status_callback callback, void* user_data);
 
 /**
  * Stop remote worker
@@ -75,7 +86,7 @@ int stop_remote_worker(void);
  * @param buffer_size Size of the status buffer
  * @return 0 on success, negative error code on failure
  */
-int get_remote_worker_status(char* status_buffer, jint buffer_size);
+int get_remote_worker_status(char* status_buffer, size_t buffer_size);
 
 #ifdef __cplusplus
 }

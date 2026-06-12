@@ -58,7 +58,11 @@ pub async fn insert_client(
         error!("Invalid user_id or client_id");
         return Err(StatusCode::BAD_REQUEST);
     }
-    info!("Inserting client: {:?}", payload);
+    info!(
+        "Inserting client for user_id_len={} client_id_len={}",
+        payload.user_id.len(),
+        payload.client_id.len()
+    );
 
     let client_id = match payload.client_id.parse::<ClientId>() {
         Ok(client_id) => client_id,
@@ -101,9 +105,10 @@ pub async fn get_user_clients(
     })?;
 
     let client_ids: Vec<String> = devices.iter().map(|d| d.client_id.clone()).collect();
-    let models_map = client::get_loaded_models_batch_from_redis(&app_state.redis_client, &client_ids)
-        .await
-        .unwrap_or_default();
+    let models_map =
+        client::get_loaded_models_batch_from_redis(&app_state.redis_client, &client_ids)
+            .await
+            .unwrap_or_default();
     for d in &mut devices {
         if let Some(models) = models_map.get(&d.client_id) {
             d.loaded_models = models.clone();
@@ -135,9 +140,10 @@ pub async fn get_user_client_status_list(
     })?;
 
     let client_ids: Vec<String> = devices.iter().map(|d| d.client_id.clone()).collect();
-    let models_map = client::get_loaded_models_batch_from_redis(&app_state.redis_client, &client_ids)
-        .await
-        .unwrap_or_default();
+    let models_map =
+        client::get_loaded_models_batch_from_redis(&app_state.redis_client, &client_ids)
+            .await
+            .unwrap_or_default();
     for d in &mut devices {
         if let Some(models) = models_map.get(&d.client_id) {
             d.loaded_models = models.clone();
@@ -366,7 +372,13 @@ pub async fn get_model_download_progress(
                 }
             }
 
-            info!("Model download progress for client {}: {:?}", query.client_id, response);
+            info!(
+                "Model download progress fetched (client_id_len={}, model_present={}, status_present={}, error_present={})",
+                query.client_id.len(),
+                response.model_name.is_some(),
+                response.status.is_some(),
+                response.error.is_some()
+            );
             Ok(Json(ApiResponse::success(response)))
         }
         _ => {

@@ -8,6 +8,8 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+#define DEFAULT_OUTPUT_LIMIT (256 * 1024)
+
 typedef enum ProjectorType {
   Unknown = 0,
   LLaVA = 1,
@@ -74,6 +76,7 @@ typedef struct llama_context_params {
   bool op_offload;
   bool swa_full;
   bool kv_unified;
+  void *samplers;
 } llama_context_params;
 
 typedef struct llama_vocab {
@@ -599,6 +602,21 @@ int gpuf_generate_single_token(const struct llama_model *model,
                                int output_len);
 
 /**
+ * Validate mobile TLS policy inputs before a wrapper enables remote worker TLS.
+ *
+ * Returns:
+ * - 0: valid policy
+ * - -1: missing or invalid server name
+ * - -2: missing CA bundle and SHA256 pin
+ * - -3: invalid CA bundle path/content
+ * - -4: invalid SHA256 certificate pin
+ * - -5: invalid UTF-8 in one of the C strings
+ */
+int gpuf_validate_mobile_tls_policy(const char *ca_cert_path,
+                                    const char *server_name,
+                                    const char *cert_sha256_pin);
+
+/**
  * Start remote worker and initialize global worker (C API)
  */
 int start_remote_worker(const char *server_addr,
@@ -606,6 +624,36 @@ int start_remote_worker(const char *server_addr,
                         int proxy_port,
                         const char *worker_type,
                         const char *client_id);
+
+/**
+ * Start remote worker over TLS and initialize global worker (C API)
+ *
+ * This is additive: `start_remote_worker` keeps the legacy plaintext behavior.
+ * Returns -2 when the TLS CA/SNI/SHA256 pin policy is invalid.
+ */
+int start_remote_worker_with_tls(const char *server_addr,
+                                 int control_port,
+                                 int proxy_port,
+                                 const char *worker_type,
+                                 const char *client_id,
+                                 const char *ca_cert_path,
+                                 const char *control_tls_server_name,
+                                 const char *cert_sha256_pin);
+
+int start_remote_worker_with_tls(const char *_server_addr,
+                                 int _control_port,
+                                 int _proxy_port,
+                                 const char *_worker_type,
+                                 const char *_client_id,
+                                 const char *_ca_cert_path,
+                                 const char *_control_tls_server_name,
+                                 const char *_cert_sha256_pin);
+
+int start_remote_worker(const char *_server_addr,
+                        int _control_port,
+                        int _proxy_port,
+                        const char *_worker_type,
+                        const char *_client_id);
 
 /**
  * Set remote worker model (C API) - Safe Hot Swapping Version
@@ -633,9 +681,13 @@ int start_remote_worker(const char *server_addr,
  */
 int set_remote_worker_model(const char *model_path);
 
+int set_remote_worker_model(const char *_model_path);
+
 /**
  * Start remote worker background tasks (C API)
  */
+int start_remote_worker_tasks(void);
+
 int start_remote_worker_tasks(void);
 
 /**
@@ -643,9 +695,23 @@ int start_remote_worker_tasks(void);
  */
 int start_remote_worker_tasks_with_callback_ptr(void (*callback)(const char*, void*));
 
+int start_remote_worker_tasks_with_callback_ptr(void (*_callback)(const char*, void*));
+
+/**
+ * Register a status callback for remote worker background tasks (C API).
+ *
+ * This is the preferred iOS/Objective-C++ entry point because it keeps callback registration
+ * separate from task startup and preserves a caller-provided `user_data` pointer.
+ */
+int gpuf_register_remote_worker_callback(void (*callback)(const char*, void*), void *user_data);
+
+int gpuf_register_remote_worker_callback(void (*_callback)(const char*, void*), void *_user_data);
+
 /**
  * Stop remote worker and cleanup (C API)
  */
+int stop_remote_worker(void);
+
 int stop_remote_worker(void);
 
 /**
@@ -662,6 +728,8 @@ int stop_remote_worker(void);
  * # Safety
  * Caller must ensure `buffer` is valid and can hold `buffer_size` bytes
  */
+int get_remote_worker_status(char *buffer, size_t buffer_size);
+
 int get_remote_worker_status(char *buffer, size_t buffer_size);
 
 extern const struct llama_model *llama_get_model(const struct llama_context *ctx);
@@ -969,6 +1037,23 @@ void Java_com_gpuf_c_GPUEngine_freeMultimodalModel(JNIEnv _env,
                                                    jlong multimodal_model_ptr);
 
 /**
+ * Java signature:
+ * public static native int validateMobileTlsPolicy(
+ *     String caCertPath,
+ *     String serverName,
+ *     String certSha256Pin
+ * );
+ *
+ * Pass an empty string for caCertPath or certSha256Pin when that trust material
+ * is not used. At least one of caCertPath or certSha256Pin must be set.
+ */
+jint Java_com_gpuf_c_RemoteWorker_validateMobileTlsPolicy(JNIEnv env,
+                                                          JClass _class,
+                                                          JString ca_cert_path,
+                                                          JString server_name,
+                                                          JString cert_sha256_pin);
+
+/**
  * Sets the model path for the remote worker (hot swapping support)
  *
  * Java signature:
@@ -1014,6 +1099,32 @@ jint Java_com_gpuf_c_RemoteWorker_startRemoteWorker(JNIEnv env,
                                                     jint proxy_port,
                                                     JString worker_type,
                                                     JString client_id);
+
+/**
+ * Starts the remote worker over the TLS-wrapped control protocol.
+ *
+ * Java signature:
+ * public static native int startRemoteWorkerWithTls(
+ *     String serverAddr,
+ *     int controlPort,
+ *     int proxyPort,
+ *     String workerType,
+ *     String clientId,
+ *     String caCertPath,
+ *     String controlTlsServerName,
+ *     String certSha256Pin
+ * );
+ */
+jint Java_com_gpuf_c_RemoteWorker_startRemoteWorkerWithTls(JNIEnv env,
+                                                           JClass _class,
+                                                           JString server_addr,
+                                                           jint control_port,
+                                                           jint proxy_port,
+                                                           JString worker_type,
+                                                           JString client_id,
+                                                           JString ca_cert_path,
+                                                           JString control_tls_server_name,
+                                                           JString cert_sha256_pin);
 
 /**
  * Starts the background tasks for the remote worker with optional callback

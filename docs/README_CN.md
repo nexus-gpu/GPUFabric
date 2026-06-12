@@ -123,10 +123,11 @@ curl -H "Authorization: Bearer your-api-key" http://localhost:18080
 ```bash
 cargo run --release --bin gpuf-s -- \
   --control-port 17000 \
+  --control-tls \
   --proxy-port 17001 \
   --public-port 18080 \
   --api-port 18081 \
-  --database-url "postgres://postgres:password@localhost:5432/GPUFabric" \
+  --database-url "postgres://<db-user>:<db-password>@localhost:5432/<db-name>" \
   --redis-url "redis://127.0.0.1:6379" \
   --bootstrap-server "localhost:9092" \
   --api-key "your-secure-api-key" \
@@ -140,8 +141,11 @@ cargo run --release --bin gpuf-s -- \
 
 ```bash
 cargo run --release --bin gpuf-c -- \
-  --client-id client_A \
-  --server-addr 192.168.1.100 \
+  --client-id <client-id-32-hex> \
+  --server-addr <gpuf-s-host> \
+  --control-tls \
+  --control-tls-server-name "gpuf.example.internal" \
+  --cert-chain-path "ca-cert.pem" \
   --local-addr 127.0.0.1 \
   --local-port 11434
 ```
@@ -150,6 +154,7 @@ cargo run --release --bin gpuf-c -- \
 - **[gpuf-s 文档](./gpuf-s.md)** - 服务器组件文档
 - **[gpuf-c 文档](./gpuf-c.md)** - 客户端组件文档
 - **[API Server 文档](./api_server.md)** - RESTful API 参考
+- **[前端/GUI 接入文档](../gui/doc.md)** - 本地 dashboard 与浏览器前端 API 默认值
 - **[Heartbeat Consumer 文档](./heartbeat_consumer.md)** - Kafka 消费者文档
 - **[XDP 文档](./xdp.md)** - 内核级数据包过滤
 
@@ -180,7 +185,7 @@ docker compose -f docker/gpuf_s_compose.yaml up -d
 
 ```bash
 cargo run --release --bin heartbeat_consumer -- \
-  --database-url "postgres://postgres:password@localhost:5432/GPUFabric" \
+  --database-url "postgres://<db-user>:<db-password>@localhost:5432/<db-name>" \
   --bootstrap-server "localhost:9092" \
   --batch-size 100 \
   --batch-timeout 5
@@ -213,6 +218,7 @@ gpuf-s 支持通过命令行参数进行完整配置：
 | 参数 | 类型 | 默认值 | 描述 |
 |------|------|--------|------|
 | `--control-port` | u16 | 17000 | 客户端控制连接端口 |
+| `--control-tls` | bool | false | 控制连接启用 TLS；远程生产部署应开启 |
 | `--proxy-port` | u16 | 17001 | 客户端代理连接端口 |
 | `--public-port` | u16 | 18080 | 面向外部用户的访问端口 |
 | `--api-port` | u16 | 18081 | HTTP API 端口 |
@@ -223,16 +229,44 @@ gpuf-s 支持通过命令行参数进行完整配置：
 | `--proxy-cert-chain-path` | string | `cert.pem` | TLS 证书链路径 |
 | `--proxy-private-key-path` | string | `key.pem` | TLS 私钥路径 |
 
+### 控制连接 TLS
+
+远程生产部署建议同时在服务端和客户端启用控制连接 TLS：
+
+```bash
+# 服务端
+gpuf-s --control-tls --proxy-cert-chain-path cert.pem --proxy-private-key-path key.pem
+
+# 客户端
+gpuf-c --server-addr gpuf.example.internal --control-tls \
+  --control-tls-server-name gpuf.example.internal --cert-chain-path ca-cert.pem
+```
+
+v1.1.0 为兼容保留明文控制 TCP 默认值；非 loopback 明文连接会输出安全/弃用告警。
+
 ### Environment Variables
 
 你也可以使用环境变量进行配置：
 
 ```bash
-export DATABASE_URL="postgres://postgres:password@localhost:5432/GPUFabric"
+export DATABASE_URL="postgres://<db-user>:<db-password>@localhost:5432/<db-name>"
 export REDIS_URL="redis://localhost:6379"
 export API_KEY="your-api-key"
 export RUST_LOG="gpuf-s=info"
 ```
+
+### 管理 API Server
+
+dashboard/前端使用的独立管理 API 默认绑定 loopback：
+
+```bash
+cargo run --release -p gpuf-s --bin api_server -- \
+  --bind-addr 127.0.0.1 \
+  --port 18081 \
+  --database-url "$DATABASE_URL"
+```
+
+只有在反向代理、防火墙和访问控制已经配置好的部署环境中，才使用 `--bind-addr 0.0.0.0`。
 
 ## 🔧 开发
 
@@ -512,11 +546,12 @@ gpuf-s/src/signaling/
 
 ## 🔒 安全
 
-- TLS 1.3 加密确保传输安全
+- 管理 API 默认绑定 loopback，公开监听必须显式部署配置
 - 基于数据库的认证与 Token 校验
 - Redis 缓存提升性能且不降低安全性
-- 输入校验与 SQL 注入防护
-- 证书安全管理
+- 输入校验、SQL 注入防护与服务日志脱敏
+- 模型下载和 SDK/release artifact 使用 SHA256 校验，MD5 不作为信任依据
+- 发布 gate 覆盖 cargo audit/deny、secret scan、targeted tests 和源码 grep
 
 ## 🌟 使用场景
 

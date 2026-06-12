@@ -1,0 +1,78 @@
+name: security-gates
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  rust-security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install security tools
+        run: |
+          cargo install cargo-audit --locked
+          cargo install cargo-deny --locked
+      - name: Cargo audit
+        run: cargo audit
+      - name: Cargo deny advisories/licenses
+        run: cargo deny check advisories licenses bans sources
+      - name: Format check
+        run: cargo fmt --all --check
+      - name: Compile gpuf-c and gpuf-s
+        run: |
+          cargo check -p gpuf-c --lib
+          cargo check -p gpuf-c --bin gpuf-c
+          cargo check -p gpuf-s
+      - name: Targeted security tests
+        run: |
+          cargo test -p gpuf-c handle::handle_udp::p2p_security_tests
+          cargo test -p gpuf-c llm_engine::llama_server::tests
+          cargo test -p gpuf-c llm_engine::anthropic_server::tests
+          cargo test -p gpuf-c util::safe_command::tests
+          cargo test -p gpuf-c util::security_metrics::tests
+          cargo test -p gpuf-c util::model_downloader::tests
+          cargo test -p gpuf-c util::config::tests
+          cargo test -p gpuf-c handle::handle_tcp::control_stream_tests
+          cargo test -p gpuf-c util::cmd::tests
+          cargo test -p gpuf-s util::cmd::tests
+      - name: Source security grep gate
+        run: |
+          ! rg -n --glob '!**/target/**' --glob '!**/DerivedData/**' \
+            '8[.]140[.]251[.]142|hf_[[:alnum:]]{20,}|sshpass[[:space:]]+-p|BEGIN[[:space:]].*PRIVATE[[:space:]]KEY|OLLAMA_HOST=0\.0\.0\.0|serde_yaml|serde_yml|Get-FileHash -Algorithm MD5|md5sum|verify_md5' \
+            gpuf-c/src gpuf-c/docs gpuf-c/examples gpuf-c/install.sh gpuf-c/install_client.sh gpuf-c/install_client.ps1 gpuf-c/generate_sdk.sh gpuf-c/generate_ios_sdk.sh common/src gpuf-s/src
+          ! rg -n --glob '!**/target/**' --glob '!**/DerivedData/**' 'static mut' \
+            gpuf-c/src common/src gpuf-s/src
+      - name: Generate security release evidence
+        run: scripts/security_release_evidence.sh security-release-evidence
+      - name: Validate strict release evidence gate
+        run: |
+          if GPUF_REQUIRE_ARTIFACTS=1 scripts/security_release_evidence.sh /tmp/security-release-evidence-strict; then
+            echo "strict release evidence gate unexpectedly passed without artifacts"
+            exit 1
+          fi
+      - name: Generate mobile SDK release gate evidence
+        run: scripts/mobile_sdk_release_gate.sh security-release-evidence/mobile-sdk
+      - name: Validate strict mobile SDK release gate
+        run: |
+          if GPUF_REQUIRE_MOBILE_EVIDENCE=1 scripts/mobile_sdk_release_gate.sh /tmp/mobile-sdk-release-evidence-strict; then
+            echo "strict mobile SDK release gate unexpectedly passed without evidence"
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: security-release-evidence
+          path: security-release-evidence/
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

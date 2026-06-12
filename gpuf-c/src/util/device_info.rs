@@ -1,8 +1,7 @@
 #[cfg(target_os = "macos")]
-use std::{
-    io::{BufRead, BufReader},
-    process::{Command, Stdio},
-};
+use std::io::{BufRead, BufReader};
+#[cfg(target_os = "macos")]
+use std::time::Duration;
 
 #[cfg(target_os = "macos")]
 #[derive(Debug)]
@@ -15,19 +14,15 @@ pub struct PowerMetrics {
 
 #[cfg(target_os = "macos")]
 pub fn read_power_metrics() -> Option<PowerMetrics> {
-    let mut child = Command::new("sudo")
-        .arg("powermetrics")
-        .arg("--samplers")
-        .arg("cpu_power,gpu_power,ane_power")
-        .arg("-n")
-        .arg("1")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
+    let output = crate::util::safe_command::run_sudo_noninteractive(
+        "powermetrics",
+        &["--samplers", "cpu_power,gpu_power,ane_power", "-n", "1"],
+        Duration::from_secs(8),
+        crate::util::safe_command::DEFAULT_OUTPUT_LIMIT,
+    )
+    .ok()?;
 
-    let stdout = child.stdout.take()?;
-    let reader = BufReader::new(stdout);
+    let reader = BufReader::new(output.stdout.as_slice());
 
     let mut cpu_mw = 0.0;
     let mut gpu_mw = 0.0;
@@ -48,9 +43,6 @@ pub fn read_power_metrics() -> Option<PowerMetrics> {
             }
         }
     }
-
-    // Manually terminate the process
-    let _ = child.kill();
 
     Some(PowerMetrics {
         cpu_mw: cpu_mw as u64,

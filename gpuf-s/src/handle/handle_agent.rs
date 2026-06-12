@@ -17,9 +17,9 @@ use std::collections::HashMap;
 use std::pin::Pin;
 #[cfg(feature = "experimental")]
 use std::task::{Context, Poll};
-use tokio::io::{self, AsyncRead, AsyncReadExt};
 #[cfg(feature = "experimental")]
 use tokio::io::AsyncWrite;
+use tokio::io::{self, AsyncRead, AsyncReadExt};
 use twoway;
 
 use anyhow::{anyhow, Result};
@@ -32,11 +32,6 @@ use tokio::net::TcpListener;
 
 use tokio_rustls::{rustls::server::ServerConfig, TlsAcceptor};
 
-#[cfg(feature = "aws_lc_rs")]
-use tokio_rustls::rustls::crypto::aws_lc_rs;
-#[cfg(feature = "ring")]
-use tokio_rustls::rustls::crypto::ring;
-
 use crate::db::client::get_user_client_by_token;
 use crate::util::msg::ApiResponse;
 use crate::util::policy::{AccessLevel, REQUEST_MESSAGE_TOPIC};
@@ -47,15 +42,7 @@ impl ServerState {
         let cert_chain = self.cert_chain.clone();
         let priv_key = self.priv_key.clone();
 
-        #[cfg(feature = "aws_lc_rs")]
-        aws_lc_rs::default_provider()
-            .install_default()
-            .expect("failed to install aws-lc-rs provider");
-
-        #[cfg(feature = "ring")]
-        ring::default_provider()
-            .install_default()
-            .expect("failed to install ring provider");
+        install_rustls_crypto_provider_once();
 
         let server_config = ServerConfig::builder()
             .with_no_client_auth()
@@ -502,6 +489,7 @@ pub struct ChatRequestInfo {
     pub model: Option<String>,
     pub request_id: Option<String>,
     pub api_key: Option<String>,
+    #[allow(dead_code)]
     pub content_type: Option<String>,
     // pub reader: R,
 }

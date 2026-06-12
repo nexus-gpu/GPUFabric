@@ -1,4 +1,6 @@
-use super::{Engine, OllamaEngine, OLLAMA_CONTAINER_NAME, OLLAMA_DEFAULT_PORT};
+use super::{
+    Engine, OllamaEngine, OLLAMA_CONTAINER_NAME, OLLAMA_DEFAULT_IMAGE, OLLAMA_DEFAULT_PORT,
+};
 #[cfg(not(target_os = "macos"))]
 use crate::util::system_info::get_gpu_count;
 
@@ -53,7 +55,7 @@ impl OllamaEngine {
         info!("Starting Ollama container...");
 
         let image_check = Command::new("docker")
-            .args(&["inspect", "--type=image", "ollama/ollama:latest"])
+            .args(&["inspect", "--type=image", OLLAMA_DEFAULT_IMAGE])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
@@ -62,7 +64,7 @@ impl OllamaEngine {
         if image_check.is_err() || !image_check.unwrap().success() {
             info!("Pulling Ollama image...");
             let pull_output = Command::new("docker")
-                .args(&["pull", "ollama/ollama:latest"])
+                .args(&["pull", OLLAMA_DEFAULT_IMAGE])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()?
@@ -78,7 +80,7 @@ impl OllamaEngine {
         let mut command = Command::new("docker");
 
         let name_flag = format!("--name={}", OLLAMA_CONTAINER_NAME);
-        let port_flag = format!("-p{}:11434", OLLAMA_DEFAULT_PORT);
+        let port_flag = format!("127.0.0.1:{}:11434", OLLAMA_DEFAULT_PORT);
 
         let model_dir = if cfg!(target_os = "windows") {
             // Windows  %USERPROFILE%\.ollama\models
@@ -102,8 +104,12 @@ impl OllamaEngine {
             &name_flag,
             &port_flag,
             &volume_flag,
+            "--security-opt",
+            "no-new-privileges:true",
+            "--cap-drop",
+            "ALL",
             "-e",
-            "OLLAMA_HOST=0.0.0.0",
+            "OLLAMA_HOST=127.0.0.1",
             "-e",
             "OLLAMA_GPU_LAYERS=all",
         ];
@@ -129,7 +135,7 @@ impl OllamaEngine {
             args.extend_from_slice(&["--platform", "linux/amd64"]);
         }
         // TODO: auto set shm-size
-        args.extend_from_slice(&["--shm-size", "2g", "ollama/ollama:latest"]);
+        args.extend_from_slice(&["--shm-size", "2g", OLLAMA_DEFAULT_IMAGE]);
 
         let output = command
             .args(&args)

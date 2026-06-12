@@ -8,7 +8,7 @@ use sqlx::{Pool, Postgres};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{error, info, warn, debug};
+use tracing::{debug, error, info, warn};
 
 #[derive(Clone)]
 pub struct HotModelClass {
@@ -31,12 +31,19 @@ impl HotModelClass {
     fn align_gpu_memory(mem_mb: u32) -> u32 {
         (mem_mb / GB50_IN_MB) * GB50_IN_MB
     }
+    #[allow(dead_code)]
     pub async fn get_hot_model(&self, mem_total_gb: u32, engine_type: i16) -> Result<String> {
-        let model_info = self.get_hot_model_with_details(mem_total_gb, engine_type).await?;
+        let model_info = self
+            .get_hot_model_with_details(mem_total_gb, engine_type)
+            .await?;
         Ok(model_info.name)
     }
 
-    pub async fn get_hot_model_with_details(&self, mem_total_gb: u32, engine_type: i16) -> Result<ModelInfo> {
+    pub async fn get_hot_model_with_details(
+        &self,
+        mem_total_gb: u32,
+        engine_type: i16,
+    ) -> Result<ModelInfo> {
         let model = match get_models_list(
             &self.pool,
             Some(true),
@@ -227,7 +234,10 @@ pub async fn get_models_list(
     engine_type: Option<i16>,
     min_gpu_memory_gb: Option<i32>,
 ) -> Result<Vec<Models>> {
-    debug!("get_models_list is_active: {:?}, engine_type: {:?}, min_gpu_memory_gb: {:?}", is_active, engine_type, min_gpu_memory_gb);
+    debug!(
+        "get_models_list is_active: {:?}, engine_type: {:?}, min_gpu_memory_gb: {:?}",
+        is_active, engine_type, min_gpu_memory_gb
+    );
     let mut query_builder = sqlx::QueryBuilder::new("SELECT id,name,version,version_code,is_active,min_memory_mb,min_gpu_memory_gb,created_at,download_url,checksum,expected_size FROM client_models WHERE 1=1");
 
     if let Some(active) = is_active {

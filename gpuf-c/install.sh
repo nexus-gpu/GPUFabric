@@ -86,7 +86,7 @@ setup_environment() {
         linux*)
             # Linux environment variables
             if ! grep -q "OLLAMA_HOST" /etc/environment 2>/dev/null; then
-                echo "OLLAMA_HOST=0.0.0.0" | sudo tee -a /etc/environment
+                echo "OLLAMA_HOST=127.0.0.1" | sudo tee -a /etc/environment
             fi
             if [ -n "$NUM_GPUS" ] && [ "$NUM_GPUS" -gt 0 ] && ! grep -q "OLLAMA_NUM_GPU" /etc/environment 2>/dev/null; then
                 echo "OLLAMA_NUM_GPU=$NUM_GPUS" | sudo tee -a /etc/environment
@@ -105,7 +105,7 @@ setup_environment() {
             
             # check if already set
             if ! grep -q "OLLAMA_HOST" "$shell_config" 2>/dev/null; then
-                echo "export OLLAMA_HOST=0.0.0.0" >> "$shell_config"
+                echo "export OLLAMA_HOST=127.0.0.1" >> "$shell_config"
                 log "${GREEN}added OLLAMA_HOST to $shell_config${NC}"
             fi
             
@@ -122,7 +122,7 @@ setup_environment() {
     esac
     
     # set current session environment variables
-    export OLLAMA_HOST=0.0.0.0
+    export OLLAMA_HOST=127.0.0.1
     if [ -n "$NUM_GPUS" ] && [ "$NUM_GPUS" -gt 0 ]; then
         export OLLAMA_NUM_GPU=$NUM_GPUS
     fi
@@ -139,28 +139,11 @@ get_install_dir() {
     fi
 }
 
-# use official script install Ollama
+# Official pipe-to-shell installers are intentionally disabled. Use fallback
+# package-manager or pinned release download paths where artifacts can be reviewed.
 install_ollama_official() {
-    log "${YELLOW}use official script install Ollama...${NC}"
-    
-    case "$OS" in
-    
-        darwin*)
-            # Linux and macOS use official install script
-            log "${YELLOW}download and execute official install script...${NC}"
-            if curl -fsSL https://ollama.com/install.sh | sh >> "$LOG_FILE" 2>&1; then
-                log "${GREEN}Ollama official script install success!${NC}"
-                return 0
-            else
-                log "${RED}official script install failed, try fallback method...${NC}"
-                return 1
-            fi
-            ;;
-        *)
-            log "${RED}unsupported OS: $OS${NC}"
-            return 1
-            ;;
-    esac
+    log "${YELLOW}Ollama pipe-to-shell installer disabled; using fallback installer path${NC}"
+    return 1
 }
 
 
@@ -171,12 +154,8 @@ install_docker_official() {
     if command -v docker &> /dev/null; then
         log "${YELLOW}docker already installed${NC}"
     else
-        # use official script install docker
-        log "${YELLOW}downloading and executing docker official install script...${NC}"
-        if ! curl -fsSL https://get.docker.com | sh >> "$LOG_FILE" 2>&1; then
-            log "${RED}docker install failed${NC}"
-            return 1
-        fi
+        log "${YELLOW}Docker pipe-to-shell installer disabled; using repository fallback installer${NC}"
+        return 1
     fi
 
     # add current user to docker group
@@ -453,7 +432,7 @@ User=root
 Group=root
 Restart=always
 RestartSec=3
-Environment="OLLAMA_HOST=0.0.0.0"
+Environment="OLLAMA_HOST=127.0.0.1"
 
 [Install]
 WantedBy=multi-user.target
@@ -493,8 +472,8 @@ if (-not $isAdmin) {
 $ErrorActionPreference = 'Stop'
 
 # set environment variables
-[Environment]::SetEnvironmentVariable("OLLAMA_HOST", "0.0.0.0", 'User')
-$env:OLLAMA_HOST = "0.0.0.0"
+[Environment]::SetEnvironmentVariable("OLLAMA_HOST", "127.0.0.1", 'User')
+$env:OLLAMA_HOST = "127.0.0.1"
 
 # detect GPU count and set environment variables
 $gpuCount = (Get-WmiObject Win32_VideoController | Where-Object { $_.AdapterCompatibility -match "NVIDIA" }).Count
@@ -848,7 +827,7 @@ main() {
             curl -O https://pub-3ff97e8b168145679bc0e4e373287108.r2.dev/mac/gpuf-c
             ;;
         cygwin*|mingw*|msys*|nt|win*)
-            #curl -O https://pub-3ff97e8b168145679bc0e4e373287108.r2.dev/windows/gpuf-c.exe
+            #curl -O https://<artifact-host>/windows/gpuf-c.exe
             ;;
         *)
             log "${RED}not support os: $OS${NC}"

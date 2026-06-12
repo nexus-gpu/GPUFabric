@@ -3,30 +3,285 @@ use bincode::{self as bincode, config as bincode_config};
 use crc32fast::Hasher as Crc32;
 use hmac::{Hmac, Mac};
 use sha1::Sha1;
-use std::collections::VecDeque;
-use std::net::ToSocketAddrs;
+use sha2::Sha256;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
+#[cfg(not(target_os = "android"))]
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncReadExt;
 use tokio::net::UdpSocket;
 use tokio::time::timeout;
+#[cfg(not(target_os = "android"))]
 use url::Url;
 
 use anyhow::{anyhow, Result};
-use common::Command;
+use common::{Command, CommandV2, MAX_MESSAGE_SIZE};
+use tracing::warn;
+
+#[derive(Debug)]
+pub(super) struct P2PReplayWindow {
+    seen: HashSet<u64>,
+    order: VecDeque<(u64, u64)>,
+}
+
+impl P2PReplayWindow {
+    pub(super) fn new() -> Self {
+        Self {
+            seen: HashSet::new(),
+            order: VecDeque::new(),
+        }
+    }
+
+    fn prune(&mut self, now: u64) {
+        while let Some((seq, ts)) = self.order.front().copied() {
+            if now.saturating_sub(ts) <= ClientWorker::P2P_REPLAY_WINDOW_SECS {
+                break;
+            }
+            self.order.pop_front();
+            self.seen.remove(&seq);
+        }
+        while self.order.len() > ClientWorker::P2P_REPLAY_CACHE_LIMIT {
+            if let Some((seq, _)) = self.order.pop_front() {
+                self.seen.remove(&seq);
+            }
+        }
+    }
+
+    pub(super) fn accept_tcp_seq(&mut self, seq: u64, timestamp: u64, now: u64) -> bool {
+        self.prune(now);
+        if self.seen.contains(&seq) {
+            return false;
+        }
+        self.seen.insert(seq);
+        self.order.push_back((seq, timestamp));
+        self.prune(now);
+        true
+    }
+}
+
+#[derive(Debug)]
+struct P2PUdpPartialMessage {
+    created_at: Instant,
+    last_seen: Instant,
+    frag_cnt: u16,
+    bytes: usize,
+    parts: HashMap<u16, Vec<u8>>,
+}
+
+#[derive(Debug)]
+struct P2PUdpSourceState {
+    window_started: Instant,
+    bad_count: u32,
+    banned_until: Option<Instant>,
+}
+
+#[derive(Debug)]
+pub(super) struct P2PUdpReassemblyState {
+    inflight: HashMap<(SocketAddr, u32), P2PUdpPartialMessage>,
+    completed: HashMap<(SocketAddr, u32), Instant>,
+    source_state: HashMap<IpAddr, P2PUdpSourceState>,
+    total_bytes: usize,
+}
+
+impl P2PUdpReassemblyState {
+    pub(super) fn new() -> Self {
+        Self {
+            inflight: HashMap::new(),
+            completed: HashMap::new(),
+            source_state: HashMap::new(),
+            total_bytes: 0,
+        }
+    }
+
+    fn prune(&mut self) {
+        let now = Instant::now();
+        let mut removed_bytes = 0usize;
+        self.inflight.retain(|_, entry| {
+            let keep = now.duration_since(entry.created_at) <= ClientWorker::P2P_REASSEMBLY_TTL;
+            if !keep {
+                removed_bytes = removed_bytes.saturating_add(entry.bytes);
+            }
+            keep
+        });
+        self.total_bytes = self.total_bytes.saturating_sub(removed_bytes);
+        self.completed.retain(|_, seen_at| {
+            now.duration_since(*seen_at)
+                <= Duration::from_secs(ClientWorker::P2P_REPLAY_WINDOW_SECS)
+        });
+        self.source_state.retain(|_, state| {
+            if let Some(until) = state.banned_until {
+                until > now
+            } else {
+                now.duration_since(state.window_started) <= ClientWorker::P2P_SOURCE_BAN_TTL
+                    || state.bad_count > 0
+            }
+        });
+    }
+
+    pub(super) fn is_source_banned(&mut self, from: SocketAddr) -> bool {
+        self.prune();
+        self.source_state
+            .get(&from.ip())
+            .and_then(|state| state.banned_until)
+            .is_some_and(|until| until > Instant::now())
+    }
+
+    pub(super) fn record_invalid_source(&mut self, from: SocketAddr) {
+        self.prune();
+        let now = Instant::now();
+        let state = self
+            .source_state
+            .entry(from.ip())
+            .or_insert(P2PUdpSourceState {
+                window_started: now,
+                bad_count: 0,
+                banned_until: None,
+            });
+        if state.banned_until.is_some_and(|until| until > now) {
+            return;
+        }
+        if now.duration_since(state.window_started) > Duration::from_secs(10) {
+            state.window_started = now;
+            state.bad_count = 0;
+        }
+        state.bad_count = state.bad_count.saturating_add(1);
+        if state.bad_count >= ClientWorker::P2P_SOURCE_BAN_THRESHOLD {
+            state.banned_until = Some(now + ClientWorker::P2P_SOURCE_BAN_TTL);
+            state.bad_count = 0;
+            warn!(
+                "P2P UDP source {} temporarily banned after invalid traffic",
+                from.ip()
+            );
+        }
+    }
+
+    pub(super) fn accept_fragment(
+        &mut self,
+        from: SocketAddr,
+        msg_id: u32,
+        frag_idx: u16,
+        frag_cnt: u16,
+        payload: &[u8],
+    ) -> Result<Option<Vec<u8>>> {
+        self.prune();
+        if frag_cnt == 0 || frag_idx >= frag_cnt {
+            return Err(anyhow!("invalid p2p udp fragment metadata"));
+        }
+        if frag_cnt > ClientWorker::P2P_MAX_FRAGMENTS_PER_MESSAGE {
+            return Err(anyhow!("p2p udp fragment count exceeds limit"));
+        }
+        if payload.len() > ClientWorker::P2P_UDP_MTU_PAYLOAD {
+            return Err(anyhow!("p2p udp fragment payload too large"));
+        }
+
+        let key = (from, msg_id);
+        if self.completed.contains_key(&key) {
+            warn!("P2P UDP replayed completed msg_id={} from {}", msg_id, from);
+            return Ok(None);
+        }
+
+        let is_new_message = !self.inflight.contains_key(&key);
+        if is_new_message {
+            if self.inflight.len() >= ClientWorker::P2P_MAX_INFLIGHT_MESSAGES {
+                return Err(anyhow!("p2p udp inflight message limit exceeded"));
+            }
+            let source_messages = self
+                .inflight
+                .keys()
+                .filter(|(addr, _)| addr.ip() == from.ip())
+                .count();
+            if source_messages >= ClientWorker::P2P_MAX_MESSAGES_PER_SOURCE {
+                return Err(anyhow!("p2p udp per-source message limit exceeded"));
+            }
+        }
+
+        let duplicate = self
+            .inflight
+            .get(&key)
+            .is_some_and(|entry| entry.parts.contains_key(&frag_idx));
+        if duplicate {
+            return Ok(None);
+        }
+
+        if self.total_bytes.saturating_add(payload.len()) > ClientWorker::P2P_MAX_INFLIGHT_BYTES {
+            return Err(anyhow!("p2p udp inflight byte limit exceeded"));
+        }
+
+        let now = Instant::now();
+        let entry = self
+            .inflight
+            .entry(key)
+            .or_insert_with(|| P2PUdpPartialMessage {
+                created_at: now,
+                last_seen: now,
+                frag_cnt,
+                bytes: 0,
+                parts: HashMap::new(),
+            });
+        if entry.frag_cnt != frag_cnt {
+            return Err(anyhow!("p2p udp fragment count changed within message"));
+        }
+        if entry.bytes.saturating_add(payload.len()) > MAX_MESSAGE_SIZE {
+            return Err(anyhow!("p2p udp reassembled message exceeds max size"));
+        }
+        entry.parts.insert(frag_idx, payload.to_vec());
+        entry.bytes = entry.bytes.saturating_add(payload.len());
+        entry.last_seen = now;
+        self.total_bytes = self.total_bytes.saturating_add(payload.len());
+
+        if entry.parts.len() != frag_cnt as usize {
+            return Ok(None);
+        }
+
+        let mut entry = self
+            .inflight
+            .remove(&key)
+            .ok_or_else(|| anyhow!("p2p udp reassembly state disappeared"))?;
+        self.total_bytes = self.total_bytes.saturating_sub(entry.bytes);
+        let mut out = Vec::with_capacity(entry.bytes);
+        for idx in 0..entry.frag_cnt {
+            let part = entry
+                .parts
+                .remove(&idx)
+                .ok_or_else(|| anyhow!("p2p udp missing fragment during reassembly"))?;
+            out.extend_from_slice(&part);
+        }
+        self.completed.insert(key, now);
+        Ok(Some(out))
+    }
+}
 
 impl ClientWorker {
     pub(super) const P2P_UDP_MAGIC: [u8; 4] = *b"P2PU";
-    pub(super) const P2P_UDP_VERSION: u8 = 1;
+    pub(super) const P2P_UDP_VERSION: u8 = 2;
     pub(super) const P2P_UDP_FLAG_ACK: u8 = 0x01;
-    pub(super) const P2P_UDP_HEADER_LEN: usize = 4 + 1 + 1 + 4 + 2 + 2; // magic + version + flags + msg_id + frag_idx + frag_cnt
+    pub(super) const P2P_UDP_HEADER_LEN: usize = 4 + 1 + 1 + 4 + 2 + 2 + 8 + 32;
     pub(super) const P2P_UDP_MTU_PAYLOAD: usize = 1200;
+    pub(super) const P2P_REPLAY_WINDOW_SECS: u64 = 300;
+    pub(super) const P2P_REPLAY_CACHE_LIMIT: usize = 4096;
+    pub(super) const P2P_MAX_FRAGMENTS_PER_MESSAGE: u16 = 128;
+    pub(super) const P2P_REASSEMBLY_TTL: Duration = Duration::from_secs(30);
+    pub(super) const P2P_MAX_INFLIGHT_MESSAGES: usize = 128;
+    pub(super) const P2P_MAX_INFLIGHT_BYTES: usize = 8 * 1024 * 1024;
+    pub(super) const P2P_MAX_MESSAGES_PER_SOURCE: usize = 32;
+    pub(super) const P2P_SOURCE_BAN_THRESHOLD: u32 = 64;
+    pub(super) const P2P_SOURCE_BAN_TTL: Duration = Duration::from_secs(60);
+
+    pub(super) fn p2p_now_secs() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+    }
 
     pub(super) fn p2p_udp_make_header(
         flags: u8,
         msg_id: u32,
         frag_idx: u16,
         frag_cnt: u16,
+        timestamp: u64,
+        tag: &[u8; 32],
     ) -> [u8; Self::P2P_UDP_HEADER_LEN] {
         let mut h = [0u8; Self::P2P_UDP_HEADER_LEN];
         h[0..4].copy_from_slice(&Self::P2P_UDP_MAGIC);
@@ -35,14 +290,16 @@ impl ClientWorker {
         h[6..10].copy_from_slice(&msg_id.to_be_bytes());
         h[10..12].copy_from_slice(&frag_idx.to_be_bytes());
         h[12..14].copy_from_slice(&frag_cnt.to_be_bytes());
+        h[14..22].copy_from_slice(&timestamp.to_be_bytes());
+        h[22..54].copy_from_slice(tag);
         h
     }
 
-    pub(super) fn p2p_udp_parse_header(buf: &[u8]) -> Option<(u8, u32, u16, u16)> {
+    pub(super) fn p2p_udp_parse_header(buf: &[u8]) -> Option<(u8, u32, u16, u16, u64, [u8; 32])> {
         if buf.len() < Self::P2P_UDP_HEADER_LEN {
             return None;
         }
-        if &buf[0..4] != Self::P2P_UDP_MAGIC {
+        if buf.get(0..4)? != Self::P2P_UDP_MAGIC {
             return None;
         }
         if buf[4] != Self::P2P_UDP_VERSION {
@@ -52,17 +309,157 @@ impl ClientWorker {
         let msg_id = u32::from_be_bytes([buf[6], buf[7], buf[8], buf[9]]);
         let frag_idx = u16::from_be_bytes([buf[10], buf[11]]);
         let frag_cnt = u16::from_be_bytes([buf[12], buf[13]]);
-        Some((flags, msg_id, frag_idx, frag_cnt))
+        let timestamp = u64::from_be_bytes([
+            buf[14], buf[15], buf[16], buf[17], buf[18], buf[19], buf[20], buf[21],
+        ]);
+        let tag = buf[22..54].try_into().ok()?;
+        Some((flags, msg_id, frag_idx, frag_cnt, timestamp, tag))
     }
 
-    pub(super) async fn p2p_udp_send_ack(socket: &UdpSocket, to: std::net::SocketAddr, msg_id: u32) {
-        let hdr = Self::p2p_udp_make_header(Self::P2P_UDP_FLAG_ACK, msg_id, 0, 0);
+    fn p2p_udp_mac_input(
+        connection_id: &[u8; 16],
+        flags: u8,
+        msg_id: u32,
+        frag_idx: u16,
+        frag_cnt: u16,
+        timestamp: u64,
+        payload: &[u8],
+    ) -> Vec<u8> {
+        let mut data = Vec::with_capacity(32 + 16 + 1 + 4 + 2 + 2 + 8 + payload.len());
+        data.extend_from_slice(b"GPUF-P2P-UDP-V2");
+        data.extend_from_slice(connection_id);
+        data.push(flags);
+        data.extend_from_slice(&msg_id.to_be_bytes());
+        data.extend_from_slice(&frag_idx.to_be_bytes());
+        data.extend_from_slice(&frag_cnt.to_be_bytes());
+        data.extend_from_slice(&timestamp.to_be_bytes());
+        data.extend_from_slice(payload);
+        data
+    }
+
+    pub(super) fn p2p_hmac_sha256(secret: &[u8; 32], data: &[u8]) -> [u8; 32] {
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("hmac sha256 key");
+        mac.update(data);
+        mac.finalize().into_bytes().into()
+    }
+
+    pub(super) fn p2p_udp_tag(
+        secret: &[u8; 32],
+        connection_id: &[u8; 16],
+        flags: u8,
+        msg_id: u32,
+        frag_idx: u16,
+        frag_cnt: u16,
+        timestamp: u64,
+        payload: &[u8],
+    ) -> [u8; 32] {
+        let data = Self::p2p_udp_mac_input(
+            connection_id,
+            flags,
+            msg_id,
+            frag_idx,
+            frag_cnt,
+            timestamp,
+            payload,
+        );
+        Self::p2p_hmac_sha256(secret, &data)
+    }
+
+    pub(super) fn p2p_timestamp_is_fresh(timestamp: u64, now: u64) -> bool {
+        timestamp <= now.saturating_add(30)
+            && now.saturating_sub(timestamp) <= Self::P2P_REPLAY_WINDOW_SECS
+    }
+
+    pub(super) fn p2p_udp_validate_fragment(
+        secret: &[u8; 32],
+        connection_id: &[u8; 16],
+        flags: u8,
+        msg_id: u32,
+        frag_idx: u16,
+        frag_cnt: u16,
+        timestamp: u64,
+        payload: &[u8],
+        tag: &[u8; 32],
+        now: u64,
+    ) -> Result<()> {
+        let is_ack = (flags & Self::P2P_UDP_FLAG_ACK) != 0;
+        if is_ack {
+            if frag_idx != 0 || frag_cnt != 0 || !payload.is_empty() {
+                return Err(anyhow!("invalid p2p udp ack metadata"));
+            }
+        } else {
+            if frag_cnt == 0 || frag_cnt > Self::P2P_MAX_FRAGMENTS_PER_MESSAGE {
+                return Err(anyhow!("invalid p2p udp fragment count"));
+            }
+            if frag_idx >= frag_cnt {
+                return Err(anyhow!("invalid p2p udp fragment index"));
+            }
+        }
+        if !Self::p2p_timestamp_is_fresh(timestamp, now) {
+            return Err(anyhow!("stale p2p udp fragment"));
+        }
+        let expected = Self::p2p_udp_tag(
+            secret,
+            connection_id,
+            flags,
+            msg_id,
+            frag_idx,
+            frag_cnt,
+            timestamp,
+            payload,
+        );
+        if expected.as_slice() != tag.as_slice() {
+            return Err(anyhow!("p2p udp fragment authentication failed"));
+        }
+        Ok(())
+    }
+
+    pub(super) async fn p2p_udp_send_ack(
+        socket: &UdpSocket,
+        to: SocketAddr,
+        connection_id: [u8; 16],
+        secret: [u8; 32],
+        msg_id: u32,
+    ) {
+        let timestamp = Self::p2p_now_secs();
+        let tag = Self::p2p_udp_tag(
+            &secret,
+            &connection_id,
+            Self::P2P_UDP_FLAG_ACK,
+            msg_id,
+            0,
+            0,
+            timestamp,
+            &[],
+        );
+        let hdr = Self::p2p_udp_make_header(Self::P2P_UDP_FLAG_ACK, msg_id, 0, 0, timestamp, &tag);
         let _ = socket.send_to(&hdr, to).await;
+    }
+
+    pub(super) fn p2p_udp_ack_packet(
+        connection_id: [u8; 16],
+        secret: [u8; 32],
+        msg_id: u32,
+    ) -> [u8; Self::P2P_UDP_HEADER_LEN] {
+        let timestamp = Self::p2p_now_secs();
+        let tag = Self::p2p_udp_tag(
+            &secret,
+            &connection_id,
+            Self::P2P_UDP_FLAG_ACK,
+            msg_id,
+            0,
+            0,
+            timestamp,
+            &[],
+        );
+        Self::p2p_udp_make_header(Self::P2P_UDP_FLAG_ACK, msg_id, 0, 0, timestamp, &tag)
     }
 
     pub(super) async fn p2p_udp_send_reliable(
         socket: &UdpSocket,
-        to: std::net::SocketAddr,
+        to: SocketAddr,
+        connection_id: [u8; 16],
+        secret: [u8; 32],
         msg_id: u32,
         payload: &[u8],
     ) -> Result<()> {
@@ -71,32 +468,70 @@ impl ClientWorker {
             return Err(anyhow!("p2p udp mtu too small"));
         }
         let frag_cnt = ((payload.len() + max_payload - 1) / max_payload).max(1);
-        if frag_cnt > u16::MAX as usize {
+        if frag_cnt > Self::P2P_MAX_FRAGMENTS_PER_MESSAGE as usize {
             return Err(anyhow!("p2p udp too many fragments"));
         }
 
         for frag_idx in 0..frag_cnt {
             let start = frag_idx * max_payload;
             let end = ((frag_idx + 1) * max_payload).min(payload.len());
-            let hdr = Self::p2p_udp_make_header(0, msg_id, frag_idx as u16, frag_cnt as u16);
-            let mut pkt = Vec::with_capacity(Self::P2P_UDP_HEADER_LEN + (end - start));
+            let frag_payload = &payload[start..end];
+            let timestamp = Self::p2p_now_secs();
+            let tag = Self::p2p_udp_tag(
+                &secret,
+                &connection_id,
+                0,
+                msg_id,
+                frag_idx as u16,
+                frag_cnt as u16,
+                timestamp,
+                frag_payload,
+            );
+            let hdr = Self::p2p_udp_make_header(
+                0,
+                msg_id,
+                frag_idx as u16,
+                frag_cnt as u16,
+                timestamp,
+                &tag,
+            );
+            let mut pkt = Vec::with_capacity(Self::P2P_UDP_HEADER_LEN + frag_payload.len());
             pkt.extend_from_slice(&hdr);
-            pkt.extend_from_slice(&payload[start..end]);
+            pkt.extend_from_slice(frag_payload);
 
-            // Stop-and-wait per fragment.
             let mut tries = 0u32;
             loop {
                 tries += 1;
                 socket.send_to(&pkt, to).await?;
 
-                let mut ack_buf = [0u8; 64];
-                let ack_res = timeout(Duration::from_millis(400), socket.recv_from(&mut ack_buf)).await;
+                let mut ack_buf = [0u8; Self::P2P_UDP_HEADER_LEN];
+                let ack_res =
+                    timeout(Duration::from_millis(400), socket.recv_from(&mut ack_buf)).await;
                 if let Ok(Ok((n, from))) = ack_res {
                     if from != to {
                         continue;
                     }
-                    if let Some((flags, ack_id, _fi, _fc)) = Self::p2p_udp_parse_header(&ack_buf[..n]) {
-                        if (flags & Self::P2P_UDP_FLAG_ACK) != 0 && ack_id == msg_id {
+                    if let Some((flags, ack_id, ack_frag_idx, ack_frag_cnt, ts, tag)) =
+                        Self::p2p_udp_parse_header(&ack_buf[..n])
+                    {
+                        let valid_ack = (flags & Self::P2P_UDP_FLAG_ACK) != 0
+                            && ack_id == msg_id
+                            && ack_frag_idx == 0
+                            && ack_frag_cnt == 0
+                            && Self::p2p_udp_validate_fragment(
+                                &secret,
+                                &connection_id,
+                                flags,
+                                ack_id,
+                                ack_frag_idx,
+                                ack_frag_cnt,
+                                ts,
+                                &[],
+                                &tag,
+                                Self::p2p_now_secs(),
+                            )
+                            .is_ok();
+                        if valid_ack {
                             break;
                         }
                     }
@@ -110,15 +545,14 @@ impl ClientWorker {
     }
 
     pub(super) fn p2p_udp_encode_command_payload(command: &Command) -> Result<Vec<u8>> {
-        // payload uses same framing as udp_encode_command (len + bincode) so we can reuse decode.
         Self::udp_encode_command(command)
     }
 
     pub(super) fn p2p_udp_try_reassemble(
-        parts: &mut std::collections::HashMap<u16, Vec<u8>>,
+        parts: &mut HashMap<u16, Vec<u8>>,
         frag_cnt: u16,
     ) -> Option<Vec<u8>> {
-        if frag_cnt == 0 {
+        if frag_cnt == 0 || frag_cnt > Self::P2P_MAX_FRAGMENTS_PER_MESSAGE {
             return None;
         }
         for i in 0..frag_cnt {
@@ -133,6 +567,76 @@ impl ClientWorker {
             }
         }
         Some(out)
+    }
+
+    pub(super) fn p2p_encode_data_plane_envelope(
+        command: &Command,
+        connection_id: [u8; 16],
+        secret: [u8; 32],
+        seq: u64,
+        timestamp: u64,
+    ) -> Result<Command> {
+        let payload = bincode::encode_to_vec(command, bincode_config::standard())?;
+        if payload.len() > MAX_MESSAGE_SIZE {
+            return Err(anyhow!("p2p data-plane payload too large"));
+        }
+        let mut mac_input = Vec::with_capacity(32 + 16 + 8 + 8 + payload.len());
+        mac_input.extend_from_slice(b"GPUF-P2P-TCP-V1");
+        mac_input.extend_from_slice(&connection_id);
+        mac_input.extend_from_slice(&seq.to_be_bytes());
+        mac_input.extend_from_slice(&timestamp.to_be_bytes());
+        mac_input.extend_from_slice(&payload);
+        let tag = Self::p2p_hmac_sha256(&secret, &mac_input);
+        Ok(Command::V2(CommandV2::P2PDataPlaneEnvelope {
+            connection_id,
+            seq,
+            timestamp,
+            payload,
+            tag,
+        }))
+    }
+
+    pub(super) fn p2p_decode_data_plane_envelope(
+        command: Command,
+        connection_id: [u8; 16],
+        secret: [u8; 32],
+        replay: &mut P2PReplayWindow,
+    ) -> Result<Command> {
+        let Command::V2(CommandV2::P2PDataPlaneEnvelope {
+            connection_id: req_conn_id,
+            seq,
+            timestamp,
+            payload,
+            tag,
+        }) = command
+        else {
+            return Err(anyhow!("expected signed p2p data-plane envelope"));
+        };
+        if req_conn_id != connection_id {
+            return Err(anyhow!("p2p envelope connection mismatch"));
+        }
+        if payload.len() > MAX_MESSAGE_SIZE {
+            return Err(anyhow!("p2p envelope payload too large"));
+        }
+        let now = Self::p2p_now_secs();
+        if !Self::p2p_timestamp_is_fresh(timestamp, now) {
+            return Err(anyhow!("stale p2p envelope"));
+        }
+        let mut mac_input = Vec::with_capacity(32 + 16 + 8 + 8 + payload.len());
+        mac_input.extend_from_slice(b"GPUF-P2P-TCP-V1");
+        mac_input.extend_from_slice(&connection_id);
+        mac_input.extend_from_slice(&seq.to_be_bytes());
+        mac_input.extend_from_slice(&timestamp.to_be_bytes());
+        mac_input.extend_from_slice(&payload);
+        let expected = Self::p2p_hmac_sha256(&secret, &mac_input);
+        if expected != tag {
+            return Err(anyhow!("p2p envelope authentication failed"));
+        }
+        if !replay.accept_tcp_seq(seq, timestamp, now) {
+            return Err(anyhow!("replayed p2p envelope"));
+        }
+        let (inner, _) = bincode::decode_from_slice(&payload, bincode_config::standard())?;
+        Ok(inner)
     }
 
     pub(super) fn stun_new_txid() -> [u8; 12] {
@@ -290,7 +794,10 @@ impl ClientWorker {
     }
 
     #[cfg(not(target_os = "android"))]
-    pub(super) fn turn_encode_xor_peer_address(peer: std::net::SocketAddr, txid: &[u8; 12]) -> Vec<u8> {
+    pub(super) fn turn_encode_xor_peer_address(
+        peer: std::net::SocketAddr,
+        txid: &[u8; 12],
+    ) -> Vec<u8> {
         let mut out = Vec::new();
         out.push(0);
         match peer {
@@ -465,7 +972,9 @@ impl ClientWorker {
     }
 
     #[cfg(not(target_os = "android"))]
-    pub(super) fn turn_parse_data_indication(msg: &[u8]) -> Option<(std::net::SocketAddr, Vec<u8>)> {
+    pub(super) fn turn_parse_data_indication(
+        msg: &[u8],
+    ) -> Option<(std::net::SocketAddr, Vec<u8>)> {
         if msg.len() < 20 {
             return None;
         }
@@ -490,27 +999,48 @@ impl ClientWorker {
     #[cfg(not(target_os = "android"))]
     pub(super) async fn turn_send_reliable_over_indication(
         sock: &UdpSocket,
-        peer: std::net::SocketAddr,
+        peer: SocketAddr,
+        connection_id: [u8; 16],
+        secret: [u8; 32],
         msg_id: u32,
         payload: &[u8],
-        inbox: &mut VecDeque<(std::net::SocketAddr, Vec<u8>)>,
+        inbox: &mut VecDeque<(SocketAddr, Vec<u8>)>,
     ) -> Result<()> {
         let max_payload = Self::P2P_UDP_MTU_PAYLOAD.saturating_sub(Self::P2P_UDP_HEADER_LEN);
         if max_payload == 0 {
             return Err(anyhow!("p2p udp mtu too small"));
         }
         let frag_cnt = ((payload.len() + max_payload - 1) / max_payload).max(1);
-        if frag_cnt > u16::MAX as usize {
+        if frag_cnt > Self::P2P_MAX_FRAGMENTS_PER_MESSAGE as usize {
             return Err(anyhow!("p2p udp too many fragments"));
         }
 
         for frag_idx in 0..frag_cnt {
             let start = frag_idx * max_payload;
             let end = ((frag_idx + 1) * max_payload).min(payload.len());
-            let hdr = Self::p2p_udp_make_header(0, msg_id, frag_idx as u16, frag_cnt as u16);
-            let mut pkt = Vec::with_capacity(Self::P2P_UDP_HEADER_LEN + (end - start));
+            let frag_payload = &payload[start..end];
+            let timestamp = Self::p2p_now_secs();
+            let tag = Self::p2p_udp_tag(
+                &secret,
+                &connection_id,
+                0,
+                msg_id,
+                frag_idx as u16,
+                frag_cnt as u16,
+                timestamp,
+                frag_payload,
+            );
+            let hdr = Self::p2p_udp_make_header(
+                0,
+                msg_id,
+                frag_idx as u16,
+                frag_cnt as u16,
+                timestamp,
+                &tag,
+            );
+            let mut pkt = Vec::with_capacity(Self::P2P_UDP_HEADER_LEN + frag_payload.len());
             pkt.extend_from_slice(&hdr);
-            pkt.extend_from_slice(&payload[start..end]);
+            pkt.extend_from_slice(frag_payload);
 
             let mut tries = 0u32;
             loop {
@@ -521,9 +1051,30 @@ impl ClientWorker {
                 let recv_res = timeout(Duration::from_millis(400), sock.recv(&mut buf)).await;
                 if let Ok(Ok(n)) = recv_res {
                     if let Some((src, data)) = Self::turn_parse_data_indication(&buf[..n]) {
-                        if let Some((flags, ack_id, _fi, _fc)) = Self::p2p_udp_parse_header(&data) {
-                            if (flags & Self::P2P_UDP_FLAG_ACK) != 0 && ack_id == msg_id {
-                                break;
+                        if src == peer {
+                            if let Some((flags, ack_id, ack_frag_idx, ack_frag_cnt, ts, ack_tag)) =
+                                Self::p2p_udp_parse_header(&data)
+                            {
+                                let valid_ack = (flags & Self::P2P_UDP_FLAG_ACK) != 0
+                                    && ack_id == msg_id
+                                    && ack_frag_idx == 0
+                                    && ack_frag_cnt == 0
+                                    && Self::p2p_udp_validate_fragment(
+                                        &secret,
+                                        &connection_id,
+                                        flags,
+                                        ack_id,
+                                        ack_frag_idx,
+                                        ack_frag_cnt,
+                                        ts,
+                                        &[],
+                                        &ack_tag,
+                                        Self::p2p_now_secs(),
+                                    )
+                                    .is_ok();
+                                if valid_ack {
+                                    break;
+                                }
                             }
                         }
                         inbox.push_back((src, data));
@@ -736,5 +1287,182 @@ impl ClientWorker {
         let sock = UdpSocket::bind("0.0.0.0:0").await?;
         sock.connect("1.1.1.1:80").await?;
         Ok(sock.local_addr()?.ip())
+    }
+}
+
+#[cfg(test)]
+mod p2p_security_tests {
+    use super::*;
+    use common::OutputPhase;
+
+    fn sample_command(connection_id: [u8; 16]) -> Command {
+        Command::V2(CommandV2::P2PInferenceDone {
+            connection_id,
+            task_id: "task-1".to_string(),
+            prompt_tokens: 1,
+            completion_tokens: 2,
+            total_tokens: 3,
+            analysis_tokens: 0,
+            final_tokens: 2,
+        })
+    }
+
+    #[test]
+    fn udp_fragment_auth_rejects_tamper_and_stale_timestamp() {
+        let secret = [7u8; 32];
+        let connection_id = [3u8; 16];
+        let payload = b"payload";
+        let now = ClientWorker::p2p_now_secs();
+        let tag = ClientWorker::p2p_udp_tag(&secret, &connection_id, 0, 42, 0, 1, now, payload);
+
+        assert!(ClientWorker::p2p_udp_validate_fragment(
+            &secret,
+            &connection_id,
+            0,
+            42,
+            0,
+            1,
+            now,
+            payload,
+            &tag,
+            now,
+        )
+        .is_ok());
+
+        let mut tampered = *payload;
+        tampered[0] ^= 1;
+        assert!(ClientWorker::p2p_udp_validate_fragment(
+            &secret,
+            &connection_id,
+            0,
+            42,
+            0,
+            1,
+            now,
+            &tampered,
+            &tag,
+            now,
+        )
+        .is_err());
+
+        assert!(ClientWorker::p2p_udp_validate_fragment(
+            &secret,
+            &connection_id,
+            0,
+            42,
+            0,
+            1,
+            now.saturating_sub(ClientWorker::P2P_REPLAY_WINDOW_SECS + 1),
+            payload,
+            &tag,
+            now,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn tcp_envelope_rejects_replay_and_cross_connection() {
+        let secret = [9u8; 32];
+        let connection_id = [4u8; 16];
+        let command = sample_command(connection_id);
+        let signed = ClientWorker::p2p_encode_data_plane_envelope(
+            &command,
+            connection_id,
+            secret,
+            1,
+            ClientWorker::p2p_now_secs(),
+        )
+        .unwrap();
+
+        let mut replay = P2PReplayWindow::new();
+        assert!(ClientWorker::p2p_decode_data_plane_envelope(
+            signed.clone(),
+            connection_id,
+            secret,
+            &mut replay,
+        )
+        .is_ok());
+        assert!(ClientWorker::p2p_decode_data_plane_envelope(
+            signed.clone(),
+            connection_id,
+            secret,
+            &mut replay,
+        )
+        .is_err());
+
+        let mut other_replay = P2PReplayWindow::new();
+        assert!(ClientWorker::p2p_decode_data_plane_envelope(
+            signed,
+            [5u8; 16],
+            secret,
+            &mut other_replay,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn udp_reassembly_enforces_fragment_limits_and_dedupes_completed_messages() {
+        let mut state = P2PUdpReassemblyState::new();
+        let from: SocketAddr = "127.0.0.1:9999".parse().unwrap();
+
+        assert!(state
+            .accept_fragment(
+                from,
+                1,
+                0,
+                ClientWorker::P2P_MAX_FRAGMENTS_PER_MESSAGE + 1,
+                b"x",
+            )
+            .is_err());
+
+        assert!(state
+            .accept_fragment(from, 2, 1, 2, b"b")
+            .unwrap()
+            .is_none());
+        let full = state.accept_fragment(from, 2, 0, 2, b"a").unwrap().unwrap();
+        assert_eq!(full, b"ab");
+        assert!(state
+            .accept_fragment(from, 2, 0, 2, b"a")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn signed_payload_round_trip_preserves_command_shape() {
+        let secret = [1u8; 32];
+        let connection_id = [2u8; 16];
+        let command = Command::V2(CommandV2::P2PInferenceChunk {
+            connection_id,
+            task_id: "task-1".to_string(),
+            seq: 7,
+            delta: "hello".to_string(),
+            phase: OutputPhase::Final,
+            done: false,
+            error: None,
+            analysis_tokens: 0,
+            final_tokens: 1,
+        });
+        let signed = ClientWorker::p2p_encode_data_plane_envelope(
+            &command,
+            connection_id,
+            secret,
+            11,
+            ClientWorker::p2p_now_secs(),
+        )
+        .unwrap();
+        let decoded = ClientWorker::p2p_decode_data_plane_envelope(
+            signed,
+            connection_id,
+            secret,
+            &mut P2PReplayWindow::new(),
+        )
+        .unwrap();
+        match decoded {
+            Command::V2(CommandV2::P2PInferenceChunk { seq, delta, .. }) => {
+                assert_eq!(seq, 7);
+                assert_eq!(delta, "hello");
+            }
+            other => panic!("unexpected decoded command: {:?}", other),
+        }
     }
 }

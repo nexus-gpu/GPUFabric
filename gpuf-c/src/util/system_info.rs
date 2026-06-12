@@ -17,12 +17,11 @@ use tracing::warn;
 
 #[cfg(target_os = "macos")]
 use crate::util::device_info::read_power_metrics;
+#[cfg(target_os = "macos")]
+use std::time::Duration;
 
 #[cfg(all(not(target_os = "macos"), not(target_os = "android"), feature = "nvml"))]
 use nvml_wrapper::NVML;
-
-#[cfg(target_os = "macos")]
-use std::process::Command;
 
 //TODO: pci not support sxm
 #[cfg(target_os = "windows")]
@@ -98,15 +97,11 @@ pub fn get_pci_ids(bus: u8, device: u8, func: u8) -> Option<(u16, u16)> {
 #[allow(unused)]
 pub fn get_pci_ids_by_lspci(device_index: u32) -> Result<(u16, u16)> {
     use std::fs;
-    use std::process::Command;
 
-    // First try to use lspci to get device info
-    let output = Command::new("lspci")
-        .arg("-n")
-        .arg("-s")
-        .arg(format!("00:{:02x}.0", device_index))
-        .output()
-        .map_err(|e| anyhow::anyhow!("Failed to execute lspci: {}", e))?;
+    // First try to use lspci to get device info with timeout and capped output.
+    let slot = format!("00:{:02x}.0", device_index);
+    let output = crate::util::safe_command::run_command_default("lspci", &["-n", "-s", &slot])
+        .map_err(|e| anyhow::anyhow!("Failed to execute lspci safely: {}", e))?;
 
     if output.status.success() {
         let output_str = String::from_utf8_lossy(&output.stdout);
@@ -141,22 +136,7 @@ pub fn get_pci_ids_by_lspci(device_index: u32) -> Result<(u16, u16)> {
             }
         }
 
-        // If that fails, try using cat command
-        let output = Command::new("cat")
-            .arg(path)
-            .output()
-            .map_err(|e| anyhow::anyhow!("Failed to execute cat {}: {}", path, e))?;
-
-        if output.status.success() {
-            let content = String::from_utf8_lossy(&output.stdout);
-            content
-                .trim()
-                .trim_start_matches("0x")
-                .parse::<u16>()
-                .map_err(|e| anyhow::anyhow!("Failed to parse ID from {}: {}", path, e))
-        } else {
-            Err(anyhow::anyhow!("Failed to read device ID from {}", path))
-        }
+        Err(anyhow::anyhow!("Failed to read device ID from {}", path))
     };
 
     let vendor_id = read_id(&format!("{}/vendor", pci_bus_id))?;
@@ -189,7 +169,7 @@ pub fn get_gpu_count() -> Result<usize, Box<dyn std::error::Error>> {
 }
 
 #[cfg(target_os = "android")]
-pub async fn collect_device_info(engine_type: common::EngineType) -> Result<(DevicesInfo, u32)> {
+pub async fn collect_device_info(_engine_type: common::EngineType) -> Result<(DevicesInfo, u32)> {
     #[cfg(feature = "vulkan")]
     {
         collect_device_info_vulkan().await
@@ -214,8 +194,6 @@ async fn collect_device_info_vulkan() -> Result<(DevicesInfo, u32)> {
 /// Collect real Android device information without Vulkan
 #[cfg(target_os = "android")]
 async fn collect_android_device_info() -> Result<DevicesInfo> {
-    use std::fs;
-
     // Get memory information from /proc/meminfo
     let memtotal_gb = read_memory_info().unwrap_or(0);
 
@@ -226,7 +204,7 @@ async fn collect_android_device_info() -> Result<DevicesInfo> {
     let temp = read_thermal_info().unwrap_or(0);
 
     // Get system usage information
-    let (cpu_usage, memory_usage, disk_usage) = read_system_usage().unwrap_or((25, 45, 60));
+    let (cpu_usage, memory_usage, _disk_usage) = read_system_usage().unwrap_or((25, 45, 60));
 
     // ARM vendor ID for Android devices
     let vendor_id = 0x41; // ARM
@@ -438,7 +416,7 @@ fn read_disk_usage() -> Option<u32> {
     use std::fs;
 
     // Try to get disk usage for the data partition
-    if let Ok(metadata) = fs::metadata("/data") {
+    if fs::metadata("/data").is_ok() {
         // On Android, we can't easily get disk usage without additional syscalls
         // For now, return a reasonable default or try to estimate
         // This is a simplified implementation
@@ -454,7 +432,7 @@ fn read_disk_usage() -> Option<u32> {
     not(target_os = "android"),
     not(feature = "cuda")
 ))]
-pub async fn collect_device_info(engine_type: common::EngineType) -> Result<(DevicesInfo, u32)> {
+pub async fn collect_device_info(_engine_type: common::EngineType) -> Result<(DevicesInfo, u32)> {
     debug!("Using system API for device info (NVML available but not CUDA-specific).");
 
     #[cfg(feature = "vulkan")]
@@ -714,31 +692,16 @@ async fn collect_device_info_cpu() -> Result<(DevicesInfo, u32)> {
 pub async fn collect_device_info(engine_type: common::EngineType) -> Result<(DevicesInfo, u32)> {
     use common::{set_u16_to_u128, set_u8_to_u64, to_tflops};
     use nvml_wrapper::NVML as NVMLWrapper;
-    use std::sync::Once;
 
-    static INIT: Once = Once::new();
-    static mut NVML: Option<Result<NVMLWrapper, nvml_wrapper::error::Error>> = None;
-
-    // Initialize NVML only once
-    INIT.call_once(|| unsafe {
-        NVML = Some(NVMLWrapper::init());
-    });
-
-    let nvml_ptr = &raw const NVML;
-
-    // Get the NVML instance
-    let nvml = match unsafe { &*nvml_ptr } {
-        Some(Ok(nvml)) => nvml,
-        Some(Err(e)) => {
+    // Initialize NVML per collection call to avoid unsafe global mutable cache state.
+    let nvml = match NVMLWrapper::init() {
+        Ok(nvml) => nvml,
+        Err(e) => {
             debug!(
                 "NVML initialization failed: {}. Returning empty device list.",
                 e
             );
             return Err(anyhow::anyhow!("{:?}", e));
-        }
-        None => {
-            debug!("NVML not initialized. Returning empty device list.");
-            return Err(anyhow::anyhow!("NVML not initialized"));
         }
     };
 
@@ -885,19 +848,19 @@ pub async fn collect_device_info(engine_type: common::EngineType) -> Result<(Dev
 
 #[cfg(target_os = "macos")]
 fn _get_chip_info() -> String {
-    let output = Command::new("sysctl")
-        .arg("-n")
-        .arg("machdep.cpu.brand_string")
-        .output()
-        .ok()
-        .and_then(|output| {
-            if output.status.success() {
-                String::from_utf8(output.stdout).ok()
-            } else {
-                None
-            }
-        })
-        .unwrap_or_else(|| "gpu".to_string());
+    let output = crate::util::safe_command::run_command_default(
+        "sysctl",
+        &["-n", "machdep.cpu.brand_string"],
+    )
+    .ok()
+    .and_then(|output| {
+        if output.status.success() {
+            String::from_utf8(output.stdout).ok()
+        } else {
+            None
+        }
+    })
+    .unwrap_or_else(|| "gpu".to_string());
 
     output.trim().to_string()
 }
@@ -905,9 +868,9 @@ fn _get_chip_info() -> String {
 #[cfg(target_os = "macos")]
 pub async fn collect_device_info(engine_type: common::EngineType) -> Result<(DevicesInfo, u32)> {
     use rand::Rng;
-    let output_gpu = Command::new("sudo")
-        .args([
-            "powermetrics",
+    let output_gpu = crate::util::safe_command::run_sudo_noninteractive(
+        "powermetrics",
+        &[
             "--samplers",
             "gpu_power,thermal",
             "-i",
@@ -916,16 +879,19 @@ pub async fn collect_device_info(engine_type: common::EngineType) -> Result<(Dev
             "1",
             "--format",
             "plist",
-        ])
-        .output()
-        .expect("failed to execute powermetrics gpu_power");
+        ],
+        Duration::from_secs(8),
+        crate::util::safe_command::DEFAULT_OUTPUT_LIMIT,
+    );
 
-    let plist_gpu = plist::Value::from_reader_xml(output_gpu.stdout.as_slice()).unwrap();
+    let plist_gpu = output_gpu
+        .ok()
+        .and_then(|output| plist::Value::from_reader_xml(output.stdout.as_slice()).ok());
     let mut gpu_freq = 0.0;
     let mut gpu_busy = 0.0;
     let mut gpu_power = 0;
     let mut thermal_level = String::from("Unknown");
-    if let Some(dict) = plist_gpu.as_dictionary() {
+    if let Some(dict) = plist_gpu.as_ref().and_then(|v| v.as_dictionary()) {
         if let Some(gpu_dict) = dict.get("gpu").and_then(|v| v.as_dictionary()) {
             gpu_freq = gpu_dict
                 .get("freq_hz")
@@ -990,10 +956,9 @@ pub async fn collect_device_info(engine_type: common::EngineType) -> Result<(Dev
 
 #[cfg(target_os = "macos")]
 fn get_device_id() -> Option<u16> {
-    let output = Command::new("system_profiler")
-        .arg("SPDisplaysDataType")
-        .output()
-        .expect("failed to run system_profiler");
+    let output =
+        crate::util::safe_command::run_command_default("system_profiler", &["SPDisplaysDataType"])
+            .ok()?;
 
     let out = String::from_utf8_lossy(&output.stdout);
 
@@ -1025,10 +990,11 @@ fn map_thermal(level: &str) -> u32 {
 
 #[cfg(target_os = "macos")]
 pub fn get_apple_gpu_cores() -> Option<usize> {
-    let output = Command::new("system_profiler")
-        .args(["SPDisplaysDataType", "-json"])
-        .output()
-        .ok()?;
+    let output = crate::util::safe_command::run_command_default(
+        "system_profiler",
+        &["SPDisplaysDataType", "-json"],
+    )
+    .ok()?;
 
     if !output.status.success() {
         return None;

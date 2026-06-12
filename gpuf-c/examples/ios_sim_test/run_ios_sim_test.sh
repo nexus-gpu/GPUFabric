@@ -16,9 +16,10 @@ fi
 
 # Pick a booted simulator if available; otherwise boot a reasonable default.
 BOOTED_JSON="$(xcrun simctl list -j devices booted 2>/dev/null || true)"
-BOOTED_UDID="$(printf '%s' "$BOOTED_JSON" | /usr/bin/python3 - <<'PY'
+BOOTED_UDID="$(BOOTED_JSON="$BOOTED_JSON" /usr/bin/python3 - <<'PY'
 import json,sys
-data=sys.stdin.read().strip()
+import os
+data=os.environ.get('BOOTED_JSON', '').strip()
 if not data:
   print('')
   sys.exit(0)
@@ -45,9 +46,10 @@ if [ -z "$BOOTED_UDID" ]; then
   # Try iPhone 15 first, fallback to any available iPhone.
   DEVICE_NAME="iPhone 15"
   AVAILABLE_JSON="$(xcrun simctl list -j devices available 2>/dev/null || true)"
-  UDID="$(printf '%s' "$AVAILABLE_JSON" | /usr/bin/python3 - <<'PY'
+  UDID="$(AVAILABLE_JSON="$AVAILABLE_JSON" /usr/bin/python3 - <<'PY'
 import json,sys
-data=sys.stdin.read().strip()
+import os
+data=os.environ.get('AVAILABLE_JSON', '').strip()
 if not data:
   print('')
   sys.exit(0)
@@ -115,5 +117,46 @@ BUNDLE_ID="com.gpuf.iossimtest"
 echo "📦 Installing app to simulator..."
 xcrun simctl install "$BOOTED_UDID" "$APP_PATH"
 
+if [ -n "${GPUF_IOS_TEST_CA_CERT_SOURCE_PATH:-}" ]; then
+  if [ ! -f "$GPUF_IOS_TEST_CA_CERT_SOURCE_PATH" ]; then
+    echo "❌ GPUF_IOS_TEST_CA_CERT_SOURCE_PATH not found: $GPUF_IOS_TEST_CA_CERT_SOURCE_PATH"
+    exit 1
+  fi
+
+  APP_CONTAINER="$(xcrun simctl get_app_container "$BOOTED_UDID" "$BUNDLE_ID" data)"
+  CERT_NAME="$(basename "$GPUF_IOS_TEST_CA_CERT_SOURCE_PATH")"
+  mkdir -p "$APP_CONTAINER/Documents"
+  cp "$GPUF_IOS_TEST_CA_CERT_SOURCE_PATH" "$APP_CONTAINER/Documents/$CERT_NAME"
+  export GPUF_IOS_TEST_CA_CERT_PATH="$APP_CONTAINER/Documents/$CERT_NAME"
+  echo "🔐 Copied TLS CA cert to simulator Documents: $GPUF_IOS_TEST_CA_CERT_PATH"
+fi
+
+if [ -n "${GPUF_IOS_TEST_MODEL_SOURCE_PATH:-}" ]; then
+  if [ ! -f "$GPUF_IOS_TEST_MODEL_SOURCE_PATH" ]; then
+    echo "❌ GPUF_IOS_TEST_MODEL_SOURCE_PATH not found: $GPUF_IOS_TEST_MODEL_SOURCE_PATH"
+    exit 1
+  fi
+
+  APP_CONTAINER="${APP_CONTAINER:-$(xcrun simctl get_app_container "$BOOTED_UDID" "$BUNDLE_ID" data)}"
+  mkdir -p "$APP_CONTAINER/Documents"
+  cp "$GPUF_IOS_TEST_MODEL_SOURCE_PATH" "$APP_CONTAINER/Documents/Llama-3.2-1B-Instruct-Q8_0.gguf"
+  echo "🧠 Copied model to simulator Documents: $APP_CONTAINER/Documents/Llama-3.2-1B-Instruct-Q8_0.gguf"
+fi
+
 echo "🚀 Launching app... (check Console output in Xcode or: Console.app -> Simulator)"
+for key in \
+  GPUF_IOS_TEST_SERVER_ADDR \
+  GPUF_IOS_TEST_CONTROL_PORT \
+  GPUF_IOS_TEST_PROXY_PORT \
+  GPUF_IOS_TEST_CLIENT_ID \
+  GPUF_IOS_TEST_TLS \
+  GPUF_IOS_TEST_CA_CERT_PATH \
+  GPUF_IOS_TEST_TLS_SERVER_NAME \
+  GPUF_IOS_TEST_CERT_SHA256_PIN
+do
+  if [ -n "${!key:-}" ]; then
+    export "SIMCTL_CHILD_$key=${!key}"
+  fi
+done
+
 xcrun simctl launch "$BOOTED_UDID" "$BUNDLE_ID"

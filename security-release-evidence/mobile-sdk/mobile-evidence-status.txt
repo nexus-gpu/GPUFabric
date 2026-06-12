@@ -1,0 +1,15 @@
+present: android-target-compile.txt status=PASS
+present: ios-target-compile.txt status=PASS_WITH_LIMITATIONS
+present: android-keystore-review.txt status=REVIEWED_REQUIRE_APP_LAYER_IMPLEMENTATION
+blocking-status: android-keystore-review.txt status=REVIEWED_REQUIRE_APP_LAYER_IMPLEMENTATION
+present: ios-keychain-review.txt status=REVIEWED_NO_SDK_STORAGE
+present: mobile-control-tls-pinning.txt status=PASS_UNIT_RECHECK_RUNTIME_LOG_FOLLOWUP
+blocking-status: mobile-control-tls-pinning.txt status=PASS_UNIT_RECHECK_RUNTIME_LOG_FOLLOWUP
+present: android-instrumentation.txt status=PASS_ANDROID_DEVICE_C_HARNESS_APP_INSTRUMENTATION_SIGNOFF_PENDING
+blocking-status: android-instrumentation.txt status=PASS_ANDROID_DEVICE_C_HARNESS_APP_INSTRUMENTATION_SIGNOFF_PENDING
+present: ios-simulator-device.txt status=CONDITIONAL_PASS_REQUIRES_RAW_RUNTIME_LOG_ATTACHMENT
+blocking-status: ios-simulator-device.txt status=CONDITIONAL_PASS_REQUIRES_RAW_RUNTIME_LOG_ATTACHMENT
+present: asan-tsan.txt status=PASS_LINUX_NIGHTLY_ASAN_TSAN_MOBILE_UNIT_ANDROID_IOS_RUNTIME_SIGNOFF_REQUIRED
+blocking-status: asan-tsan.txt status=PASS_LINUX_NIGHTLY_ASAN_TSAN_MOBILE_UNIT_ANDROID_IOS_RUNTIME_SIGNOFF_REQUIRED
+present: permissions-logging-audit.txt status=REVIEWED_WITH_PRODUCTION_LOGGING_ACTION
+blocking-status: permissions-logging-audit.txt status=REVIEWED_WITH_PRODUCTION_LOGGING_ACTION

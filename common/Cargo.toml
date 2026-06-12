@@ -17,3 +17,4 @@ uuid = { workspace = true }
 hex = { workspace = true }
 lazy_static = "1.4.0"
 serde_derive = "1.0"
+zeroize = "1"

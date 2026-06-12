@@ -141,7 +141,7 @@ cargo run --bin inference_service --release --features vulkan -- \
 
 ```bash
 cargo run --bin gpuf-c --release --features vulkan -- \
-  --server-addr "8.140.251.142" \
+  --server-addr "<your-server-host>" \
   --control-port 17000 \
   --local-port 8081 \
   --client-id "your-client-id"

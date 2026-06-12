@@ -80,7 +80,7 @@ This creates:
 | `--public-port` | u16 | 18080 | Port for public user connections |
 | `--api-port` | u16 | 18081 | Port for HTTP API server |
 | `--api-key` | string | `abc123` | Fallback API key for authentication |
-| `--database-url` | string | `postgres://username:password@localhost/database` | PostgreSQL connection string |
+| `--database-url` | string | `postgres://<db-user>:<db-password>@localhost/<db-name>` | PostgreSQL connection string |
 | `--redis-url` | string | `redis://127.0.0.1:6379` | Redis connection string |
 | `--bootstrap-server` | string | `localhost:9092` | Kafka broker address |
 | `--proxy-cert-chain-path` | string | `cert.pem` | Path to TLS certificate chain |
@@ -95,7 +95,7 @@ This creates:
   --proxy-port 17001 \
   --public-port 18080 \
   --api-port 18081 \
-  --database-url "postgres://postgres:password@localhost:5432/GPUFabric" \
+  --database-url "postgres://<db-user>:<db-password>@localhost:5432/<db-name>" \
   --redis-url "redis://127.0.0.1:6379" \
   --bootstrap-server "localhost:9092" \
   --api-key "your-secure-api-key" \
@@ -108,7 +108,7 @@ This creates:
 You can also configure using environment variables:
 
 ```bash
-export DATABASE_URL="postgres://user:pass@localhost/frpx"
+export DATABASE_URL="postgres://<db-user>:<db-password>@localhost/<db-name>"
 export REDIS_URL="redis://localhost:6379"
 export API_KEY="your-api-key"
 ```

@@ -164,7 +164,7 @@ llama_decode(
 
 ### Quick Test
 ```bash
-cd /home/jack/codedir/GPUFabric/gpuf-c/examples
+cd <repo>/gpuf-c/examples
 ./quick_multimodal_test.sh
 ```
 

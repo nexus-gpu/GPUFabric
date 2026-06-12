@@ -19,7 +19,7 @@ This guide provides detailed instructions for building GPUFabric Mobile SDK, sup
 
 ### Android Requirements
 - **Android Studio**: Latest version
-- **Android NDK**: r21+ (recommended r26d)
+- **Android NDK**: r21+; current local validation uses NDK 25.1.8937393
 - **Android SDK**: API 24+ 
 - **CMake**: 3.18+ (auto-installed)
 
@@ -27,6 +27,7 @@ This guide provides detailed instructions for building GPUFabric Mobile SDK, sup
 - **Xcode**: 14.0+
 - **iOS SDK**: 14.0+
 - **Rust iOS targets**: `aarch64-apple-ios`, `x86_64-apple-ios`
+- **Prebuilt llama.cpp iOS libraries**: expected under `target/llama-ios/<target>/`
 
 ### Optional Tools
 - **UPX**: For compressing .so files (recommended)
@@ -118,13 +119,19 @@ rustup target add aarch64-apple-ios-sim
 
 #### Step 2: Build iOS Libraries
 ```bash
-# Build iOS device libraries
-cargo build --target aarch64-apple-ios --release --features metal
-cargo build --target x86_64-apple-ios --release --features metal
+# Build the merged static libraries and XCFramework.
+# The script defaults to --no-default-features --features ios-sdk so it links
+# the prebuilt llama.cpp archives instead of pulling the default CPU/OpenMP feature.
+./generate_ios_sdk.sh
 
-# Build iOS simulator libraries
-cargo build --target aarch64-apple-ios-sim --release --features metal
+# Optional override for local experiments:
+FEATURES=ios-sdk BUILD_MODE=release ./generate_ios_sdk.sh
 ```
+
+The script writes generated output under `gpuf-c/build_ios/dist/` and temporary
+prebuilt llama output under `gpuf-c/build_llama_ios/`. These are local release
+artifacts and are intentionally ignored by Git; publish them through the release
+artifact process with `SHA256SUMS`, not by committing them.
 
 ## 📁 Output Files
 
@@ -132,22 +139,26 @@ cargo build --target aarch64-apple-ios-sim --release --features metal
 ```
 target/
 ├── aarch64-linux-android/release/
-│   └── libgpuf_c.so              # ARM64 library (2.2MB → ~1.5MB compressed)
+│   └── libgpuf_c.so              # ARM64 library (2.2MB -> ~1.5MB compressed)
 ├── armv7-linux-androideabi/release/
 │   └── libgpuf_c.so              # ARMv7 library
 └── x86_64-linux-android/release/
     └── libgpuf_c.so              # x86_64 library
 ```
 
+`gpuf-c/generate_sdk.sh` produces the packaged Android SDK at `target/gpufabric-android-sdk-v9.0.0/` plus `target/gpufabric-android-sdk-v9.0.0.tar.gz` and `target/SHA256SUMS`. The script rejects stale llama.cpp Android static libraries whose CMake cache points at a different NDK; set `GPUF_FORCE_REBUILD_LLAMA_ANDROID=1` to force a clean llama.cpp rebuild when switching NDKs.
+
 ### iOS Output
 ```
-target/
-├── aarch64-apple-ios/release/
-│   └── libgpuf_c.a               # iOS ARM64 static library
-├── x86_64-apple-ios/release/
-│   └── libgpuf_c.a               # iOS x86_64 static library
-└── aarch64-apple-ios-sim/release/
-    └── libgpuf_c.a               # iOS simulator static library
+gpuf-c/build_ios/dist/
+├── gpuf_c_sdk.xcframework/       # iOS device + simulator XCFramework
+├── include/
+│   ├── gpuf_c.h
+│   └── gpuf_c_minimal.h
+├── libgpuf_c_device.a
+├── libgpuf_c_simulator.a
+├── libgpuf_c_simulator_merged.a
+└── SHA256SUMS
 ```
 
 ### Header Files
@@ -194,6 +205,20 @@ gpuf_c.h                           # C header file (common for all platforms)
 ### test_android.ps1
 **Purpose**: Android test environment preparation
 
+### gpuf-c/scripts/test_android_inference.sh
+**Purpose**: Linux/adb real-device validation for the packaged Android SDK.
+
+Example:
+```bash
+env ANDROID_NDK_ROOT=<android-ndk> \
+    ANDROID_NDK_HOME=<android-ndk> \
+    SDK_DIR=<repo>/target/gpufabric-android-sdk-v9.0.0 \
+    TEST_MODEL_PATH=<model.gguf> \
+    gpuf-c/scripts/test_android_inference.sh
+```
+
+The script deploys `libgpuf_c_sdk_v9.so`, `libc++_shared.so`, a GGUF model, and a small C test binary through adb. It validates `gpuf_init`, `gpuf_load_model`, `gpuf_create_context`, `gpuf_generate_final_solution_text`, and `gpuf_generate_with_sampling` on the device.
+
 **Features**:
 - ✅ Copy .so files to test directory
 - ✅ Generate Android Studio project structure
@@ -223,7 +248,8 @@ cargo ndk build --release
 
 # Feature selection
 --features vulkan    # GPU acceleration (Android)
---features metal     # GPU acceleration (iOS)  
+--features ios-sdk    # iOS SDK build that links prebuilt llama.cpp archives
+--features metal      # Direct Metal build for local experiments
 --features cpu       # CPU only (best compatibility)
 ```
 

@@ -7,9 +7,21 @@ The gpuf-s API Server provides a comprehensive set of RESTful APIs for managing 
 
 ## Basic Information
 
-- **Base URL**: `http://localhost:18081` (default port)
+- **Base URL**: `http://127.0.0.1:18081` (default local development port)
 - **Content-Type**: `application/json`
 - **CORS**: Cross-origin requests are supported
+- **Bind Address**: the standalone `api_server` binary now binds to `127.0.0.1` by default. Use `--bind-addr 0.0.0.0` only behind a reverse proxy, firewall, and deployment-level access control.
+
+## Frontend Integration Contract
+
+Frontend clients should treat `http://127.0.0.1:18081` as the default development API origin. For browser deployments, put the API behind a same-origin reverse proxy or configure an environment variable such as `GPUFABRIC_API_BASE_URL` / `VITE_GPUFABRIC_API_BASE_URL` instead of hardcoding a public host.
+
+The security remediation keeps the existing management REST contract compatible: `/api/user/*`, `/api/models/*`, `/api/apk/*`, `/api/user/points`, and the unified response envelope remain unchanged. New model metadata fields (`download_url`, `checksum`, `expected_size`) are additive and optional for older frontends. Native `gpuf-c` SDK/FFI signatures are also compatible; integrations only need to account for stricter defaults such as explicit server addresses and SHA256-verified artifacts.
+
+Do not put long-lived service credentials, database passwords, TURN credentials, or release signing keys into browser code. If a public frontend needs access, terminate TLS/auth at the deployment edge and forward only the required API calls to the loopback-bound API server.
+
+Worker control-plane note: frontend REST paths are unchanged by gpuf-s/gpuf-c control TLS or by the native mobile `startRemoteWorkerWithTls` API. For deployments that also onboard remote workers over non-loopback networks, run gpuf-s with `--control-tls` and configure gpuf-c with `--control-tls --control-tls-server-name <name> --cert-chain-path <ca.pem>`; mobile apps should use the additive native TLS SDK entry point rather than putting worker credentials or pins in browser code.
+
 
 ## API Response Format
 
@@ -108,7 +120,7 @@ Get all clients for a user with support for multiple filter conditions.
     "total": 5,
     "devices": [
       {
-        "client_id": "6e1131b4b9cc454aa6ce3294ab860b2d",
+        "client_id": "<client-id-32-hex>",
         "client_name": "GPU Server 1",
         "client_status": "online",
         "os_type": "Linux",
@@ -234,7 +246,7 @@ Get detailed device information for a specific client, including system informat
 #### Request Example
 
 ```bash
-curl "http://localhost:18081/api/user/client_device_detail?user_id=12&client_id=6e1131b4b9cc454aa6ce3294ab860b2d"
+curl "http://localhost:18081/api/user/client_device_detail?user_id=12&client_id=<client-id-32-hex>"
 ```
 
 ---
@@ -294,7 +306,7 @@ curl -X POST http://localhost:18081/api/user/edit_client_info \
   -H "Content-Type: application/json" \
   -d '{
     "user_id": "12",
-    "client_id": "6e1131b4b9cc454aa6ce3294ab860b2d",
+    "client_id": "<client-id-32-hex>",
     "name": "Updated Client Name",
     "client_status": "maintenance"
   }'
@@ -373,7 +385,7 @@ Get historical monitoring data for clients, including daily statistics.
   "success": true,
   "data": [
     {
-      "client_id": "6e1131b4b9cc454aa6ce3294ab860b2d",
+      "client_id": "<client-id-32-hex>",
       "client_name": "GPU Server 1",
       "created_at": "2025-07-01T10:00:00",
       "updated_at": "2025-07-29T17:55:48",
@@ -417,7 +429,7 @@ Get historical monitoring data for clients, including daily statistics.
 
 ```bash
 curl "http://localhost:18081/api/user/client_monitor?user_id=12"
-curl "http://localhost:18081/api/user/client_monitor?user_id=12&client_id=6e1131b4b9cc454aa6ce3294ab860b2d"
+curl "http://localhost:18081/api/user/client_monitor?user_id=12&client_id=<client-id-32-hex>"
 ```
 
 ---
@@ -444,7 +456,7 @@ Get client heartbeat health information with support for date range queries.
   "success": true,
   "data": [
     {
-      "client_id": "6e1131b4b9cc454aa6ce3294ab860b2d",
+      "client_id": "<client-id-32-hex>",
       "client_name": "GPU Server 1",
       "timestamp": "2025-07-29T17:55:48.826362Z",
       "cpu_usage": 45,
@@ -476,7 +488,7 @@ Get client heartbeat health information with support for date range queries.
 
 ```bash
 curl "http://localhost:18081/api/user/client_health?user_id=12"
-curl "http://localhost:18081/api/user/client_health?user_id=12&client_id=6e1131b4b9cc454aa6ce3294ab860b2d&start_date=2025-07-01&end_date=2025-07-29"
+curl "http://localhost:18081/api/user/client_health?user_id=12&client_id=<client-id-32-hex>&start_date=2025-07-01&end_date=2025-07-29"
 ```
 
 ---
@@ -499,7 +511,10 @@ Create or update model information.
   "engine_type": 0,
   "is_active": true,
   "min_memory_mb": 1024,
-  "min_gpu_memory_gb": 8
+  "min_gpu_memory_gb": 8,
+  "download_url": "string (optional)",
+  "checksum": "sha256:<64 hex chars> (optional)",
+  "expected_size": 123456789
 }
 ```
 
@@ -514,6 +529,9 @@ Create or update model information.
 | `is_active` | boolean | No | Whether the model is active |
 | `min_memory_mb` | number | No | Minimum memory requirement (MB) |
 | `min_gpu_memory_gb` | number | No | Minimum GPU memory requirement (GB) |
+| `download_url` | string | No | HTTPS/model artifact URL. Frontends should not include secrets in query strings. |
+| `checksum` | string | No | SHA256 checksum, recommended format `sha256:<64 hex chars>`. MD5 is not a trust mechanism. |
+| `expected_size` | number | No | Expected artifact size in bytes. |
 
 #### Response Example
 
@@ -596,6 +614,9 @@ Get model list with support for conditional filtering.
 | `is_active` | boolean | Whether the model is active |
 | `min_memory_mb` | number | Minimum memory requirement (MB) |
 | `min_gpu_memory_gb` | number | Minimum GPU memory requirement (GB) |
+| `download_url` | string | Optional model artifact URL |
+| `checksum` | string | Optional SHA256 checksum |
+| `expected_size` | number | Optional expected artifact size in bytes |
 | `created_at` | string | Creation time |
 
 #### Request Example
@@ -617,7 +638,7 @@ curl -X POST http://localhost:18081/api/user/insert_client \
   -H "Content-Type: application/json" \
   -d '{
     "user_id": "12",
-    "client_id": "6e1131b4b9cc454aa6ce3294ab860b2d",
+    "client_id": "<client-id-32-hex>",
     "client_status": "online",
     "os_type": "Linux",
     "name": "GPU Server 1"
@@ -627,14 +648,14 @@ curl -X POST http://localhost:18081/api/user/insert_client \
 curl "http://localhost:18081/api/user/client_list?user_id=12"
 
 # 3. Get client details
-curl "http://localhost:18081/api/user/client_device_detail?user_id=12&client_id=6e1131b4b9cc454aa6ce3294ab860b2d"
+curl "http://localhost:18081/api/user/client_device_detail?user_id=12&client_id=<client-id-32-hex>"
 
 # 4. Update client information
 curl -X POST http://localhost:18081/api/user/edit_client_info \
   -H "Content-Type: application/json" \
   -d '{
     "user_id": "12",
-    "client_id": "6e1131b4b9cc454aa6ce3294ab860b2d",
+    "client_id": "<client-id-32-hex>",
     "name": "Updated GPU Server 1",
     "client_status": "maintenance"
   }'
@@ -706,7 +727,15 @@ curl -s "http://localhost:18081/api/user/client_stat?user_id=12" | jq '.data.sys
 
 ### Starting the API Server
 
-The API server listens on `0.0.0.0:18081` by default. The port can be modified through configuration.
+```bash
+cargo run --release -p gpuf-s --bin api_server -- \
+  --bind-addr 127.0.0.1 \
+  --port 18081 \
+  --database-url "$DATABASE_URL" \
+  --redis-url "redis://127.0.0.1:6379"
+```
+
+The API server listens on `127.0.0.1:18081` by default. Change the port with `--port`; use `--bind-addr 0.0.0.0` only when the deployment is protected by a reverse proxy, firewall, and access-control policy.
 
 ### Database Connection
 
@@ -723,4 +752,7 @@ redis-cli monitor
 
 ## Changelog
 
+- 2026-06-09: Documented that Android native SDK rebuild/test fixes do not change frontend REST contracts.
+- 2026-06-05: Documented that mobile native TLS worker APIs are additive and do not change frontend REST contracts.
+- 2026-06-04: Documented security remediation defaults, frontend integration contract, loopback API bind default, additive model checksum fields, and SDK compatibility impact.
 - Initial version: Support for client management, monitoring, and model management APIs

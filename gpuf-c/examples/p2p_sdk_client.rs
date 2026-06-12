@@ -9,7 +9,7 @@ use crc32fast::Hasher as Crc32;
 use hmac::{Hmac, Mac};
 use md5;
 use std::net::ToSocketAddrs;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpStream, UdpSocket};
@@ -17,6 +17,7 @@ use tokio::time::timeout;
 use url::Url;
 
 use sha1::Sha1;
+use sha2::Sha256;
 
 #[cfg(not(target_os = "android"))]
 use tokio_rustls::{
@@ -39,17 +40,209 @@ fn udp_encode_command(command: &Command) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+fn udp_decode_command(datagram: &[u8]) -> Result<Command> {
+    if datagram.len() < 4 {
+        return Err(anyhow!("udp datagram too short"));
+    }
+    let len = u32::from_be_bytes([datagram[0], datagram[1], datagram[2], datagram[3]]) as usize;
+    if datagram.len() < 4 + len {
+        return Err(anyhow!("udp datagram truncated"));
+    }
+    let config = bincode::config::standard()
+        .with_fixed_int_encoding()
+        .with_little_endian();
+    let (cmd, _) = bincode::decode_from_slice(&datagram[4..4 + len], config)
+        .map_err(|e| anyhow!("Failed to deserialize command: {}", e))?;
+    Ok(cmd)
+}
+
+fn parse_client_id_hex(s: &str) -> Result<[u8; 16]> {
+    let s = s.trim();
+    if s.len() != 32 {
+        return Err(anyhow!(
+            "client_id must be 32 hex characters, got {}",
+            s.len()
+        ));
+    }
+    let mut out = [0u8; 16];
+    for i in 0..16 {
+        out[i] = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16)
+            .map_err(|e| anyhow!("invalid hex in client_id: {}", e))?;
+    }
+    Ok(out)
+}
+
+fn stun_new_txid() -> [u8; 12] {
+    uuid::Uuid::new_v4().as_bytes()[..12]
+        .try_into()
+        .unwrap_or([0u8; 12])
+}
+
+fn stun_write_attr(buf: &mut Vec<u8>, attr_type: u16, value: &[u8]) {
+    buf.extend_from_slice(&attr_type.to_be_bytes());
+    buf.extend_from_slice(&(value.len() as u16).to_be_bytes());
+    buf.extend_from_slice(value);
+    let pad = (4 - (value.len() % 4)) % 4;
+    if pad != 0 {
+        buf.extend(std::iter::repeat_n(0u8, pad));
+    }
+}
+
+fn stun_build_message(
+    msg_type: u16,
+    txid: [u8; 12],
+    attrs: &[(&u16, Vec<u8>)],
+    mi: Option<(&str, &str, &str)>,
+    fingerprint: bool,
+) -> Vec<u8> {
+    let mut body = Vec::new();
+    for (t, v) in attrs {
+        stun_write_attr(&mut body, **t, v);
+    }
+
+    let mut header = Vec::with_capacity(20);
+    header.extend_from_slice(&msg_type.to_be_bytes());
+    header.extend_from_slice(&0u16.to_be_bytes());
+    header.extend_from_slice(&0x2112A442u32.to_be_bytes());
+    header.extend_from_slice(&txid);
+
+    let mut msg = header;
+    msg.extend_from_slice(&body);
+
+    if let Some((username, realm, password)) = mi {
+        let key_src = format!("{}:{}:{}", username, realm, password);
+        let key = md5::compute(key_src.as_bytes());
+
+        let mi_attr_len = 20usize;
+        let mi_total = 4 + mi_attr_len;
+        let fp_total = if fingerprint { 8 } else { 0 };
+        let new_len = (msg.len() - 20 + mi_total + fp_total) as u16;
+        msg[2..4].copy_from_slice(&new_len.to_be_bytes());
+
+        let mut tmp = msg.clone();
+        tmp.extend_from_slice(&0x0008u16.to_be_bytes());
+        tmp.extend_from_slice(&(mi_attr_len as u16).to_be_bytes());
+        tmp.extend_from_slice(&[0u8; 20]);
+
+        let mut mac = Hmac::<Sha1>::new_from_slice(&key.0).expect("hmac key");
+        mac.update(&tmp);
+        let out = mac.finalize().into_bytes();
+
+        msg.extend_from_slice(&0x0008u16.to_be_bytes());
+        msg.extend_from_slice(&(mi_attr_len as u16).to_be_bytes());
+        msg.extend_from_slice(&out);
+    } else {
+        let new_len = (msg.len() - 20) as u16;
+        msg[2..4].copy_from_slice(&new_len.to_be_bytes());
+    }
+
+    if fingerprint {
+        let new_len = (msg.len() - 20 + 8) as u16;
+        msg[2..4].copy_from_slice(&new_len.to_be_bytes());
+
+        let mut crc = Crc32::new();
+        crc.update(&msg);
+        let fp = crc.finalize() ^ 0x5354554e;
+        msg.extend_from_slice(&0x8028u16.to_be_bytes());
+        msg.extend_from_slice(&4u16.to_be_bytes());
+        msg.extend_from_slice(&fp.to_be_bytes());
+    }
+
+    msg
+}
+
+async fn stun_read_message<S: tokio::io::AsyncRead + Unpin>(stream: &mut S) -> Result<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
+    let mut header = [0u8; 20];
+    AsyncReadExt::read_exact(stream, &mut header).await?;
+    let len = u16::from_be_bytes([header[2], header[3]]) as usize;
+    let mut body = vec![0u8; len];
+    AsyncReadExt::read_exact(stream, &mut body).await?;
+    let mut msg = Vec::with_capacity(20 + len);
+    msg.extend_from_slice(&header);
+    msg.extend_from_slice(&body);
+    Ok(msg)
+}
+
+fn stun_parse_xor_addr(v: &[u8], txid: &[u8; 12]) -> Option<std::net::SocketAddr> {
+    if v.len() < 8 {
+        return None;
+    }
+    let family = v[1];
+    let xport = u16::from_be_bytes([v[2], v[3]]);
+    let port = xport ^ 0x2112;
+    if family == 0x01 {
+        let xaddr = u32::from_be_bytes([v[4], v[5], v[6], v[7]]);
+        let addr = xaddr ^ 0x2112A442;
+        let ip = std::net::Ipv4Addr::from(addr);
+        return Some(std::net::SocketAddr::new(ip.into(), port));
+    }
+    if family == 0x02 && v.len() >= 20 {
+        let mut x = [0u8; 16];
+        x.copy_from_slice(&v[4..20]);
+        let mut mask = [0u8; 16];
+        mask[..4].copy_from_slice(&0x2112A442u32.to_be_bytes());
+        mask[4..].copy_from_slice(txid);
+        let mut out = [0u8; 16];
+        for i in 0..16 {
+            out[i] = x[i] ^ mask[i];
+        }
+        let ip = std::net::Ipv6Addr::from(out);
+        return Some(std::net::SocketAddr::new(ip.into(), port));
+    }
+    None
+}
+
 const P2P_UDP_MAGIC: [u8; 4] = *b"P2PU";
-const P2P_UDP_VERSION: u8 = 1;
+const P2P_UDP_VERSION: u8 = 2;
 const P2P_UDP_FLAG_ACK: u8 = 0x01;
-const P2P_UDP_HEADER_LEN: usize = 4 + 1 + 1 + 4 + 2 + 2;
+const P2P_UDP_HEADER_LEN: usize = 4 + 1 + 1 + 4 + 2 + 2 + 8 + 32;
 const P2P_UDP_MTU_PAYLOAD: usize = 1200;
+const P2P_MAX_FRAGMENTS_PER_MESSAGE: usize = 128;
+const P2P_REPLAY_WINDOW_SECS: u64 = 300;
+
+fn p2p_now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn p2p_hmac_sha256(secret: &[u8; 32], data: &[u8]) -> [u8; 32] {
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("hmac sha256 key");
+    mac.update(data);
+    mac.finalize().into_bytes().into()
+}
+
+fn p2p_udp_tag(
+    secret: &[u8; 32],
+    connection_id: &[u8; 16],
+    flags: u8,
+    msg_id: u32,
+    frag_idx: u16,
+    frag_cnt: u16,
+    timestamp: u64,
+    payload: &[u8],
+) -> [u8; 32] {
+    let mut data = Vec::with_capacity(32 + 16 + 1 + 4 + 2 + 2 + 8 + payload.len());
+    data.extend_from_slice(b"GPUF-P2P-UDP-V2");
+    data.extend_from_slice(connection_id);
+    data.push(flags);
+    data.extend_from_slice(&msg_id.to_be_bytes());
+    data.extend_from_slice(&frag_idx.to_be_bytes());
+    data.extend_from_slice(&frag_cnt.to_be_bytes());
+    data.extend_from_slice(&timestamp.to_be_bytes());
+    data.extend_from_slice(payload);
+    p2p_hmac_sha256(secret, &data)
+}
 
 fn p2p_udp_make_header(
     flags: u8,
     msg_id: u32,
     frag_idx: u16,
     frag_cnt: u16,
+    timestamp: u64,
+    tag: &[u8; 32],
 ) -> [u8; P2P_UDP_HEADER_LEN] {
     let mut h = [0u8; P2P_UDP_HEADER_LEN];
     h[0..4].copy_from_slice(&P2P_UDP_MAGIC);
@@ -58,14 +251,16 @@ fn p2p_udp_make_header(
     h[6..10].copy_from_slice(&msg_id.to_be_bytes());
     h[10..12].copy_from_slice(&frag_idx.to_be_bytes());
     h[12..14].copy_from_slice(&frag_cnt.to_be_bytes());
+    h[14..22].copy_from_slice(&timestamp.to_be_bytes());
+    h[22..54].copy_from_slice(tag);
     h
 }
 
-fn p2p_udp_parse_header(buf: &[u8]) -> Option<(u8, u32, u16, u16)> {
+fn p2p_udp_parse_header(buf: &[u8]) -> Option<(u8, u32, u16, u16, u64, [u8; 32])> {
     if buf.len() < P2P_UDP_HEADER_LEN {
         return None;
     }
-    if &buf[0..4] != P2P_UDP_MAGIC {
+    if buf.get(0..4)? != P2P_UDP_MAGIC {
         return None;
     }
     if buf[4] != P2P_UDP_VERSION {
@@ -75,17 +270,105 @@ fn p2p_udp_parse_header(buf: &[u8]) -> Option<(u8, u32, u16, u16)> {
     let msg_id = u32::from_be_bytes([buf[6], buf[7], buf[8], buf[9]]);
     let frag_idx = u16::from_be_bytes([buf[10], buf[11]]);
     let frag_cnt = u16::from_be_bytes([buf[12], buf[13]]);
-    Some((flags, msg_id, frag_idx, frag_cnt))
+    let timestamp = u64::from_be_bytes([
+        buf[14], buf[15], buf[16], buf[17], buf[18], buf[19], buf[20], buf[21],
+    ]);
+    let tag = buf[22..54].try_into().ok()?;
+    Some((flags, msg_id, frag_idx, frag_cnt, timestamp, tag))
 }
 
-async fn p2p_udp_send_ack(socket: &UdpSocket, to: std::net::SocketAddr, msg_id: u32) {
-    let hdr = p2p_udp_make_header(P2P_UDP_FLAG_ACK, msg_id, 0, 0);
+fn p2p_timestamp_is_fresh(timestamp: u64, now: u64) -> bool {
+    timestamp <= now.saturating_add(30) && now.saturating_sub(timestamp) <= P2P_REPLAY_WINDOW_SECS
+}
+
+fn p2p_udp_validate_fragment(
+    secret: &[u8; 32],
+    connection_id: &[u8; 16],
+    flags: u8,
+    msg_id: u32,
+    frag_idx: u16,
+    frag_cnt: u16,
+    timestamp: u64,
+    payload: &[u8],
+    tag: &[u8; 32],
+) -> Result<()> {
+    if (flags & P2P_UDP_FLAG_ACK) != 0 {
+        if frag_idx != 0 || frag_cnt != 0 || !payload.is_empty() {
+            return Err(anyhow!("invalid p2p udp ack metadata"));
+        }
+    } else {
+        if frag_cnt == 0 || frag_cnt as usize > P2P_MAX_FRAGMENTS_PER_MESSAGE {
+            return Err(anyhow!("invalid p2p udp fragment count"));
+        }
+        if frag_idx >= frag_cnt {
+            return Err(anyhow!("invalid p2p udp fragment index"));
+        }
+    }
+    if !p2p_timestamp_is_fresh(timestamp, p2p_now_secs()) {
+        return Err(anyhow!("stale p2p udp fragment"));
+    }
+    let expected = p2p_udp_tag(
+        secret,
+        connection_id,
+        flags,
+        msg_id,
+        frag_idx,
+        frag_cnt,
+        timestamp,
+        payload,
+    );
+    if expected.as_slice() != tag.as_slice() {
+        return Err(anyhow!("p2p udp fragment authentication failed"));
+    }
+    Ok(())
+}
+
+async fn p2p_udp_send_ack(
+    socket: &UdpSocket,
+    to: std::net::SocketAddr,
+    connection_id: [u8; 16],
+    secret: [u8; 32],
+    msg_id: u32,
+) {
+    let timestamp = p2p_now_secs();
+    let tag = p2p_udp_tag(
+        &secret,
+        &connection_id,
+        P2P_UDP_FLAG_ACK,
+        msg_id,
+        0,
+        0,
+        timestamp,
+        &[],
+    );
+    let hdr = p2p_udp_make_header(P2P_UDP_FLAG_ACK, msg_id, 0, 0, timestamp, &tag);
     let _ = socket.send_to(&hdr, to).await;
+}
+
+fn p2p_udp_ack_packet(
+    connection_id: [u8; 16],
+    secret: [u8; 32],
+    msg_id: u32,
+) -> [u8; P2P_UDP_HEADER_LEN] {
+    let timestamp = p2p_now_secs();
+    let tag = p2p_udp_tag(
+        &secret,
+        &connection_id,
+        P2P_UDP_FLAG_ACK,
+        msg_id,
+        0,
+        0,
+        timestamp,
+        &[],
+    );
+    p2p_udp_make_header(P2P_UDP_FLAG_ACK, msg_id, 0, 0, timestamp, &tag)
 }
 
 async fn p2p_udp_send_reliable(
     socket: &UdpSocket,
     to: std::net::SocketAddr,
+    connection_id: [u8; 16],
+    secret: [u8; 32],
     msg_id: u32,
     payload: &[u8],
 ) -> Result<()> {
@@ -94,31 +377,61 @@ async fn p2p_udp_send_reliable(
         return Err(anyhow!("p2p udp mtu too small"));
     }
     let frag_cnt = ((payload.len() + max_payload - 1) / max_payload).max(1);
-    if frag_cnt > u16::MAX as usize {
+    if frag_cnt > P2P_MAX_FRAGMENTS_PER_MESSAGE {
         return Err(anyhow!("p2p udp too many fragments"));
     }
 
     for frag_idx in 0..frag_cnt {
         let start = frag_idx * max_payload;
         let end = ((frag_idx + 1) * max_payload).min(payload.len());
-        let hdr = p2p_udp_make_header(0, msg_id, frag_idx as u16, frag_cnt as u16);
-        let mut pkt = Vec::with_capacity(P2P_UDP_HEADER_LEN + (end - start));
+        let frag_payload = &payload[start..end];
+        let timestamp = p2p_now_secs();
+        let tag = p2p_udp_tag(
+            &secret,
+            &connection_id,
+            0,
+            msg_id,
+            frag_idx as u16,
+            frag_cnt as u16,
+            timestamp,
+            frag_payload,
+        );
+        let hdr = p2p_udp_make_header(0, msg_id, frag_idx as u16, frag_cnt as u16, timestamp, &tag);
+        let mut pkt = Vec::with_capacity(P2P_UDP_HEADER_LEN + frag_payload.len());
         pkt.extend_from_slice(&hdr);
-        pkt.extend_from_slice(&payload[start..end]);
+        pkt.extend_from_slice(frag_payload);
 
         let mut tries = 0u32;
         loop {
             tries += 1;
             socket.send_to(&pkt, to).await?;
 
-            let mut ack_buf = [0u8; 64];
+            let mut ack_buf = [0u8; P2P_UDP_HEADER_LEN];
             let ack_res = timeout(Duration::from_millis(400), socket.recv_from(&mut ack_buf)).await;
             if let Ok(Ok((n, from))) = ack_res {
                 if from != to {
                     continue;
                 }
-                if let Some((flags, ack_id, _fi, _fc)) = p2p_udp_parse_header(&ack_buf[..n]) {
-                    if (flags & P2P_UDP_FLAG_ACK) != 0 && ack_id == msg_id {
+                if let Some((flags, ack_id, ack_frag_idx, ack_frag_cnt, ts, ack_tag)) =
+                    p2p_udp_parse_header(&ack_buf[..n])
+                {
+                    let valid_ack = (flags & P2P_UDP_FLAG_ACK) != 0
+                        && ack_id == msg_id
+                        && ack_frag_idx == 0
+                        && ack_frag_cnt == 0
+                        && p2p_udp_validate_fragment(
+                            &secret,
+                            &connection_id,
+                            flags,
+                            ack_id,
+                            ack_frag_idx,
+                            ack_frag_cnt,
+                            ts,
+                            &[],
+                            &ack_tag,
+                        )
+                        .is_ok();
+                    if valid_ack {
                         break;
                     }
                 }
@@ -345,6 +658,8 @@ fn turn_parse_data_indication(msg: &[u8]) -> Option<(std::net::SocketAddr, Vec<u
 async fn turn_send_reliable_over_indication(
     sock: &UdpSocket,
     peer: std::net::SocketAddr,
+    connection_id: [u8; 16],
+    secret: [u8; 32],
     msg_id: u32,
     payload: &[u8],
     inbox: &mut std::collections::VecDeque<(std::net::SocketAddr, Vec<u8>)>,
@@ -354,17 +669,29 @@ async fn turn_send_reliable_over_indication(
         return Err(anyhow!("p2p udp mtu too small"));
     }
     let frag_cnt = ((payload.len() + max_payload - 1) / max_payload).max(1);
-    if frag_cnt > u16::MAX as usize {
+    if frag_cnt > P2P_MAX_FRAGMENTS_PER_MESSAGE {
         return Err(anyhow!("p2p udp too many fragments"));
     }
 
     for frag_idx in 0..frag_cnt {
         let start = frag_idx * max_payload;
         let end = ((frag_idx + 1) * max_payload).min(payload.len());
-        let hdr = p2p_udp_make_header(0, msg_id, frag_idx as u16, frag_cnt as u16);
-        let mut pkt = Vec::with_capacity(P2P_UDP_HEADER_LEN + (end - start));
+        let frag_payload = &payload[start..end];
+        let timestamp = p2p_now_secs();
+        let tag = p2p_udp_tag(
+            &secret,
+            &connection_id,
+            0,
+            msg_id,
+            frag_idx as u16,
+            frag_cnt as u16,
+            timestamp,
+            frag_payload,
+        );
+        let hdr = p2p_udp_make_header(0, msg_id, frag_idx as u16, frag_cnt as u16, timestamp, &tag);
+        let mut pkt = Vec::with_capacity(P2P_UDP_HEADER_LEN + frag_payload.len());
         pkt.extend_from_slice(&hdr);
-        pkt.extend_from_slice(&payload[start..end]);
+        pkt.extend_from_slice(frag_payload);
 
         let mut tries = 0u32;
         loop {
@@ -375,9 +702,29 @@ async fn turn_send_reliable_over_indication(
             let recv_res = timeout(Duration::from_millis(400), sock.recv(&mut buf)).await;
             if let Ok(Ok(n)) = recv_res {
                 if let Some((src, data)) = turn_parse_data_indication(&buf[..n]) {
-                    if let Some((flags, ack_id, _fi, _fc)) = p2p_udp_parse_header(&data) {
-                        if (flags & P2P_UDP_FLAG_ACK) != 0 && ack_id == msg_id {
-                            break;
+                    if src == peer {
+                        if let Some((flags, ack_id, ack_frag_idx, ack_frag_cnt, ts, ack_tag)) =
+                            p2p_udp_parse_header(&data)
+                        {
+                            let valid_ack = (flags & P2P_UDP_FLAG_ACK) != 0
+                                && ack_id == msg_id
+                                && ack_frag_idx == 0
+                                && ack_frag_cnt == 0
+                                && p2p_udp_validate_fragment(
+                                    &secret,
+                                    &connection_id,
+                                    flags,
+                                    ack_id,
+                                    ack_frag_idx,
+                                    ack_frag_cnt,
+                                    ts,
+                                    &[],
+                                    &ack_tag,
+                                )
+                                .is_ok();
+                            if valid_ack {
+                                break;
+                            }
                         }
                     }
                     inbox.push_back((src, data));
@@ -390,180 +737,6 @@ async fn turn_send_reliable_over_indication(
         }
     }
     Ok(())
-}
-
-fn udp_decode_command(datagram: &[u8]) -> Result<Command> {
-    if datagram.len() < 4 {
-        return Err(anyhow!("udp datagram too short"));
-    }
-    let len = u32::from_be_bytes([datagram[0], datagram[1], datagram[2], datagram[3]]) as usize;
-    if datagram.len() < 4 + len {
-        return Err(anyhow!("udp datagram truncated"));
-    }
-    let config = bincode::config::standard()
-        .with_fixed_int_encoding()
-        .with_little_endian();
-    let (cmd, _) = bincode::decode_from_slice(&datagram[4..4 + len], config)
-        .map_err(|e| anyhow!("Failed to deserialize command: {}", e))?;
-    Ok(cmd)
-}
-
-#[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
-struct Args {
-    #[arg(long, default_value = "127.0.0.1")]
-    server_addr: String,
-
-    #[arg(long, default_value_t = 17000)]
-    control_port: u16,
-
-    /// Target gpuf-c client_id in hex (32 chars, optionally prefixed with 0x)
-    #[arg(long)]
-    target_client_id: String,
-
-    /// Optional source client_id in hex. If not set, a random UUID will be used.
-    #[arg(long)]
-    source_client_id: Option<String>,
-
-    #[arg(long, default_value = "Hello from P2P SDK")]
-    prompt: String,
-
-    #[arg(long, default_value_t = 128)]
-    max_tokens: u32,
-
-    /// Path to a PEM root certificate chain used to verify the TURN server (turns:5349).
-    #[arg(long, default_value = "certs/root.pem")]
-    cert_chain_path: String,
-}
-
-fn parse_client_id_hex(s: &str) -> Result<[u8; 16]> {
-    let s = s.trim().trim_start_matches("0x");
-    let bytes = hex::decode(s).map_err(|e| anyhow!("invalid hex client_id: {e}"))?;
-    let arr: [u8; 16] = bytes
-        .try_into()
-        .map_err(|_| anyhow!("client_id must be 16 bytes (32 hex chars)"))?;
-    Ok(arr)
-}
-
-fn stun_parse_xor_addr(v: &[u8], txid: &[u8; 12]) -> Option<std::net::SocketAddr> {
-    if v.len() < 4 {
-        return None;
-    }
-    let family = v[1];
-    let xport = u16::from_be_bytes([v[2], v[3]]);
-    let port = xport ^ 0x2112;
-    if family == 0x01 {
-        if v.len() < 8 {
-            return None;
-        }
-        let xaddr = u32::from_be_bytes([v[4], v[5], v[6], v[7]]);
-        let addr = xaddr ^ 0x2112A442;
-        let ip = std::net::Ipv4Addr::from(addr);
-        return Some(std::net::SocketAddr::new(ip.into(), port));
-    }
-    if family == 0x02 && v.len() >= 20 {
-        let mut x = [0u8; 16];
-        x.copy_from_slice(&v[4..20]);
-        let mut mask = [0u8; 16];
-        mask[..4].copy_from_slice(&0x2112A442u32.to_be_bytes());
-        mask[4..].copy_from_slice(txid);
-        let mut out = [0u8; 16];
-        for i in 0..16 {
-            out[i] = x[i] ^ mask[i];
-        }
-        let ip = std::net::Ipv6Addr::from(out);
-        return Some(std::net::SocketAddr::new(ip.into(), port));
-    }
-    None
-}
-
-fn stun_new_txid() -> [u8; 12] {
-    uuid::Uuid::new_v4().as_bytes()[..12]
-        .try_into()
-        .unwrap_or([0u8; 12])
-}
-
-fn stun_write_attr(buf: &mut Vec<u8>, attr_type: u16, value: &[u8]) {
-    buf.extend_from_slice(&attr_type.to_be_bytes());
-    buf.extend_from_slice(&(value.len() as u16).to_be_bytes());
-    buf.extend_from_slice(value);
-    let pad = (4 - (value.len() % 4)) % 4;
-    if pad != 0 {
-        buf.extend_from_slice(&vec![0u8; pad]);
-    }
-}
-
-fn stun_build_message(
-    msg_type: u16,
-    txid: [u8; 12],
-    attrs: &Vec<(&u16, Vec<u8>)>,
-    mi: Option<(&str, &str, &str)>,
-    fingerprint: bool,
-) -> Vec<u8> {
-    let mut body = Vec::new();
-    for (t, v) in attrs {
-        stun_write_attr(&mut body, **t, v);
-    }
-
-    let mut msg = Vec::with_capacity(20 + body.len() + 64);
-    msg.extend_from_slice(&msg_type.to_be_bytes());
-    msg.extend_from_slice(&0u16.to_be_bytes());
-    msg.extend_from_slice(&0x2112A442u32.to_be_bytes());
-    msg.extend_from_slice(&txid);
-    msg.extend_from_slice(&body);
-
-    if let Some((username, realm, password)) = mi {
-        let key_src = format!("{}:{}:{}", username, realm, password);
-        let key = md5::compute(key_src.as_bytes());
-
-        let mi_attr_len = 20usize;
-        let mi_total = 4 + mi_attr_len;
-        let fp_total = if fingerprint { 8 } else { 0 };
-        let new_len = (msg.len() - 20 + mi_total + fp_total) as u16;
-        msg[2..4].copy_from_slice(&new_len.to_be_bytes());
-
-        let mut tmp = msg.clone();
-        tmp.extend_from_slice(&0x0008u16.to_be_bytes());
-        tmp.extend_from_slice(&(mi_attr_len as u16).to_be_bytes());
-        tmp.extend_from_slice(&[0u8; 20]);
-
-        let mut mac = Hmac::<Sha1>::new_from_slice(&key.0).expect("hmac key");
-        mac.update(&tmp);
-        let out = mac.finalize().into_bytes();
-
-        msg.extend_from_slice(&0x0008u16.to_be_bytes());
-        msg.extend_from_slice(&(mi_attr_len as u16).to_be_bytes());
-        msg.extend_from_slice(&out);
-    } else {
-        let new_len = (msg.len() - 20) as u16;
-        msg[2..4].copy_from_slice(&new_len.to_be_bytes());
-    }
-
-    if fingerprint {
-        let new_len = (msg.len() - 20 + 8) as u16;
-        msg[2..4].copy_from_slice(&new_len.to_be_bytes());
-
-        let mut crc = Crc32::new();
-        crc.update(&msg);
-        let fp = crc.finalize() ^ 0x5354554e;
-        msg.extend_from_slice(&0x8028u16.to_be_bytes());
-        msg.extend_from_slice(&4u16.to_be_bytes());
-        msg.extend_from_slice(&fp.to_be_bytes());
-    }
-
-    msg
-}
-
-async fn stun_read_message<S: tokio::io::AsyncRead + Unpin>(stream: &mut S) -> Result<Vec<u8>> {
-    let mut header = [0u8; 20];
-    stream.read_exact(&mut header).await?;
-    let len = u16::from_be_bytes([header[2], header[3]]) as usize;
-    let mut body = vec![0u8; len];
-    stream.read_exact(&mut body).await?;
-    let mut msg = Vec::with_capacity(20 + len);
-    msg.extend_from_slice(&header);
-    msg.extend_from_slice(&body);
-    Ok(msg)
 }
 
 fn stun_attr_iter(msg: &[u8]) -> Result<Vec<(u16, Vec<u8>)>> {
@@ -835,6 +1008,22 @@ async fn turn_connection_bind(
     Ok(tls)
 }
 
+#[derive(Parser, Debug, Clone)]
+struct Args {
+    #[arg(long)]
+    target_client_id: String,
+    #[arg(long)]
+    source_client_id: Option<String>,
+    #[arg(long, default_value = "127.0.0.1")]
+    server_addr: String,
+    #[arg(long, default_value_t = 11434)]
+    control_port: u16,
+    #[arg(long, default_value = "Hello, world!")]
+    prompt: String,
+    #[arg(long, default_value_t = 50)]
+    max_tokens: u32,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -873,6 +1062,7 @@ async fn main() -> Result<()> {
 
     let mut buf = BytesMut::with_capacity(MAX_MESSAGE_SIZE);
     let mut turn_cfg: Option<(Vec<String>, String, String)> = None;
+    let mut data_plane_secret: Option<[u8; 32]> = None;
     let peer_candidates = loop {
         let cmd = read_command(&mut stream, &mut buf).await?;
         match cmd {
@@ -881,9 +1071,11 @@ async fn main() -> Result<()> {
                 turn_urls,
                 turn_username,
                 turn_password,
+                data_plane_secret: secret,
                 ..
             }) if cid == connection_id => {
-                turn_cfg = Some((turn_urls, turn_username, turn_password));
+                data_plane_secret = Some(secret.into_inner());
+                turn_cfg = Some((turn_urls, turn_username, turn_password.into_inner()));
             }
             Command::V2(CommandV2::P2PCandidates {
                 connection_id: cid,
@@ -923,6 +1115,8 @@ async fn main() -> Result<()> {
         .transpose()?;
 
     let socket = UdpSocket::bind("0.0.0.0:0").await?;
+    let data_plane_secret = data_plane_secret
+        .ok_or_else(|| anyhow!("P2PConnectionConfig did not include data_plane_secret"))?;
 
     let task_id = uuid::Uuid::new_v4().to_string();
     let inf = Command::V2(CommandV2::P2PInferenceRequest {
@@ -943,10 +1137,26 @@ async fn main() -> Result<()> {
 
     // Option C: handshake first (empty reliable packet), then inference. If anything times out -> TURN/UDP.
     let direct_result: Result<String> = async {
-        p2p_udp_send_reliable(&socket, direct_udp, next_msg_id, &[]).await?;
+        p2p_udp_send_reliable(
+            &socket,
+            direct_udp,
+            connection_id,
+            data_plane_secret,
+            next_msg_id,
+            &[],
+        )
+        .await?;
         next_msg_id = next_msg_id.wrapping_add(1);
 
-        p2p_udp_send_reliable(&socket, direct_udp, next_msg_id, &pkt).await?;
+        p2p_udp_send_reliable(
+            &socket,
+            direct_udp,
+            connection_id,
+            data_plane_secret,
+            next_msg_id,
+            &pkt,
+        )
+        .await?;
         next_msg_id = next_msg_id.wrapping_add(1);
 
         let mut out = String::new();
@@ -959,16 +1169,33 @@ async fn main() -> Result<()> {
                 continue;
             }
 
-            let Some((flags, msg_id, frag_idx, frag_cnt)) = p2p_udp_parse_header(&buf[..n]) else {
+            let Some((flags, msg_id, frag_idx, frag_cnt, ts, tag)) =
+                p2p_udp_parse_header(&buf[..n])
+            else {
                 continue;
             };
             if (flags & P2P_UDP_FLAG_ACK) != 0 {
                 continue;
             }
 
-            p2p_udp_send_ack(&socket, from, msg_id).await;
-
             let payload = &buf[P2P_UDP_HEADER_LEN..n];
+            if p2p_udp_validate_fragment(
+                &data_plane_secret,
+                &connection_id,
+                flags,
+                msg_id,
+                frag_idx,
+                frag_cnt,
+                ts,
+                payload,
+                &tag,
+            )
+            .is_err()
+            {
+                continue;
+            }
+            p2p_udp_send_ack(&socket, from, connection_id, data_plane_secret, msg_id).await;
+
             let entry = inflight.entry(msg_id).or_default();
             entry.insert(frag_idx, payload.to_vec());
             let Some(full) = p2p_udp_try_reassemble(entry, frag_cnt) else {
@@ -1027,6 +1254,8 @@ async fn main() -> Result<()> {
             turn_send_reliable_over_indication(
                 &turn_sock,
                 peer_relay,
+                connection_id,
+                data_plane_secret,
                 next_msg_id,
                 &[],
                 &mut inbox,
@@ -1036,6 +1265,8 @@ async fn main() -> Result<()> {
             turn_send_reliable_over_indication(
                 &turn_sock,
                 peer_relay,
+                connection_id,
+                data_plane_secret,
                 next_msg_id,
                 &pkt,
                 &mut inbox,
@@ -1060,21 +1291,38 @@ async fn main() -> Result<()> {
                 if peer != peer_relay {
                     continue;
                 }
-                let Some((flags, msg_id, frag_idx, frag_cnt)) = p2p_udp_parse_header(&data) else {
+                let Some((flags, msg_id, frag_idx, frag_cnt, ts, tag)) =
+                    p2p_udp_parse_header(&data)
+                else {
                     continue;
                 };
                 if (flags & P2P_UDP_FLAG_ACK) != 0 {
                     continue;
                 }
 
-                // ACK over TURN.
-                let ack = p2p_udp_make_header(P2P_UDP_FLAG_ACK, msg_id, 0, 0);
-                turn_send_indication(&turn_sock, peer_relay, &ack).await?;
-
                 if data.len() < P2P_UDP_HEADER_LEN {
                     continue;
                 }
                 let payload = &data[P2P_UDP_HEADER_LEN..];
+                if p2p_udp_validate_fragment(
+                    &data_plane_secret,
+                    &connection_id,
+                    flags,
+                    msg_id,
+                    frag_idx,
+                    frag_cnt,
+                    ts,
+                    payload,
+                    &tag,
+                )
+                .is_err()
+                {
+                    continue;
+                }
+
+                let ack = p2p_udp_ack_packet(connection_id, data_plane_secret, msg_id);
+                turn_send_indication(&turn_sock, peer_relay, &ack).await?;
+
                 let entry = inflight.entry(msg_id).or_default();
                 entry.insert(frag_idx, payload.to_vec());
                 let Some(full) = p2p_udp_try_reassemble(entry, frag_cnt) else {

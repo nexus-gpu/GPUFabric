@@ -28,6 +28,23 @@ use crate::{
     GLOBAL_CONTEXT_PTR, GLOBAL_MODEL_PTR, MODEL_STATUS,
 };
 
+#[cfg(target_os = "android")]
+fn token_callback_from_jlong(
+    callback_function_ptr: jlong,
+) -> Option<extern "C" fn(*const c_char, *mut c_void)> {
+    if callback_function_ptr == 0 {
+        return None;
+    }
+
+    // SAFETY: The caller supplies a native function pointer with the expected
+    // C ABI/signature. The pointer must remain valid until generation stops.
+    Some(unsafe {
+        std::mem::transmute::<usize, extern "C" fn(*const c_char, *mut c_void)>(
+            callback_function_ptr as usize,
+        )
+    })
+}
+
 // ============================================================================
 // Basic Engine Management
 // ============================================================================
@@ -60,11 +77,14 @@ pub extern "C" fn Java_com_gpuf_c_GPUEngine_getVersion(env: JNIEnv, _class: JCla
         return std::ptr::null_mut();
     }
 
+    // SAFETY: `gpuf_version` returns a process-static, NUL-terminated C string
+    // or null. Null was handled above and the pointer is only read for this call.
     let version_str = unsafe { CStr::from_ptr(version_ptr).to_str().unwrap_or("unknown") };
 
-    env.new_string(version_str)
-        .unwrap_or_else(|_| unsafe { JString::from_raw(std::ptr::null_mut()) })
-        .into_raw()
+    match env.new_string(version_str) {
+        Ok(jstring) => jstring.into_raw(),
+        Err(_) => std::ptr::null_mut(),
+    }
 }
 
 /// Cleanup and free resources
@@ -87,10 +107,7 @@ pub extern "C" fn Java_com_gpuf_c_GPUEngine_cleanup(_env: JNIEnv, _class: JClass
 /// public static native String getSystemInfo();
 #[cfg(target_os = "android")]
 #[no_mangle]
-pub extern "C" fn Java_com_gpuf_c_GPUEngine_getSystemInfo(
-    mut env: JNIEnv,
-    _class: JClass,
-) -> jstring {
+pub extern "C" fn Java_com_gpuf_c_GPUEngine_getSystemInfo(env: JNIEnv, _class: JClass) -> jstring {
     println!("🔥 GPUFabric JNI: Getting system info");
 
     let info_cstr = gpuf_system_info();
@@ -98,6 +115,8 @@ pub extern "C" fn Java_com_gpuf_c_GPUEngine_getSystemInfo(
         return std::ptr::null_mut();
     }
 
+    // SAFETY: `gpuf_system_info` returns a heap/static NUL-terminated C string
+    // or null. Null was handled above and the pointer is only read here.
     let info_str = unsafe { CStr::from_ptr(info_cstr).to_str().unwrap_or("Unknown") };
 
     match env.new_string(info_str) {
@@ -516,7 +535,7 @@ pub extern "C" fn Java_com_gpuf_c_GPUEngine_loadModelNew(
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_gpuf_c_GPUEngine_getCurrentModel(
-    mut env: JNIEnv,
+    env: JNIEnv,
     _class: JClass,
 ) -> jstring {
     println!("🔥 GPUFabric JNI: Getting current model");
@@ -538,7 +557,7 @@ pub extern "C" fn Java_com_gpuf_c_GPUEngine_getCurrentModel(
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_gpuf_c_GPUEngine_getModelLoadingStatus(
-    mut env: JNIEnv,
+    env: JNIEnv,
     _class: JClass,
 ) -> jstring {
     println!("🔥 GPUFabric JNI: Getting model loading status");
@@ -604,6 +623,8 @@ pub extern "C" fn Java_com_gpuf_c_GPUEngine_generate(
     );
 
     if result > 0 {
+        // SAFETY: `output` is a valid writable buffer passed to the C API above.
+        // A positive return means the buffer contains a NUL-terminated response.
         let _output_str = unsafe {
             CStr::from_ptr(output.as_mut_ptr() as *const c_char)
                 .to_str()
@@ -669,6 +690,8 @@ pub extern "C" fn Java_com_gpuf_c_GPUEngine_generateText(
     );
 
     if result > 0 {
+        // SAFETY: `output` was passed as a valid writable buffer to the C API and
+        // positive result codes indicate it now contains a NUL-terminated string.
         let output_str = unsafe {
             CStr::from_ptr(output.as_ptr() as *const c_char)
                 .to_str()
@@ -749,6 +772,8 @@ pub extern "C" fn Java_com_gpuf_c_GPUEngine_generateTextWithSampling(
     );
 
     if result > 0 {
+        // SAFETY: `output` was passed as a valid writable buffer to the C API and
+        // positive result codes indicate it now contains a NUL-terminated string.
         let output_str = unsafe {
             CStr::from_ptr(output.as_ptr() as *const c_char)
                 .to_str()
@@ -774,7 +799,7 @@ pub extern "C" fn Java_com_gpuf_c_GPUEngine_generateTextWithSampling(
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_gpuf_c_GPUEngine_isInferenceServiceHealthy(
-    mut env: JNIEnv,
+    env: JNIEnv,
     _class: JClass,
 ) -> jstring {
     println!("🔥 GPUFabric JNI: Checking inference service health");
@@ -847,16 +872,7 @@ pub extern "C" fn Java_com_gpuf_c_GPUEngine_startGenerationAsync(
         }
     };
 
-    // Convert function pointer
-    let callback = if callback_function_ptr != 0 {
-        Some(unsafe {
-            std::mem::transmute::<jlong, extern "C" fn(*const c_char, *mut c_void)>(
-                callback_function_ptr,
-            )
-        })
-    } else {
-        None
-    };
+    let callback = token_callback_from_jlong(callback_function_ptr);
 
     let result = gpuf_start_generation_async(
         ctx,
@@ -1112,6 +1128,8 @@ pub extern "C" fn Java_com_gpuf_c_GPUEngine_generateMultimodal(
     );
 
     if result > 0 {
+        // SAFETY: `output` was passed as a valid writable buffer to the C API and
+        // positive result codes indicate it now contains a NUL-terminated string.
         let output_str = unsafe {
             CStr::from_ptr(output.as_ptr() as *const c_char)
                 .to_str()

@@ -86,8 +86,8 @@ public class ModelManager {
             
             // Start compute monitoring (offline mode)
             GpufNative.startComputeMonitoring(
-                "http://gpufabric.com:8080", 
-                "gpufs.example.com", 
+                "https://<your-gpufabric-api>",
+                "gpufs.example.com",
                 8081, 8083, 0, 2, true
             );
         }
@@ -259,7 +259,7 @@ When a model is successfully loaded, the SDK automatically notifies the server o
 {
   "model_path": "/path/to/model.gguf",
   "timestamp": 1701234567,
-  "device_id": "android-device-001",
+  "device_id": "<device-id>",
   "status": "loaded"
 }
 ```

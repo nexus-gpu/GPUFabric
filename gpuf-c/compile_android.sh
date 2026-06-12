@@ -6,9 +6,12 @@ set -e
 echo "🔥 Compiling android_test for Android (with callback support)..."
 
 # NDK paths
-NDK_PATH="/home/jack/android-ndk-r27d"
-if [ ! -d "$NDK_PATH" ]; then
-    NDK_PATH="/home/jack/Android/Sdk/ndk/25.1.8937393"
+NDK_PATH="${ANDROID_NDK_ROOT:-${ANDROID_NDK_HOME:-${NDK_ROOT:-}}}"
+if [ -z "$NDK_PATH" ] || [ ! -d "$NDK_PATH" ]; then
+    NDK_PATH="$(find "$HOME/Android/Sdk/ndk" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -V | tail -n 1)"
+fi
+if [ -z "$NDK_PATH" ] || [ ! -d "$NDK_PATH" ]; then
+    NDK_PATH="$HOME/android-ndk-r27d"
 fi
 
 if [ ! -d "$NDK_PATH" ]; then

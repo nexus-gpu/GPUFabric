@@ -1,13 +1,17 @@
 use super::Engine;
 use anyhow::{anyhow, Result};
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+#[cfg(not(target_os = "android"))]
+use std::sync::Mutex;
 use tokio::fs;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 use futures_util::Stream;
+#[cfg(not(target_os = "android"))]
 use tokio::sync::mpsc;
+#[cfg(not(target_os = "android"))]
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::util::cmd::LlamaSplitModeArg;
@@ -158,19 +162,21 @@ impl LlamaEngine {
             // Run model loading in blocking thread
             let (backend, model) = tokio::task::spawn_blocking(move || {
                 // Use global backend singleton - initialize only once
-                let backend = LLAMA_BACKEND.get_or_init(|| {
-                    info!("Initializing Llama backend (first time only)");
-                    match LlamaBackend::init() {
-                        Ok(b) => Arc::new(b),
-                        Err(e) => {
-                            warn!("Failed to initialize Llama backend: {:?}", e);
-                            panic!("Cannot initialize Llama backend: {:?}", e);
+                let backend = LLAMA_BACKEND
+                    .get_or_init(|| {
+                        info!("Initializing Llama backend (first time only)");
+                        match LlamaBackend::init() {
+                            Ok(b) => Arc::new(b),
+                            Err(e) => {
+                                warn!("Failed to initialize Llama backend: {:?}", e);
+                                panic!("Cannot initialize Llama backend: {:?}", e);
+                            }
                         }
-                    }
-                }).clone();
+                    })
+                    .clone();
 
-                use llama_cpp_2::model::params::LlamaSplitMode as LlamaCppSplitMode;
                 use crate::util::nvswitch_check;
+                use llama_cpp_2::model::params::LlamaSplitMode as LlamaCppSplitMode;
 
                 // Check NVSwitch availability before CUDA init (HGX/A100/A800)
                 if !nvswitch_check::check_hgx_nvswitch_available() {
@@ -187,8 +193,7 @@ impl LlamaEngine {
                 };
 
                 // Build base model params step by step
-                let mut model_params =
-                    LlamaModelParams::default().with_n_gpu_layers(n_gpu_layers);
+                let mut model_params = LlamaModelParams::default().with_n_gpu_layers(n_gpu_layers);
                 model_params = model_params.with_split_mode(split_mode);
                 model_params = model_params.with_main_gpu(llama_main_gpu);
 
@@ -196,7 +201,11 @@ impl LlamaEngine {
                 if let Some(ref devs) = llama_devices {
                     let devs = devs.trim();
                     if !devs.is_empty() {
-                        if let Ok(devices) = devs.split(',').map(|s| s.trim().parse::<usize>()).collect::<Result<Vec<_>, _>>() {
+                        if let Ok(devices) = devs
+                            .split(',')
+                            .map(|s| s.trim().parse::<usize>())
+                            .collect::<Result<Vec<_>, _>>()
+                        {
                             // Rebuild params with devices to avoid with_devices move issue
                             let new_params = LlamaModelParams::default()
                                 .with_n_gpu_layers(n_gpu_layers)
@@ -273,6 +282,9 @@ impl LlamaEngine {
         }
 
         #[cfg(target_os = "android")]
+        let _ = sampling;
+
+        #[cfg(target_os = "android")]
         {
             // Android: Simulated response
             warn!("Android SDK: Using simulated response");
@@ -311,10 +323,9 @@ impl LlamaEngine {
                 use llama_cpp_2::model::AddBos;
                 use llama_cpp_2::sampling::LlamaSampler;
 
-                let context_params =
-                    LlamaContextParams::default()
-                        .with_n_ctx(NonZeroU32::new(n_ctx))
-                        .with_n_batch(n_batch);
+                let context_params = LlamaContextParams::default()
+                    .with_n_ctx(NonZeroU32::new(n_ctx))
+                    .with_n_batch(n_batch);
 
                 // Lock model and create context with proper lifetime
                 let model_guard = model
@@ -379,24 +390,19 @@ impl LlamaEngine {
                     // Sample using the sampler chain
                     let new_token = sampler.sample(&context, -1);
                     sampler.accept(new_token);
+                    let mut token_decoder = encoding_rs::UTF_8.new_decoder();
+                    let piece = model_guard
+                        .token_to_piece(new_token, &mut token_decoder, true, None)
+                        .ok();
 
-                    debug!(
-                        "Token {}: id={}, text={:?}",
-                        i,
-                        new_token,
-                        model_guard
-                            .token_to_str(new_token, llama_cpp_2::model::Special::Tokenize)
-                            .ok()
-                    );
+                    debug!("Token {}: id={}, text={:?}", i, new_token, piece);
 
                     // Check for EOS token
                     if new_token == model_guard.token_eos() {
                         break;
                     }
-
                     // Convert token to string and append
-                    use llama_cpp_2::model::Special;
-                    if let Ok(piece) = model_guard.token_to_str(new_token, Special::Tokenize) {
+                    if let Some(piece) = piece {
                         // Check for stop sequences (ChatML, Llama3, etc.)
                         if piece.contains("<|im_end|>")
                             || piece.contains("<|eot_id|>")
@@ -479,13 +485,12 @@ impl LlamaEngine {
 
             tokio::task::spawn_blocking(move || {
                 use llama_cpp_2::llama_batch::LlamaBatch;
-                use llama_cpp_2::model::{AddBos, Special};
+                use llama_cpp_2::model::AddBos;
                 use llama_cpp_2::sampling::LlamaSampler;
 
-                let context_params =
-                    LlamaContextParams::default()
-                        .with_n_ctx(NonZeroU32::new(n_ctx))
-                        .with_n_batch(n_batch);
+                let context_params = LlamaContextParams::default()
+                    .with_n_ctx(NonZeroU32::new(n_ctx))
+                    .with_n_batch(n_batch);
 
                 let model_guard = model
                     .lock()
@@ -543,8 +548,10 @@ impl LlamaEngine {
                     if new_token == model_guard.token_eos() {
                         break;
                     }
-
-                    if let Ok(piece) = model_guard.token_to_str(new_token, Special::Tokenize) {
+                    let mut token_decoder = encoding_rs::UTF_8.new_decoder();
+                    if let Ok(piece) =
+                        model_guard.token_to_piece(new_token, &mut token_decoder, true, None)
+                    {
                         if piece.contains("<|im_end|>")
                             || piece.contains("<|eot_id|>")
                             || piece.contains("<|end_of_text|>")
@@ -686,9 +693,9 @@ impl LlamaEngine {
             // On Android, check if SDK has loaded the model
             if self.check_sdk_model_loaded() {
                 self.is_initialized = true;
-                return Ok(());
+                Ok(())
             } else {
-                return Err(anyhow!("Android: Model not loaded by SDK yet"));
+                Err(anyhow!("Android: Model not loaded by SDK yet"))
             }
         }
 
@@ -699,6 +706,7 @@ impl LlamaEngine {
                 self.initialize_model().await?;
             }
         }
+        #[cfg(not(target_os = "android"))]
         Ok(())
     }
 
@@ -714,47 +722,70 @@ impl LlamaEngine {
         !model_ptr.is_null() && !context_ptr.is_null()
     }
 
-    /// Resolve model path: if relative, try models_dir first; if absolute, use directly
+    /// Resolve model path with a safe default: relative names must stay in models_dir;
+    /// absolute paths are allowed only when they point at an existing model file.
     fn resolve_model_path(&self, path: &str) -> Result<PathBuf> {
         let path_buf = PathBuf::from(path);
+        let candidate = if path_buf.is_absolute() {
+            path_buf
+        } else {
+            if path_buf
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+            {
+                return Err(anyhow!("Model path must not contain '..': {}", path));
+            }
+            self.models_dir.join(path_buf)
+        };
 
-        // If absolute path, use it directly
-        if path_buf.is_absolute() {
-            if !path_buf.exists() {
-                return Err(anyhow!("Model file does not exist: {}", path));
-            }
-            if !path_buf.is_file() {
-                return Err(anyhow!("Model path is not a file: {}", path));
-            }
-            return Ok(path_buf);
+        self.validate_model_path_candidate(&candidate, !PathBuf::from(path).is_absolute())
+    }
+
+    fn validate_model_path_candidate(
+        &self,
+        path: &Path,
+        must_stay_in_models_dir: bool,
+    ) -> Result<PathBuf> {
+        if !path.exists() {
+            return Err(anyhow!("Model file does not exist: {}", path.display()));
         }
-
-        // If relative path, try models_dir first
-        let models_dir_path = self.models_dir.join(path);
-        if models_dir_path.exists() && models_dir_path.is_file() {
-            info!(
-                "Resolved relative path '{}' to '{}'",
-                path,
-                models_dir_path.display()
+        let canonical = path
+            .canonicalize()
+            .map_err(|e| anyhow!("Invalid model path '{}': {}", path.display(), e))?;
+        if !canonical.is_file() {
+            return Err(anyhow!("Model path is not a file: {}", canonical.display()));
+        }
+        let ext = canonical
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if !matches!(ext.as_str(), "gguf" | "bin" | "safetensors") {
+            return Err(anyhow!(
+                "Model path must end with .gguf, .bin, or .safetensors: {}",
+                canonical.display()
+            ));
+        }
+        if must_stay_in_models_dir {
+            let models_dir = self.models_dir.canonicalize().map_err(|e| {
+                anyhow!("Invalid models dir '{}': {}", self.models_dir.display(), e)
+            })?;
+            if !canonical.starts_with(&models_dir) {
+                return Err(anyhow!(
+                    "Model path escapes models directory: {}",
+                    canonical.display()
+                ));
+            }
+        } else {
+            warn!(
+                "Using explicit absolute model path: {}",
+                canonical.display()
             );
-            return Ok(models_dir_path);
         }
-
-        // Fallback: try current directory
-        if path_buf.exists() && path_buf.is_file() {
-            warn!("Using model from current directory: {}", path);
-            return Ok(path_buf);
-        }
-
-        Err(anyhow!(
-            "Model file not found: '{}' (checked: {} and current dir)",
-            path,
-            models_dir_path.display()
-        ))
+        Ok(canonical)
     }
 
     fn validate_model_path(&self, path: &str) -> Result<PathBuf> {
-        // Use resolve_model_path for consistent path handling
         self.resolve_model_path(path)
     }
 
@@ -791,16 +822,14 @@ impl LlamaEngine {
             let mut output = vec![0u8; 8192];
 
             debug!("Calling SDK inference function");
-            let result = unsafe {
-                crate::gpuf_generate_final_solution_text(
-                    model_ptr,
-                    context_ptr,
-                    prompt_cstr.as_ptr(),
-                    max_tokens as i32,
-                    output.as_mut_ptr() as *mut c_char,
-                    output.len() as i32, // Add missing output_len parameter
-                )
-            };
+            let result = crate::gpuf_generate_final_solution_text(
+                model_ptr,
+                context_ptr,
+                prompt_cstr.as_ptr(),
+                max_tokens as i32,
+                output.as_mut_ptr() as *mut c_char,
+                output.len() as i32, // Add missing output_len parameter
+            );
 
             // Check return code (0 = success)
             if result != 0 {
@@ -849,17 +878,14 @@ impl Engine for LlamaEngine {
                     if !model_ptr.is_null() && !context_ptr.is_null() {
                         info!("Android: Model and context already loaded by SDK");
                         self.is_initialized = true;
-                        return Ok(());
                     } else {
                         info!(
                             "Android: Model not yet loaded by SDK, waiting for SDK initialization"
                         );
-                        // Don't mark as initialized, SDK will handle it
-                        return Ok(());
+                        // Do not mark as initialized; SDK loading is handled externally.
                     }
                 } else {
                     warn!("Android: No model path specified, waiting for SDK to load model");
-                    return Ok(());
                 }
             }
 
@@ -967,9 +993,8 @@ impl Engine for LlamaEngine {
                     status: "loaded_by_sdk".to_string(),
                 });
 
-                // Note: Don't call ensure_initialized() here - SDK will handle model loading
+                // Note: Do not call ensure_initialized() here; SDK will handle model loading.
                 info!("Model path stored for Android SDK loading");
-                return Ok(());
             }
 
             #[cfg(not(target_os = "android"))]
@@ -1073,7 +1098,9 @@ impl Drop for LlamaEngine {
         // 3. Arc automatically manages reference counting and will free memory when last reference is dropped
         // 4. Clearing here would break the global cache and cause model to be freed prematurely
         if self.is_initialized {
-            debug!("LlamaEngine instance dropped (model remains in global cache if still referenced)");
+            debug!(
+                "LlamaEngine instance dropped (model remains in global cache if still referenced)"
+            );
         }
     }
 }

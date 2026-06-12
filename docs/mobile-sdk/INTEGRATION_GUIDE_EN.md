@@ -50,6 +50,19 @@ This guide provides detailed instructions for integrating GPUFabric Mobile SDK i
 
 ---
 
+## Security And Compatibility Notes
+
+The 2026-06-04 security remediation keeps the public native SDK signatures compatible. Existing Android/iOS wrappers can keep calling `gpuf_init()`, `gpuf_version()`, `gpuf_llm_init()`, `gpuf_llm_generate()`, and remote worker JNI/C entry points with the same signatures.
+
+Required integration updates are configuration and release-process changes:
+
+- Verify SDK archives, `.so`, `.a`, `.aar`, and `.xcframework` artifacts against `SHA256SUMS` before copying them into an app.
+- For iOS, build release artifacts with `gpuf-c/generate_ios_sdk.sh`; it defaults to `FEATURES=ios-sdk` and `--no-default-features` so the SDK links prebuilt llama.cpp archives. Treat `gpuf-c/build_ios/dist/`, `gpuf-c/build_ios/package/`, and `gpuf-c/build_llama_ios/` as generated release outputs, not source files.
+- Configure remote worker `serverAddr` explicitly; the SDK no longer falls back to a hardcoded public server.
+- Do not store long-lived API tokens in SharedPreferences, UserDefaults, logs, or plaintext config files. Use Android Keystore/iOS Keychain in production wrappers.
+- Keep TLS certificate validation enabled. Self-signed deployments should use a CA bundle or pinning strategy, not disabled validation. Existing C/JNI `start_remote_worker` / `startRemoteWorker` calls remain available for plaintext compatibility. Production mobile wrappers should preflight CA/SNI/SHA256 pin inputs with `gpuf_validate_mobile_tls_policy` / `RemoteWorker.validateMobileTlsPolicy`, then call the additive TLS start API `start_remote_worker_with_tls` / `RemoteWorker.startRemoteWorkerWithTls`.
+- Android arm64 target compile, real-device local inference, plaintext Remote Worker, additive TLS Remote Worker, and Linux nightly ASAN/TSAN mobile unit tests pass locally; raw logs and sanitizer evidence are attached under `security-release-evidence/mobile-sdk/evidence/`. iOS target/runtime logs, Android/iOS runtime sanitizer or release-owner substitute approval, production Android Keystore/iOS Keychain wrapper sign-off, and platform permission/logging audits remain required release gates before broad mobile SDK distribution. Run `scripts/mobile_sdk_release_gate.sh` in CI and set `GPUF_REQUIRE_MOBILE_EVIDENCE=1` for formal mobile SDK release jobs. Current Android SDK archive evidence is `target/gpufabric-android-sdk-v9.0.0.tar.gz` with SHA256 `5cc92d884f04c431ccbe7cebefa7fb9c912baf5d4225966eb19750a078b9edef`; production signing remains a release gate.
+
 ## 🤖 Android Integration
 
 ### 1. Project Setup
@@ -585,6 +598,16 @@ struct ContentView: View {
 |----------|-------------|------------|--------------|
 | `gpuf_llm_init()` | Initialize LLM | `modelPath`, `nCtx`, `nGpuLayers` | `0`=success, `non-zero`=failure |
 | `gpuf_llm_generate()` | Generate text | `prompt`, `maxTokens` | `char*` (generation result) |
+
+### Remote Worker TLS APIs
+
+| Function | Description | Return Value |
+|----------|-------------|--------------|
+| `gpuf_validate_mobile_tls_policy(caCertPath, serverName, certSha256Pin)` | Validate CA/SNI/SHA256 pin inputs before starting a TLS worker | `0`=valid, negative error code=invalid |
+| `start_remote_worker_with_tls(serverAddr, controlPort, proxyPort, workerType, clientId, caCertPath, controlTlsServerName, certSha256Pin)` | Start the C remote worker over TLS while keeping the old plaintext API unchanged | `0`=success, `-1`=argument/connect/login failure, `-2`=invalid TLS policy |
+| `RemoteWorker.startRemoteWorkerWithTls(...)` | JNI equivalent for Android wrappers | Same as C API |
+
+Pass an empty CA path when using pin-only trust, or an empty pin when using a CA bundle only. `controlTlsServerName` may be empty to use `serverAddr` as SNI, but production apps should pass the expected DNS name explicitly.
 
 ### Parameter Description
 

@@ -6,10 +6,10 @@ GPUFabric now supports multimodal vision models (such as SmolVLM), enabling imag
 
 ## 🎯 Prepared Models
 
-You have already downloaded the following model files:
+Prepare the following model files locally:
 
-- **Text Model**: `/home/jack/SmolVLM-500M-Instruct-Q8_0.gguf` (417 MB)
-- **Vision Projector**: `/home/jack/mmproj-SmolVLM-500M-Instruct-Q8_0.gguf` (104 MB)
+- **Text Model**: `$HOME/SmolVLM-500M-Instruct-Q8_0.gguf` (417 MB)
+- **Vision Projector**: `$HOME/mmproj-SmolVLM-500M-Instruct-Q8_0.gguf` (104 MB)
 
 ## ✅ Current Support Status
 
@@ -44,7 +44,7 @@ You have already downloaded the following model files:
 ### 1. Compile SDK
 
 ```bash
-cd /home/jack/codedir/GPUFabric/gpuf-c
+cd <repo>/gpuf-c
 ./generate_sdk.sh
 ```
 
@@ -54,13 +54,13 @@ This will generate `libgpuf_c_sdk_v9.so` with multimodal support.
 
 ```bash
 # Push text model
-adb push /home/jack/SmolVLM-500M-Instruct-Q8_0.gguf /data/local/tmp/
+adb push "$HOME/SmolVLM-500M-Instruct-Q8_0.gguf" /data/local/tmp/
 
 # Push vision projector
-adb push /home/jack/mmproj-SmolVLM-500M-Instruct-Q8_0.gguf /data/local/tmp/
+adb push "$HOME/mmproj-SmolVLM-500M-Instruct-Q8_0.gguf" /data/local/tmp/
 
 # Push SDK
-adb push /home/jack/codedir/GPUFabric/gpuf-c/libgpuf_c_sdk_v9.so /data/local/tmp/libgpuf_c.so
+adb push <repo>/gpuf-c/libgpuf_c_sdk_v9.so /data/local/tmp/libgpuf_c.so
 ```
 
 ### 3. Java Test Code Example

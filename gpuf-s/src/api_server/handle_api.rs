@@ -9,15 +9,22 @@ use axum::{
 use crate::api_server::{apk, client, models, points};
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
-use tracing::info;
+use tracing::{info, warn};
 
 #[allow(dead_code)] // API server utility methods
 impl ApiServer {
-    pub async fn run_api_server(self: Arc<Self>, port: u16) -> Result<()> {
+    pub async fn run_api_server(self: Arc<Self>, bind_addr: &str, port: u16) -> Result<()> {
         let app = self.create_api_router().await;
-        let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await?;
+        let bind = format!("{bind_addr}:{port}");
+        if matches!(bind_addr, "0.0.0.0" | "::") {
+            warn!(
+                "API server is listening on a public address ({}); use a reverse proxy, firewall, and token controls",
+                bind_addr
+            );
+        }
+        let listener = tokio::net::TcpListener::bind(&bind).await?;
 
-        info!("API server listening on port {}", port);
+        info!("API server listening on {}", bind);
 
         axum::serve(listener, app).await.map_err(Into::into)
     }
@@ -46,7 +53,10 @@ impl ApiServer {
             .route("/api/user/client_monitor", get(client::get_client_monitor))
             .route("/api/user/client_health", get(client::get_client_health))
             // Model Download Progress
-            .route("/api/user/model_download_progress", get(client::get_model_download_progress))
+            .route(
+                "/api/user/model_download_progress",
+                get(client::get_model_download_progress),
+            )
             // Model Management APIs
             .route("/api/models/insert", post(models::create_or_update_model))
             .route("/api/models/get", get(models::get_models))

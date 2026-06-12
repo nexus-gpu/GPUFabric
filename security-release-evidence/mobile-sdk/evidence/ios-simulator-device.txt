@@ -1,0 +1,86 @@
+status: CONDITIONAL_PASS_REQUIRES_RAW_RUNTIME_LOG_ATTACHMENT
+generated_at_utc: 2026-06-10T02:31:17Z
+branch: optimize/gpuf-c
+commit: e1fc8b9eb58867f4e3749b827eca5b399ef45c7d
+
+Purpose:
+  iOS simulator/device regression evidence for SDK loading, model loading, inference/worker startup, callback lifecycle, and Remote Worker sharing.
+
+Sample app:
+  gpuf-c/examples/ios_sim_test/GPUFIosSimTest.xcodeproj
+  gpuf-c/examples/ios_sim_test/GPUFIosSimTest/ContentView.swift
+  gpuf-c/examples/ios_sim_test/GPUFIosSimTest/GPufBridge.h
+  gpuf-c/examples/ios_sim_test/run_ios_sim_test.sh
+  gpuf-c/examples/ios_sim_test/run_ios_sim_tls_test.sh
+
+Previously exercised iOS flow:
+  1. Build and install the SwiftUI simulator sample.
+  2. Copy real GGUF model into simulator app Documents as Llama-3.2-1B-Instruct-Q8_0.gguf.
+  3. Start Remote Worker with plaintext control stream:
+       set_remote_worker_model
+       start_remote_worker
+       gpuf_register_remote_worker_callback
+       start_remote_worker_tasks
+       get_remote_worker_status
+  4. Start Remote Worker with TLS control stream:
+       set_remote_worker_model
+       start_remote_worker_with_tls
+       gpuf_register_remote_worker_callback
+       start_remote_worker_tasks
+       get_remote_worker_status
+  5. Verify callback lifecycle updates Swift state from the registered C callback.
+
+Runtime inputs:
+  model: Llama-3.2-1B-Instruct-Q8_0.gguf
+  client_id: redacted; use non-production test client IDs only
+  server_addr: redacted/local test endpoint
+  control_port: supplied by test environment
+  proxy_port: supplied by test environment
+  tls_ca_cert_path: generated local test CA for TLS simulator run
+  tls_server_name: localhost or test SNI value
+  cert_sha256_pin: optional SHA256 test pin
+
+Evidence files observed locally:
+  gpuf-c/examples/ios_sim_test/DerivedData/Logs/Build/A56B84C3-91E2-4E40-9046-FB3DB1C7F457.xcactivitylog
+  gpuf-c/examples/ios_sim_test/DerivedData/Logs/Build/42551DDC-296C-4332-A267-28718A2B072B.xcactivitylog
+  gpuf-c/examples/ios_sim_test/DerivedData/Build/Products/Debug-iphonesimulator/libgpuf_c_sdk.a
+
+Current 2026-06-10 simulator re-query:
+  command: xcrun simctl list devices booted
+  result: failed in sandbox with CoreSimulatorService connection invalid / connection refused
+  conclusion: no new simulator runtime pass is claimed in this evidence file.
+
+Release note:
+  Previous local regression validated the iOS Remote Worker path with a real model for both plaintext and TLS control stream, but the raw runtime Console output was not persisted into this evidence directory. For a formal release review, attach a saved run_ios_sim_test.sh and run_ios_sim_tls_test.sh log, or an Xcode Console export containing model load, worker start, callback, status, and stop lifecycle events.
+
+Expected raw runtime log attachment format:
+  File format: UTF-8 text .log or .txt, not JSON and not a rewritten summary.
+  Preferred files:
+    security-release-evidence/mobile-sdk/evidence/ios-simulator-plain-runtime.log
+    security-release-evidence/mobile-sdk/evidence/ios-simulator-tls-runtime.log
+    security-release-evidence/mobile-sdk/evidence/ios-device-plain-runtime.log
+    security-release-evidence/mobile-sdk/evidence/ios-device-tls-runtime.log
+  Header fields:
+    run_type: simulator_plain | simulator_tls | device_plain | device_tls
+    generated_at_utc: <timestamp>
+    repo_commit: <commit>
+    xcode_version: <xcodebuild -version>
+    ios_runtime: <simulator-or-device-runtime>
+    bundle_id: com.gpuf.iossimtest
+    model: Llama-3.2-1B-Instruct-Q8_0.gguf
+    server_addr: <redacted-or-local>
+    control_port: <port>
+    proxy_port: <port>
+    tls: true | false
+    tls_server_name: <name, for TLS runs>
+    cert_sha256_pin: <redacted-or-test-pin, if used>
+    command: <run script or Xcode action>
+    exit_code: 0
+  Body sections:
+    --- raw script output ---
+    --- raw iOS Console / log stream output ---
+  Required signal: model discovery/loading, remote worker start, TLS flag for TLS runs, callback or status update, and get_remote_worker_status/started state. Logs must redact production client IDs, tokens, private keys, and production endpoint secrets.
+
+Required closure evidence:
+  To clear this blocker for formal mobile SDK release, attach the raw plaintext and TLS simulator/device logs above, then replace the status with PASS_IOS_RUNTIME_LOGS_ATTACHED.
+  Until raw logs are attached, this file must keep a blocking status.

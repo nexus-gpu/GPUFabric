@@ -1,8 +1,15 @@
 # gpuf-s API Server
 
 ## Base
-- **Base URL**: `http://<host>:18081`
+- **Base URL**: `http://127.0.0.1:18081` by default; use `http://<host>:18081` only for a protected deployment
 - **Content-Type**: `application/json`
+
+## Frontend Integration And Security Defaults
+
+The standalone management API now binds to `127.0.0.1` by default. Start it with `--bind-addr 127.0.0.1` for local frontend development; choose `--bind-addr 0.0.0.0` only behind a reverse proxy/firewall and with deployment-level access control.
+
+Existing REST paths and response envelopes remain compatible for frontends. The model APIs add optional `download_url`, `checksum`, and `expected_size` fields so UIs can show SHA256-verified artifact metadata without breaking older clients.
+Control TLS is separate from this REST API. If the same deployment accepts remote gpuf-c workers over non-loopback networks, enable `gpuf-s --control-tls` and configure clients with `gpuf-c --control-tls --control-tls-server-name <name> --cert-chain-path <ca.pem>`. Mobile native workers can use the additive `startRemoteWorkerWithTls` SDK entry point; this does not change frontend REST paths or response envelopes. Android native SDK rebuild/test fixes validated on 2026-06-09 also do not require frontend REST changes.
 
 ## Common Response Envelope
 All endpoints return this envelope type:
@@ -54,7 +61,7 @@ curl -X POST "http://<host>:18081/api/user/insert_client" \
   -H "Content-Type: application/json" \
   -d '{
     "user_id": "1",
-    "client_id": "3c04a52d9e424dcc83c06573227a7bf6",
+    "client_id": "<client-id-32-hex>",
     "client_status": "online",
     "os_type": "linux",
     "name": "node-1"
@@ -147,7 +154,7 @@ Get one client’s system and device detail.
 
 ### Example
 ```bash
-curl "http://<host>:18081/api/user/client_device_detail?user_id=1&client_id=3c04a52d9e424dcc83c06573227a7bf6"
+curl "http://<host>:18081/api/user/client_device_detail?user_id=1&client_id=<client-id-32-hex>"
 ```
 
 ---
@@ -174,7 +181,7 @@ curl -X POST "http://<host>:18081/api/user/edit_client_info" \
   -H "Content-Type: application/json" \
   -d '{
     "user_id": "1",
-    "client_id": "3c04a52d9e424dcc83c06573227a7bf6",
+    "client_id": "<client-id-32-hex>",
     "client_status": "online"
   }'
 ```
@@ -332,7 +339,7 @@ Query a user’s points list (based on materialized view `device_points_daily`).
 ### Example
 ```bash
 curl "http://<host>:18081/api/user/points?user_id=1&page=1&page_size=20"
-curl "http://<host>:18081/api/user/points?user_id=1&client_id=50ef7b5e7b5b4c79991087bb9f62cef1"
+curl "http://<host>:18081/api/user/points?user_id=1&client_id=<client-id-32-hex>"
 curl "http://<host>:18081/api/user/points?user_id=1&client_name=node"
 curl "http://<host>:18081/api/user/points?user_id=1&device_id=9860&start_date=2026-02-01&end_date=2026-02-03"
 ```

@@ -47,6 +47,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
         LlamaEngine::with_config(
             model_path.to_string(),
             2048,
+            4096,
             0,
             gpuf_c::util::cmd::LlamaSplitModeArg::Layer,
             0,

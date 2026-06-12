@@ -7,14 +7,40 @@ echo "Version: 9.0.0-x86_64-android-FINAL-LLAMA-SOLUTION"
 echo ""
 
 # Configuration Variables
-PROJECT_ROOT="/home/jack/codedir/GPUFabric/gpuf-c"
-WORKSPACE_ROOT="/home/jack/codedir/GPUFabric"
-NDK_ROOT="/home/jack/android-ndk-r27d"
-TARGET_ARCH="aarch64-linux-android"
-ANDROID_API="21"
-LLAMA_ANDROID_NDK_DIR="$WORKSPACE_ROOT/target/llama-android-ndk"
-SDK_VERSION="9.0.0"
-SDK_RELEASE_DIR="$WORKSPACE_ROOT/target/gpufabric-android-sdk-v$SDK_VERSION"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="${PROJECT_ROOT:-$SCRIPT_DIR}"
+WORKSPACE_ROOT="${WORKSPACE_ROOT:-$(cd "$PROJECT_ROOT/.." && pwd)}"
+
+detect_android_ndk() {
+    local sdk_ndk_dir candidate
+    for sdk_ndk_dir in "$HOME/Android/Sdk/ndk" "/opt/android-sdk/ndk" "/usr/lib/android-sdk/ndk"; do
+        if [ -d "$sdk_ndk_dir" ]; then
+            candidate="$(find "$sdk_ndk_dir" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+            if [ -n "$candidate" ] && [ -d "$candidate/toolchains/llvm/prebuilt/linux-x86_64/sysroot" ]; then
+                echo "$candidate"
+                return 0
+            fi
+        fi
+    done
+    for candidate in "$HOME/android-ndk-r27d"; do
+        if [ -d "$candidate/toolchains/llvm/prebuilt/linux-x86_64/sysroot" ]; then
+            echo "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+NDK_ROOT="${ANDROID_NDK_ROOT:-${ANDROID_NDK_HOME:-${NDK_ROOT:-}}}"
+if [ -z "$NDK_ROOT" ]; then
+    NDK_ROOT="$(detect_android_ndk || true)"
+fi
+TARGET_ARCH="${TARGET_ARCH:-aarch64-linux-android}"
+ANDROID_ABI="${ANDROID_ABI:-arm64-v8a}"
+ANDROID_API="${ANDROID_API:-21}"
+LLAMA_ANDROID_NDK_DIR="${LLAMA_ANDROID_NDK_DIR:-$WORKSPACE_ROOT/target/llama-android-ndk}"
+SDK_VERSION="${SDK_VERSION:-9.0.0}"
+SDK_RELEASE_DIR="${SDK_RELEASE_DIR:-$WORKSPACE_ROOT/target/gpufabric-android-sdk-v$SDK_VERSION}"
 
 # Color Output
 RED='\033[0;31m'
@@ -37,13 +63,93 @@ handle_step() {
     echo -e "${BLUE}🔧 $1${NC}"
 }
 
+sha256_manifest_line() {
+    local base_dir="$1"
+    local rel_path="$2"
+
+    if command -v sha256sum >/dev/null 2>&1; then
+        (cd "$base_dir" && sha256sum "$rel_path")
+        return 0
+    fi
+
+    if command -v shasum >/dev/null 2>&1; then
+        (cd "$base_dir" && shasum -a 256 "$rel_path")
+        return 0
+    fi
+
+    if command -v openssl >/dev/null 2>&1; then
+        local hash
+        hash=$(cd "$base_dir" && openssl dgst -sha256 "$rel_path" | awk '{print $NF}')
+        printf '%s  %s\n' "$hash" "$rel_path"
+        return 0
+    fi
+
+    handle_error "No SHA256 tool available (need sha256sum, shasum, or openssl)"
+}
+
+write_sha256_manifest() {
+    local manifest="$1"
+    shift
+
+    : > "$manifest"
+    for item in "$@"; do
+        if [ -f "$item" ]; then
+            sha256_manifest_line "$(dirname "$item")" "$(basename "$item")" >> "$manifest"
+        elif [ -d "$item" ]; then
+            local parent
+            local dir_name
+            parent="$(dirname "$item")"
+            dir_name="$(basename "$item")"
+            while IFS= read -r -d '' rel_path; do
+                sha256_manifest_line "$parent" "$rel_path" >> "$manifest"
+            done < <(cd "$parent" && find "$dir_name" -type f -print0 | sort -z)
+        else
+            handle_error "Cannot hash missing release artifact: $item"
+        fi
+    done
+}
+
+llama_build_matches_current_ndk() {
+    local build_dir="$1"
+    local cache_file="$build_dir/CMakeCache.txt"
+    local expected_toolchain="$NDK_ROOT/build/cmake/android.toolchain.cmake"
+
+    [ -f "$cache_file" ] || return 1
+    grep -Fqx "CMAKE_TOOLCHAIN_FILE:FILEPATH=$expected_toolchain" "$cache_file"
+}
+
+copy_compatible_llama_android_build() {
+    local build_dir="$1"
+    local label="$2"
+
+    [ -d "$build_dir" ] || return 1
+    [ -f "$build_dir/src/libllama.a" ] || return 1
+    ls "$build_dir"/ggml/src/libggml*.a >/dev/null 2>&1 || return 1
+
+    if ! llama_build_matches_current_ndk "$build_dir"; then
+        echo "⚠️ Ignoring $label llama.cpp Android build because its CMake cache does not match $NDK_ROOT"
+        return 1
+    fi
+
+    echo "🔄 Using $label llama.cpp build results..."
+    cp "$build_dir/src/libllama.a" "$LLAMA_ANDROID_NDK_DIR/"
+    cp "$build_dir"/ggml/src/libggml*.a "$LLAMA_ANDROID_NDK_DIR/"
+    if [ -f "$build_dir/tools/mtmd/libmtmd.a" ]; then
+        cp "$build_dir/tools/mtmd/libmtmd.a" "$LLAMA_ANDROID_NDK_DIR/"
+    fi
+    echo "✅ $label static libraries copied successfully!"
+    return 0
+}
+
 # Check Environment
 check_environment() {
     handle_step "Checking build environment..."
     
-    if [ ! -d "$NDK_ROOT" ]; then
-        handle_error "Android NDK not found: $NDK_ROOT"
+    if [ -z "$NDK_ROOT" ] || [ ! -d "$NDK_ROOT" ]; then
+        handle_error "Android NDK not found. Set ANDROID_NDK_ROOT or ANDROID_NDK_HOME."
     fi
+    export ANDROID_NDK_ROOT="$NDK_ROOT"
+    export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-$NDK_ROOT}"
     
     if [ ! -d "$PROJECT_ROOT" ]; then
         handle_error "Project directory not found: $PROJECT_ROOT"
@@ -70,22 +176,7 @@ check_environment() {
         fi
     else
         echo "✅ llama.cpp source directory already exists"
-        echo "🔍 Verifying pinned version..."
-        cd "$LLAMA_CPP_ROOT"
-        CURRENT_COMMIT=$(git rev-parse HEAD)
-        if [ "$CURRENT_COMMIT" != "$LLAMA_CPP_COMMIT" ]; then
-            echo "⚠️  Current commit ($CURRENT_COMMIT) differs from pinned version"
-            echo "🔄 Checking out to pinned version: $LLAMA_CPP_COMMIT"
-            git fetch origin
-            git checkout "$LLAMA_CPP_COMMIT"
-            if [ $? -eq 0 ]; then
-                echo "✅ Checked out to pinned version successfully!"
-            else
-                handle_error "Failed to checkout to pinned version"
-            fi
-        else
-            echo "✅ Already on pinned version: $LLAMA_CPP_COMMIT"
-        fi
+        echo "🔍 Using latest llama.cpp version: $(cd "$LLAMA_CPP_ROOT" && git rev-parse --short HEAD 2>/dev/null || echo 'unknown')"
     fi
     
     handle_success "Environment check passed"
@@ -137,6 +228,11 @@ build_rust_library() {
     echo "🔧 Adding Android NDK toolchain to PATH..."
     export PATH="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
     
+    export AR_aarch64_linux_android="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+    export CC_aarch64_linux_android="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API}-clang"
+    export CXX_aarch64_linux_android="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API}-clang++"
+    export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$CC_aarch64_linux_android"
+
     echo "🔧 Building static library with multimodal support..."
     cargo rustc --target $TARGET_ARCH --release --lib --crate-type=staticlib \
         --features android \
@@ -190,19 +286,18 @@ build_llama_android_libs() {
         # Create llama-android-ndk directory
         mkdir -p "$LLAMA_ANDROID_NDK_DIR"
         
-        # Check for pre-built libraries
-        if [ -d "$LLAMA_CPP_ROOT/build-android" ] && [ -f "$LLAMA_CPP_ROOT/build-android/src/libllama.a" ]; then
-            echo "🔄 Using existing llama.cpp build results..."
-            cp "$LLAMA_CPP_ROOT/build-android/src/libllama.a" "$LLAMA_ANDROID_NDK_DIR/"
-            cp "$LLAMA_CPP_ROOT/build-android/ggml/src/libggml"*.a "$LLAMA_ANDROID_NDK_DIR/"
-            echo "✅ Existing static libraries copied successfully!"
-        elif [ -d "$LLAMA_CPP_ROOT/build-android-new" ] && [ -f "$LLAMA_CPP_ROOT/build-android-new/src/libllama.a" ]; then
-            echo "🔄 Using new llama.cpp build results..."
-            cp "$LLAMA_CPP_ROOT/build-android-new/src/libllama.a" "$LLAMA_ANDROID_NDK_DIR/"
-            cp "$LLAMA_CPP_ROOT/build-android-new/ggml/src/libggml"*.a "$LLAMA_ANDROID_NDK_DIR/"
-            echo "✅ New build static libraries copied successfully!"
+        # Check for compatible pre-built libraries. Do not reuse llama.cpp
+        # outputs configured with a different Android NDK; libc++ ABI mismatches
+        # can otherwise pass link-time and fail at dlopen on real devices.
+        if [ "${GPUF_FORCE_REBUILD_LLAMA_ANDROID:-0}" = "1" ]; then
+            echo "🔨 GPUF_FORCE_REBUILD_LLAMA_ANDROID=1, rebuilding llama.cpp..."
+            build_llama_cpp_from_source
+        elif copy_compatible_llama_android_build "$LLAMA_CPP_ROOT/build-android" "existing"; then
+            true
+        elif copy_compatible_llama_android_build "$LLAMA_CPP_ROOT/build-android-new" "new"; then
+            true
         else
-            echo "🔨 No valid pre-built libraries found, starting llama.cpp compilation..."
+            echo "🔨 No compatible pre-built libraries found, starting llama.cpp compilation..."
             build_llama_cpp_from_source
         fi
         
@@ -232,7 +327,15 @@ build_llama_cpp_from_source() {
     
     cd "$LLAMA_CPP_ROOT"
     
-    # Create build directory
+    # Create build directory. Remove stale CMake cache when switching NDKs;
+    # otherwise CMake silently keeps the old toolchain and produces incompatible
+    # Android static libraries.
+    if [ "${GPUF_FORCE_REBUILD_LLAMA_ANDROID:-0}" = "1" ]; then
+        rm -rf build-android
+    elif [ -f "build-android/CMakeCache.txt" ] && ! llama_build_matches_current_ndk "$LLAMA_CPP_ROOT/build-android"; then
+        echo "⚠️ Removing stale llama.cpp Android build cache for a different NDK"
+        rm -rf build-android
+    fi
     mkdir -p build-android
     cd build-android
     
@@ -240,7 +343,7 @@ build_llama_cpp_from_source() {
     echo "📋 Configuring CMake with multimodal support..."
     cmake .. \
         -DCMAKE_TOOLCHAIN_FILE="$NDK_ROOT/build/cmake/android.toolchain.cmake" \
-        -DANDROID_ABI="arm64-v8a" \
+        -DANDROID_ABI="$ANDROID_ABI" \
         -DANDROID_PLATFORM="android-28" \
         -DCMAKE_BUILD_TYPE=Release \
         -DBUILD_SHARED_LIBS=OFF \
@@ -354,7 +457,10 @@ link_sdk() {
     # 🆕 Add multimodal library
     MTMD_LIB="$LLAMA_ANDROID_NDK_DIR/libmtmd.a"
     BACKEND_OBJ="$LLAMA_ANDROID_NDK_DIR/ggml-backend-reg.cpp.o"
-    OMP_LIB="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/lib/clang/18/lib/linux/aarch64/libomp.a"
+    OMP_LIB="$(find "$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64" -path "*/lib/linux/aarch64/libomp.a" -print -quit)"
+    if [ -z "$OMP_LIB" ] || [ ! -f "$OMP_LIB" ]; then
+        handle_error "Android OpenMP library not found under $NDK_ROOT"
+    fi
     
     # Execute linking
     echo "Linking command executing..."
@@ -412,6 +518,18 @@ verify_sdk() {
     echo ""
     echo "📋 Dependencies:"
     readelf -d libgpuf_c_sdk_v9.so | grep NEEDED | sed 's/Shared library:/Shared library:/'
+
+    local llvm_nm="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
+    local llvm_cxxfilt="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-cxxfilt"
+    if [ -x "$llvm_nm" ] && [ -x "$llvm_cxxfilt" ]; then
+        local unresolved_cpp
+        unresolved_cpp="$($llvm_nm -D libgpuf_c_sdk_v9.so | $llvm_cxxfilt | grep ' U .*std::__ndk1::' | head -20 || true)"
+        if [ -n "$unresolved_cpp" ]; then
+            echo "❌ Unresolved Android libc++ symbols detected:"
+            echo "$unresolved_cpp"
+            handle_error "SDK has unresolved C++ runtime symbols; rebuild llama.cpp with the current Android NDK"
+        fi
+    fi
     
     handle_success "SDK verification completed"
 }
@@ -429,7 +547,11 @@ create_sdk_package() {
     cp libgpuf_c_sdk_v9.so "$SDK_RELEASE_DIR/libs/"
     
     # Copy dependency libraries
-    cp /home/jack/android-ndk-r27d/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so "$SDK_RELEASE_DIR/libs/"
+    LIBCXX_SHARED="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/$TARGET_ARCH/libc++_shared.so"
+    if [ ! -f "$LIBCXX_SHARED" ]; then
+        handle_error "Android libc++_shared.so not found: $LIBCXX_SHARED"
+    fi
+    cp "$LIBCXX_SHARED" "$SDK_RELEASE_DIR/libs/"
     
     # Copy header files (if any)
     if [ -f "gpuf_c.h" ]; then
@@ -570,9 +692,17 @@ EOF
     cd "$WORKSPACE_ROOT/target/"
     ARCHIVE_NAME="gpufabric-android-sdk-v$SDK_VERSION.tar.gz"
     tar -czf "$ARCHIVE_NAME" "gpufabric-android-sdk-v$SDK_VERSION/"
+
+    write_sha256_manifest \
+        "$WORKSPACE_ROOT/target/SHA256SUMS" \
+        "$WORKSPACE_ROOT/target/$ARCHIVE_NAME" \
+        "$SDK_RELEASE_DIR"
+    sha256_manifest_line "$WORKSPACE_ROOT/target" "$ARCHIVE_NAME" > "$WORKSPACE_ROOT/target/$ARCHIVE_NAME.sha256"
     
     echo "📦 Created archive: $WORKSPACE_ROOT/target/$ARCHIVE_NAME"
     echo "📊 Archive size: $(du -sh $WORKSPACE_ROOT/target/$ARCHIVE_NAME | cut -f1)"
+    echo "🔒 SHA256 manifest: $WORKSPACE_ROOT/target/SHA256SUMS"
+    echo "🔒 Archive SHA256: $WORKSPACE_ROOT/target/$ARCHIVE_NAME.sha256"
     
     handle_success "SDK package creation completed"
 }

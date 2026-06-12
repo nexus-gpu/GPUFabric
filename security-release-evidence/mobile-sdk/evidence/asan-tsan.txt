@@ -1,0 +1,82 @@
+status: PASS_LINUX_NIGHTLY_ASAN_TSAN_MOBILE_UNIT_ANDROID_IOS_RUNTIME_SIGNOFF_REQUIRED
+generated_at_utc: 2026-06-10T07:02:54Z
+branch: optimize/gpuf-c
+commit: 66b48fc
+
+Purpose:
+  ASAN/TSAN evidence for mobile FFI, callback lifecycle, model/context ownership, and Remote Worker task start/stop lifecycle.
+
+Sanitizer/Miri result:
+  Linux nightly ASAN mobile unit coverage was run and passed.
+  Linux nightly TSAN mobile unit coverage was run and passed.
+  Android/iOS device or simulator sanitizer runtime coverage was not run in this evidence capture.
+  Active Rust toolchain: stable-x86_64-unknown-linux-gnu from rust-toolchain.toml.
+  Sanitizer Rust toolchain: rustc 1.93.0-nightly (3ff30e7ea 2025-11-29), host x86_64-unknown-linux-gnu.
+  Installed nightly components relevant to this check: rust-src, rust-std-x86_64-unknown-linux-gnu.
+
+ASAN command/result:
+  Command: env RUSTFLAGS=-Zsanitizer=address ASAN_OPTIONS=detect_leaks=0 cargo +nightly test -Z build-std --target x86_64-unknown-linux-gnu -p gpuf-c mobile_ --lib
+  Result: 10 passed, 0 failed, 35 filtered out.
+
+TSAN command/result:
+  Command: env RUSTFLAGS=-Zsanitizer=thread TSAN_OPTIONS=halt_on_error=1 cargo +nightly test -Z build-std --target x86_64-unknown-linux-gnu -p gpuf-c mobile_ --lib
+  Result: 10 passed, 0 failed, 35 filtered out.
+
+Targeted stable non-sanitizer regression result:
+  Command: cargo test -p gpuf-c mobile_ --lib
+  Result: 10 passed, 0 failed, 35 filtered out.
+  Covered Rust unit tests include mobile TLS policy validation, stable FFI error-code mapping, plaintext control-stream config, and TLS control-stream CA/pin config parsing.
+
+Full lib test attempt:
+  Command attempted: cargo test -p gpuf-c --lib
+  Result: not used as release evidence in this capture.
+  Reason: the full lib suite entered external Ollama/VLLM container/model paths; one VLLM pull test failed and an Ollama pull path remained long-running until the local test process was stopped. This does not invalidate the targeted mobile tests above, but it is not a sanitizer substitute.
+
+Related evidence:
+  iOS SDK static build succeeded for ios-arm64 and ios-arm64-simulator.
+  C ABI symbols for model/context/free, Remote Worker, TLS Remote Worker, and callback registration are present.
+  TLS policy unit suite passed on 2026-06-10 Linux re-check: 7 passed, 0 failed.
+  Android packaged SDK local inference raw log: security-release-evidence/mobile-sdk/evidence/android-real-device-inference-runtime.log
+  Android plaintext Remote Worker raw log: security-release-evidence/mobile-sdk/evidence/android-remote-worker-plain-runtime.log
+  Android TLS Remote Worker raw log: security-release-evidence/mobile-sdk/evidence/android-remote-worker-tls-runtime.log
+
+Android C harness runtime coverage:
+  Model load and context creation succeeded on an Android 10 arm64 device.
+  gpuf_generate_final_solution_text and gpuf_generate_with_sampling succeeded.
+  Legacy start_remote_worker plaintext path succeeded.
+  Additive start_remote_worker_with_tls path succeeded with CA/SNI validation.
+  start_remote_worker_tasks_with_callback_ptr succeeded and emitted callback lifecycle events.
+  get_remote_worker_status returned Worker is running.
+  stop_remote_worker returned 0 and emitted handler stop callback.
+
+Risk:
+  Callback and FFI lifecycle bugs can survive compile/link checks and host-only unit sanitizers.
+  Formal release should still collect Android/iOS runtime sanitizer or owner-approved substitute coverage for:
+    gpuf_register_remote_worker_callback
+    start_remote_worker_tasks
+    stop_remote_worker
+    gpuf_load_model / gpuf_create_context / llama_free / llama_model_free
+    TLS control stream setup and teardown
+  The Linux ASAN/TSAN unit runs cover mobile TLS policy/config parsing and stable C ABI error-code mapping, but they do not exercise Android/iOS app wrapper storage, JNI object lifetime, or raw device/simulator callback teardown under sanitizer runtime.
+
+Release recommendation:
+  Treat this file as ASAN/TSAN pass evidence for the Linux nightly mobile unit subset.
+  Formal release should additionally attach Android/iOS runtime sanitizer evidence, or have a release owner explicitly approve the Linux ASAN/TSAN unit subset plus Android C harness logs as the mobile runtime sanitizer substitute.
+
+Required closure evidence:
+  To clear this blocker for formal mobile SDK release, replace the status with either PASS_ANDROID_IOS_RUNTIME_SANITIZER or PASS_RUNTIME_SANITIZER_SUBSTITUTE_APPROVED.
+
+Required fields for PASS_ANDROID_IOS_RUNTIME_SANITIZER:
+  android_runtime_sanitizer: <command/log/artifact proving Android runtime sanitizer or equivalent device memory/thread check>
+  ios_runtime_sanitizer: <command/log/artifact proving iOS simulator/device sanitizer run>
+  covered_paths: callback registration, worker task start/stop, model/context create/free, and TLS setup/teardown
+  exit_codes: all sanitizer commands exit 0 with no unsuppressed findings
+
+Required fields for PASS_RUNTIME_SANITIZER_SUBSTITUTE_APPROVED:
+  reviewer: <release-owner-or-security-reviewer>
+  reviewed_at_utc: <timestamp>
+  approved_substitute_scope: Linux nightly ASAN/TSAN mobile unit subset plus Android real-device C harness logs
+  residual_risk_acceptance: explicit acceptance that Android/iOS app wrapper lifetime bugs are not directly sanitizer-tested in this release
+  approval_artifact: <signed note, release ticket, or review link>
+
+Until one closure path is attached by a release owner, this file must keep a blocking status.

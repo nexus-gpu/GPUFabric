@@ -213,7 +213,7 @@ impl DeviceDailyStats {
                 flattened_devices.push((index as i16, device));
             }
         }
-        
+
         //batch insert with flattened devices
         query_builder.push_values(&flattened_devices, |mut b, (index, device)| {
             b.push_bind(day)
@@ -287,7 +287,7 @@ impl DeviceDailyStats {
             RETURNING *
             "
         ));
-        
+
         let sql = query_builder.sql();
         tracing::info!("DeviceDailyStats upsert SQL: {}", sql);
 
@@ -341,7 +341,10 @@ pub async fn insert_heartbeat(
 ) -> anyhow::Result<()> {
     let timestamp = timestamp.unwrap_or_else(Utc::now);
     // Insert heartbeat record using the transaction with better conflict resolution
-    let _device_hash = format!("{:x}", md5::compute(format!("{:?}{:?}", client_id, devices_info)));
+    let _device_hash = format!(
+        "{:x}",
+        md5::compute(format!("{:?}{:?}", client_id, devices_info))
+    );
     let _ = sqlx::query(
         format!("
         INSERT INTO {} (client_id, cpu_usage, mem_usage, disk_usage, network_up, network_down, timestamp)
@@ -412,10 +415,10 @@ pub async fn insert_heartbeat(
     if !devices_info.is_empty() {
         let mut values_placeholder = String::new();
         let params_per_device = 9;
-        
+
         // Count total devices first for proper parameter indexing
         let total_devices: u32 = devices_info.iter().map(|d| d.num as u32).sum();
-        
+
         // Build the values part of the query with correct global parameter indexing
         for global_idx in 0..total_devices {
             let base = global_idx * params_per_device;
@@ -453,9 +456,13 @@ pub async fn insert_heartbeat(
             ) VALUES {}",
             DEVICE_INFO_TABLE, values_placeholder
         );
-        
+
         tracing::info!("Generated device_info INSERT SQL: {}", query_str);
-        tracing::info!("Total devices: {}, Total params expected: {}", total_devices, total_devices * params_per_device);
+        tracing::info!(
+            "Total devices: {}, Total params expected: {}",
+            total_devices,
+            total_devices * params_per_device
+        );
 
         let mut query = sqlx::query(&query_str);
         let mut param_count = 0;
@@ -585,10 +592,9 @@ pub async fn get_client_stats(
 
 #[tokio::test]
 async fn test_device_daily_stats() {
-    //let pool = PgPool::connect("postgres://postgres:postgres@localhost:5432/postgres").unwrap();
-    let pool = PgPool::connect("postgres://postgres:postgres@localhost:5432/postgres")
-        .await
-        .unwrap();
+    let database_url = std::env::var("GPUF_TEST_DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://postgres@localhost:5432/postgres".to_string());
+    let pool = PgPool::connect(&database_url).await.unwrap();
     let client_id = [0; 16];
     let device_index = 1;
     let device_info = common::DevicesInfo {
@@ -612,10 +618,14 @@ async fn test_device_daily_stats() {
     let start_date = Utc::now().date_naive();
     let end_date = Utc::now().date_naive();
     let mut tx = pool.begin().await.unwrap();
-    let _ =
-        DeviceDailyStats::upsert_batch(&mut tx, &ClientId(client_id), &vec![device_info], Utc::now())
-        .await
-        .unwrap();
+    let _ = DeviceDailyStats::upsert_batch(
+        &mut tx,
+        &ClientId(client_id),
+        &vec![device_info],
+        Utc::now(),
+    )
+    .await
+    .unwrap();
     tx.commit().await.unwrap();
 
     let stats = DeviceDailyStats::get_stats(

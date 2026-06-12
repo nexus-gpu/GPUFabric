@@ -7,10 +7,10 @@ use axum::{
 };
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
+use sqlx::Row;
 use std::sync::Arc;
 use tracing::error;
 use validator::Validate;
-use sqlx::Row;
 
 // Request parameters for points query
 #[derive(Debug, Deserialize, Validate)]
@@ -114,7 +114,10 @@ pub async fn get_user_points(
 
     // Add client_name fuzzy filter if provided
     if client_name_filter.is_some() {
-        query_conditions.push(format!("COALESCE(ga.client_name, '') ILIKE ${}", param_index));
+        query_conditions.push(format!(
+            "COALESCE(ga.client_name, '') ILIKE ${}",
+            param_index
+        ));
         param_index += 1;
     }
 
@@ -138,9 +141,10 @@ pub async fn get_user_points(
     let where_clause = query_conditions.join(" AND ");
 
     // Main query to get paginated results with total summary
-    let query = format!(r#"
-        WITH filtered_points AS (
-            SELECT 
+    let query = format!(
+        r#"
+        WITH base_points AS (
+            SELECT
                 encode(dpd.client_id::bytea, 'hex') as client_id,
                 COALESCE(ga.client_name, '') as client_name,
                 dpd.date,
@@ -148,13 +152,31 @@ pub async fn get_user_points(
                 COALESCE(dpd.device_name, '-') as device_name,
                 COALESCE(dpd.device_id, 0) as device_id,
                 dpd.device_index,
-                (dpd.points)::DOUBLE PRECISION as points,
-                (SUM(dpd.points) OVER ())::DOUBLE PRECISION as total_points,
-                COUNT(*) OVER () as total_count,
-                ROW_NUMBER() OVER (ORDER BY dpd.date DESC, dpd.client_id) as row_num
+                dpd.points as raw_points,
+                SUM(dpd.points * 100) OVER (
+                    ORDER BY dpd.date ASC, dpd.client_id ASC, dpd.device_index ASC
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                ) as cumulative_scaled_points,
+                SUM(dpd.points * 100) OVER () as total_scaled_points,
+                COUNT(*) OVER () as total_count
             FROM public.device_points_daily dpd
             INNER JOIN public.gpu_assets ga ON dpd.client_id = ga.client_id
             WHERE {}
+        ),
+        filtered_points AS (
+            SELECT
+                client_id,
+                client_name,
+                date,
+                total_heartbeats,
+                device_name,
+                device_id,
+                device_index,
+                ((FLOOR(cumulative_scaled_points) - FLOOR(cumulative_scaled_points - raw_points * 100)) / 100.0)::DOUBLE PRECISION as points,
+                (FLOOR(total_scaled_points) / 100.0)::DOUBLE PRECISION as total_points,
+                total_count,
+                ROW_NUMBER() OVER (ORDER BY date DESC, client_id, device_index) as row_num
+            FROM base_points
         )
         SELECT 
             client_id,
@@ -170,14 +192,18 @@ pub async fn get_user_points(
         FROM filtered_points
         WHERE row_num > ${} AND row_num <= ${}
         ORDER BY date DESC, client_id
-    "#, where_clause, param_index, param_index + 1);
+    "#,
+        where_clause,
+        param_index,
+        param_index + 1
+    );
 
     // Execute query with parameters
     let mut query_builder = sqlx::query(&query);
-    
+
     // Bind user_id (first parameter)
     query_builder = query_builder.bind(&params.user_id);
-    
+
     // Bind optional parameters
     if let Some(client_id_bytes) = client_id_bytes {
         query_builder = query_builder.bind(client_id_bytes);
@@ -194,22 +220,21 @@ pub async fn get_user_points(
     if let Some(ref end_date) = params.end_date {
         query_builder = query_builder.bind(end_date);
     }
-    
+
     // Bind pagination parameters
     query_builder = query_builder.bind(offset);
     query_builder = query_builder.bind(offset + page_size);
 
     // Execute the query
-    let rows = match query_builder
-        .fetch_all(&app_state.db_pool)
-        .await
-    {
+    let rows = match query_builder.fetch_all(&app_state.db_pool).await {
         Ok(rows) => rows,
         Err(e) => {
             error!("Failed to query user points: {}", e);
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiResponse::<()>::error("internal server error".to_string())),
+                Json(ApiResponse::<()>::error(
+                    "internal server error".to_string(),
+                )),
             ));
         }
     };
@@ -240,7 +265,7 @@ pub async fn get_user_points(
         let device_id: i32 = row.get("device_id");
         let device_index: i16 = row.get("device_index");
         let points_value: f64 = row.get("points");
-        
+
         // Get total_points and total_count from first row
         if !summary_set {
             total_points = row.get("total_points");

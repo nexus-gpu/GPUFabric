@@ -272,7 +272,7 @@ void slow_callback(const char* token, void* user_data) {
 
 ### Android Compilation Example
 ```bash
-cd /home/jack/codedir/GPUFabric/gpuf-c/examples
+cd <repo>/gpuf-c/examples
 
 # Compile streaming test
 ./build.sh test_async_real.c

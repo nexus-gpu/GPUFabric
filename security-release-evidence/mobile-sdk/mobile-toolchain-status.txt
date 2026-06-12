@@ -1,0 +1,4 @@
+adb=
+xcodebuild=/usr/bin/xcodebuild
+cargo-ndk=
+llvm-symbolizer=

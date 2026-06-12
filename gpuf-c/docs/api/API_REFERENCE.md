@@ -4,6 +4,10 @@
 
 GPUFabric provides multi-language APIs supporting Rust, Java, and other language integrations. This document details all available API interfaces.
 
+## Security Compatibility Note
+
+The 2026-06-04 remediation pass does not remove or rename existing public Rust/C/JNI APIs documented here. Native and mobile wrappers remain source/ABI compatible at the existing function-signature level. Integrations should update configuration, not old method calls: pass explicit remote server addresses, verify SDK artifacts with SHA256, and avoid relying on deprecated insecure defaults. Mobile control TLS is exposed through additive APIs (`start_remote_worker_with_tls` / `startRemoteWorkerWithTls`) so existing plaintext integrations continue to build while production deployments can opt into TLS.
+
 ## 🦀 Rust API
 
 ### Core Initialization
@@ -372,15 +376,71 @@ public class ClientConfig {
 **Example:**
 ```java
 GPUFabricClientSDK sdk = ClientConfig.builder()
-    .serverAddr("192.168.1.100")
+    .serverAddr("<gpuf-s-host>")
     .controlPort(17000)
     .proxyPort(17001)
-    .clientId("android-device-001")
+    .clientId("<client-id-32-hex>")
     .deviceName("My Android Device")
     .autoRegister(true)
     .heartbeatIntervalSecs(30)
     .build();
 ```
+
+Control connection TLS note: CLI/config deployments can enable `[client].control_tls = true` and `control_tls_server_name`. The public Java/C mobile remote worker plaintext signatures shown here remain unchanged for compatibility. Mobile wrappers can preflight CA/SNI/pin inputs with the policy helper below and can opt into the TLS-wrapped control protocol with the additive `start_remote_worker_with_tls` / `startRemoteWorkerWithTls` APIs. Android arm64 target compile and packaged SDK real-device inference now pass locally with NDK 25.1.8937393; iOS target builds and Android/iOS TLS/pinning handshake logs are still required release evidence.
+
+### Mobile TLS Policy Helper
+
+C API:
+
+```c
+int gpuf_validate_mobile_tls_policy(const char *ca_cert_path,
+                                    const char *server_name,
+                                    const char *cert_sha256_pin);
+```
+
+JNI API:
+
+```java
+public static native int validateMobileTlsPolicy(
+    String caCertPath,
+    String serverName,
+    String certSha256Pin
+);
+```
+
+Pass an empty string or `NULL` for `ca_cert_path` / `cert_sha256_pin` when unused. At least one of CA bundle or SHA256 certificate pin must be provided. Return codes: `0` valid, `-1` missing/invalid server name, `-2` missing trust material, `-3` invalid CA bundle, `-4` invalid SHA256 pin, `-5` invalid UTF-8. This helper validates configuration before calling the TLS start API.
+
+### Mobile Remote Worker TLS Start API
+
+C API:
+
+```c
+int start_remote_worker_with_tls(const char *server_addr,
+                                 int control_port,
+                                 int proxy_port,
+                                 const char *worker_type,
+                                 const char *client_id,
+                                 const char *ca_cert_path,
+                                 const char *control_tls_server_name,
+                                 const char *cert_sha256_pin);
+```
+
+JNI API:
+
+```java
+public static native int startRemoteWorkerWithTls(
+    String serverAddr,
+    int controlPort,
+    int proxyPort,
+    String workerType,
+    String clientId,
+    String caCertPath,
+    String controlTlsServerName,
+    String certSha256Pin
+);
+```
+
+The first five parameters match `start_remote_worker` / `startRemoteWorker`; the final three parameters are TLS trust configuration. Pass an empty CA path when using pin-only trust, or an empty pin when using a CA bundle only. `control_tls_server_name` may be empty to use `server_addr` as SNI, but production wrappers should pass the expected DNS name explicitly. Return codes: `0` success, `-1` required argument/connection/login failure, `-2` invalid TLS policy.
 
 ## 🔌 Error Handling
 

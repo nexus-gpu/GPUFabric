@@ -1,0 +1,45 @@
+status: REVIEWED_WITH_PRODUCTION_LOGGING_ACTION
+generated_at_utc: 2026-06-10T02:31:17Z
+branch: optimize/gpuf-c
+commit: e1fc8b9eb58867f4e3749b827eca5b399ef45c7d
+
+iOS Info.plist review:
+  File: gpuf-c/examples/ios_sim_test/GPUFIosSimTest/Info.plist
+  No camera, microphone, photo library, location, Bluetooth, contacts, calendar, or tracking permission descriptions are declared.
+  The sample declares only standard bundle metadata, launch screen, scene manifest, iPhone requirement, and portrait orientation.
+
+iOS log review:
+  File: gpuf-c/examples/ios_sim_test/GPUFIosSimTest/ContentView.swift
+  Uses os.Logger subsystem com.gpuf.iossimtest category remote_worker.
+  Diagnostic logs include callback text, model path, status text, and a test client identifier.
+  This is acceptable for local simulator diagnostics only.
+  Production wrapper requirement: redact or suppress client IDs, tokens, prompts, model paths, endpoint IP/host values, CA paths, certificate pins, and callback payloads.
+
+Android manifest review:
+  No concrete Android app manifest was found in this local branch for a packaged Android sample.
+  Documentation examples mention INTERNET and ACCESS_NETWORK_STATE for network operation.
+  Production Android wrapper should request only required network permissions and avoid legacy broad external-storage permissions unless the app truly needs user-selected model files.
+
+Sensitive pattern gate:
+  scripts/mobile_sdk_release_gate.sh scans mobile sources for public endpoint literals, private keys, token-like Hugging Face secrets, and unsafe Android/iOS credential storage patterns.
+  This evidence package expects that script to remain the automated sensitive-pattern gate.
+
+Conclusion:
+  iOS permissions surface is minimal.
+  Logging needs production hardening in app-layer wrappers before release.
+
+Required closure evidence:
+  To clear this blocker for formal mobile SDK release, replace the status with PASS_PRODUCTION_LOGGING_PERMISSIONS_SIGNED_OFF and attach production wrapper permission/logging review details in this file or a linked release record.
+
+Required fields:
+  reviewer: <release-owner-or-security-reviewer>
+  reviewed_at_utc: <timestamp>
+  android_manifest_or_app_artifact: <path-or-artifact-id>@<commit-or-version>
+  ios_info_plist_or_app_artifact: <path-or-artifact-id>@<commit-or-version>
+  android_permissions: INTERNET/ACCESS_NETWORK_STATE only, or documented justification for any additional permission
+  ios_permissions: no sensitive privacy permissions, or documented justification for each NS*UsageDescription key
+  log_redaction_policy: production logs redact or suppress client IDs, tokens, prompts, model paths, endpoint hosts/IPs, CA paths, and certificate pins
+  log_validation_artifact: <CI grep, device log review, code review link, or signed release note>
+  exception_owner_expiry: <owner and expiry if any permission/logging exception remains>
+
+Until those fields are attached by a release owner, this file must keep a blocking status.

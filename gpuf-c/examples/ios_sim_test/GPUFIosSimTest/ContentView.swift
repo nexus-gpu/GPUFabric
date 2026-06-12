@@ -2,6 +2,7 @@ import SwiftUI
 import os
 
 private let remoteWorkerLogger = Logger(subsystem: "com.gpuf.iossimtest", category: "remote_worker")
+private let environment = ProcessInfo.processInfo.environment
 
 private final class RemoteWorkerStatusBox: @unchecked Sendable {
     var update: ((String) -> Void)?
@@ -67,13 +68,17 @@ private func startRemoteWorkerOnce() -> String {
 private func startRemoteWorkerWithModelPath(_ modelPath: String) -> String {
     remoteWorkerLogger.info("Model path: \(modelPath, privacy: .public)")
 
-    let serverAddr = "8.140.251.142"
-    let controlPort: Int32 = 17000
-    let proxyPort: Int32 = 17001
+    let serverAddr = environment["GPUF_IOS_TEST_SERVER_ADDR"] ?? "127.0.0.1"
+    let controlPort = Int32(environment["GPUF_IOS_TEST_CONTROL_PORT"] ?? "17100") ?? 17100
+    let proxyPort = Int32(environment["GPUF_IOS_TEST_PROXY_PORT"] ?? "17101") ?? 17101
     let workerType = "TCP"
-    let clientId = "e64dcb400f9c41e68abf38e3105b935b"
+    let clientId = environment["GPUF_IOS_TEST_CLIENT_ID"] ?? "00112233445566778899aabbccddeeff"
+    let useTLS = environment["GPUF_IOS_TEST_TLS"] == "1"
+    let caCertPath = environment["GPUF_IOS_TEST_CA_CERT_PATH"]
+    let controlTLSServerName = environment["GPUF_IOS_TEST_TLS_SERVER_NAME"] ?? serverAddr
+    let certSHA256Pin = environment["GPUF_IOS_TEST_CERT_SHA256_PIN"]
 
-    remoteWorkerLogger.info("Starting remote worker with clientId: \(clientId, privacy: .public)")
+    remoteWorkerLogger.info("Starting remote worker with clientId: \(clientId, privacy: .public), tls: \(useTLS)")
 
     let modelRc = modelPath.withCString { cstr in
         set_remote_worker_model(cstr)
@@ -83,10 +88,27 @@ private func startRemoteWorkerWithModelPath(_ modelPath: String) -> String {
         return "❌ set_remote_worker_model failed: \(modelRc)"
     }
 
-    let startRc = serverAddr.withCString { s in
-        workerType.withCString { w in
-            clientId.withCString { c in
-                start_remote_worker(s, controlPort, proxyPort, w, c)
+    let startRc: Int32
+    if useTLS {
+        startRc = serverAddr.withCString { s in
+            workerType.withCString { w in
+                clientId.withCString { c in
+                    controlTLSServerName.withCString { tlsName in
+                        withOptionalCString(caCertPath) { ca in
+                            withOptionalCString(certSHA256Pin) { pin in
+                                start_remote_worker_with_tls(s, controlPort, proxyPort, w, c, ca, tlsName, pin)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        startRc = serverAddr.withCString { s in
+            workerType.withCString { w in
+                clientId.withCString { c in
+                    start_remote_worker(s, controlPort, proxyPort, w, c)
+                }
             }
         }
     }
@@ -96,16 +118,21 @@ private func startRemoteWorkerWithModelPath(_ modelPath: String) -> String {
     }
 
     let cb: (@convention(c) (UnsafePointer<CChar>?, UnsafeMutableRawPointer?) -> Void) = remoteWorkerCallback
-    let cbPtr: Int64 = unsafeBitCast(cb, to: Int64.self)
-    let tasksRc = start_remote_worker_tasks_with_callback_ptr(cbPtr)
+    let registerRc = gpuf_register_remote_worker_callback(cb, nil)
+    if registerRc != 0 {
+        remoteWorkerLogger.error("gpuf_register_remote_worker_callback failed: \(registerRc)")
+        return "❌ gpuf_register_remote_worker_callback failed: \(registerRc)"
+    }
+
+    let tasksRc = start_remote_worker_tasks()
     if tasksRc != 0 {
-        remoteWorkerLogger.error("start_remote_worker_tasks_with_callback_ptr failed: \(tasksRc)")
-        return "❌ start_remote_worker_tasks_with_callback_ptr failed: \(tasksRc)"
+        remoteWorkerLogger.error("start_remote_worker_tasks failed: \(tasksRc)")
+        return "❌ start_remote_worker_tasks failed: \(tasksRc)"
     }
 
     var buffer = [CChar](repeating: 0, count: 512)
     let statusRc = buffer.withUnsafeMutableBufferPointer { buf in
-        get_remote_worker_status(buf.baseAddress, Int32(buf.count))
+        get_remote_worker_status(buf.baseAddress, buf.count)
     }
     if statusRc == 0 {
         let statusText = String(cString: buffer)
@@ -116,3 +143,11 @@ private func startRemoteWorkerWithModelPath(_ modelPath: String) -> String {
     return "✅ Remote worker started"
 }
 
+private func withOptionalCString<R>(_ value: String?, _ body: (UnsafePointer<CChar>?) -> R) -> R {
+    guard let value, !value.isEmpty else {
+        return body(nil)
+    }
+    return value.withCString { cstr in
+        body(cstr)
+    }
+}

@@ -6,6 +6,8 @@ use tracing::warn;
 pub mod config;
 use bytes::BytesMut;
 use config::GpuModelConfig;
+use std::fmt;
+use zeroize::Zeroize;
 
 #[derive(Serialize, Deserialize, Encode, Decode, Debug, Clone)]
 pub struct Model {
@@ -74,18 +76,18 @@ pub struct ChatMessage {
     pub content: String,
 }
 
- #[derive(Encode, Decode, Debug, Clone, Copy, PartialEq, Eq)]
- pub enum OutputPhase {
-     Unknown,
-     Analysis,
-     Final,
- }
+#[derive(Encode, Decode, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputPhase {
+    Unknown,
+    Analysis,
+    Final,
+}
 
- impl Default for OutputPhase {
-     fn default() -> Self {
-         Self::Unknown
-     }
- }
+impl Default for OutputPhase {
+    fn default() -> Self {
+        Self::Unknown
+    }
+}
 
 impl Default for DevicesInfo {
     fn default() -> Self {
@@ -291,7 +293,8 @@ pub enum CommandV2 {
         stun_urls: Vec<String>,
         turn_urls: Vec<String>,
         turn_username: String,
-        turn_password: String,
+        turn_password: RedactedString,
+        data_plane_secret: DataPlaneSecret,
         expires_at: u64,
         force_tls: bool,
     },
@@ -301,6 +304,14 @@ pub enum CommandV2 {
         target_client_id: [u8; 16],
         connection_id: [u8; 16],
         candidates: Vec<P2PCandidate>,
+    },
+
+    P2PDataPlaneEnvelope {
+        connection_id: [u8; 16],
+        seq: u64,
+        timestamp: u64,
+        payload: Vec<u8>,
+        tag: [u8; 32],
     },
 
     P2PInferenceRequest {
@@ -367,6 +378,64 @@ pub enum CommandV2 {
     },
 }
 
+#[derive(Encode, Decode, Clone, PartialEq, Eq)]
+pub struct RedactedString(pub String);
+
+impl fmt::Debug for RedactedString {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("<redacted>")
+    }
+}
+
+impl RedactedString {
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_inner(mut self) -> String {
+        std::mem::take(&mut self.0)
+    }
+}
+
+impl Drop for RedactedString {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+impl From<String> for RedactedString {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+#[derive(Encode, Decode, Clone, PartialEq, Eq)]
+pub struct DataPlaneSecret(pub [u8; 32]);
+
+impl fmt::Debug for DataPlaneSecret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("<redacted-data-plane-secret>")
+    }
+}
+
+impl DataPlaneSecret {
+    pub fn expose(&self) -> &[u8; 32] {
+        &self.0
+    }
+
+    pub fn into_inner(mut self) -> [u8; 32] {
+        let out = self.0;
+        self.0.zeroize();
+        out
+    }
+}
+
+impl Drop for DataPlaneSecret {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
+
 #[derive(Encode, Decode, Debug, Clone, PartialEq)]
 pub struct P2PCandidate {
     pub candidate_type: P2PCandidateType,
@@ -429,7 +498,6 @@ impl EngineType {
     }
 }
 
-use std::fmt;
 impl fmt::Display for EngineType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -604,7 +672,7 @@ const OS_TPYE_MAP: &[(&str, OsType)] = &[
     ("linux", OsType::LINUX),
     ("win", OsType::WINDOWS),
     ("android", OsType::ANDROID),
-    ("ios",OsType::IOS)
+    ("ios", OsType::IOS),
 ];
 
 #[inline]

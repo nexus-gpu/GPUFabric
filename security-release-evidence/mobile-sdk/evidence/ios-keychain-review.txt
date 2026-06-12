@@ -1,0 +1,27 @@
+status: REVIEWED_NO_SDK_STORAGE
+generated_at_utc: 2026-06-10T02:31:17Z
+branch: optimize/gpuf-c
+commit: e1fc8b9eb58867f4e3749b827eca5b399ef45c7d
+
+Review scope:
+  gpuf-c/gpuf_c_ios.h
+  gpuf-c/src/lib.rs
+  gpuf-c/src/util/mobile_tls_policy.rs
+  gpuf-c/src/util/mobile_control_stream.rs
+  gpuf-c/examples/ios_sim_test/GPUFIosSimTest/ContentView.swift
+  gpuf-c/examples/ios_sim_test/GPUFIosSimTest/Info.plist
+
+Findings:
+  The native iOS C SDK exposes runtime APIs but does not implement persistent credential storage.
+  No Keychain usage was found in the SDK or simulator sample.
+  No UserDefaults / NSUserDefaults storage was found in the iOS simulator sample.
+  No plaintext token/credential file write was found in the iOS simulator sample.
+
+Security conclusion:
+  The SDK does not persist long-lived token or credential material on iOS.
+  Production iOS app wrappers must store long-lived credentials in Keychain, not UserDefaults, logs, plist files, or arbitrary Documents files.
+  SDK callers should pass only runtime-scoped values into start_remote_worker/start_remote_worker_with_tls.
+
+Logging caveat:
+  The simulator sample logs callback text, model path, and test client identifier with public privacy for diagnostics.
+  Production wrappers must redact client IDs, tokens, prompts, model paths, endpoint IPs/hosts, CA paths, and certificate pins from user-visible or remote logs.

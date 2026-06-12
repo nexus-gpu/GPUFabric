@@ -1,0 +1,77 @@
+status: PASS_UNIT_RECHECK_RUNTIME_LOG_FOLLOWUP
+generated_at_utc: 2026-06-10T03:20:00Z
+branch: optimize/gpuf-c
+commit: 52e6697ee14fd5714a904280947f7861b84e7ee3
+
+Purpose:
+  Mobile control TLS and pinning evidence for Android/iOS C/JNI SDK surfaces.
+
+API coverage:
+  C header exposes gpuf_validate_mobile_tls_policy(ca_cert_path, control_tls_server_name, cert_sha256_pin).
+  C header exposes start_remote_worker_with_tls(server_addr, control_port, proxy_port, worker_type, client_id, ca_cert_path, control_tls_server_name, cert_sha256_pin).
+  Plain start_remote_worker remains available for backwards compatibility.
+  Android JNI wrappers are additive and do not remove old plaintext calls.
+
+Static review:
+  gpuf-c/src/util/mobile_tls_policy.rs validates non-empty server name, CA bundle path, and SHA256 pin format.
+  gpuf-c/src/util/mobile_control_stream.rs builds a TLS client config, loads CA roots, validates server name, and compares SHA256 pin when provided.
+  gpuf-c/src/lib.rs maps TLS policy errors to stable C return codes.
+
+Unit test command:
+  cargo test -p gpuf-c mobile_tls_policy --lib
+
+Unit test result on 2026-06-10 Linux re-check:
+  running 7 tests
+  passed: 7
+  failed: 0
+
+Passing tests:
+  accepts_ca_bundle_and_sha256_pin
+  accepts_colon_separated_pin_without_ca
+  ffi_returns_stable_error_codes
+  rejects_bad_pin
+  rejects_missing_trust_material
+  rejects_invalid_server_name
+  rejects_missing_ca_file
+
+Fixture status:
+  gpuf-c/tests/fixtures/control-rotated-cert.pem is present and parses as a PEM certificate bundle.
+  Valid CA-bundle and stable C FFI return-code tests now pass.
+
+Android TLS runtime evidence:
+  Raw runtime log: security-release-evidence/mobile-sdk/evidence/android-remote-worker-tls-runtime.log
+  Device: HMA-AL00, Android 10, arm64-v8a.
+  Transport setup: adb reverse tcp:17100/tcp:17100 and tcp:17101/tcp:17101 to the local gpuf-s TLS test stack.
+  Trust setup: docker/ca-cert.pem copied to /data/local/tmp/gpuf_test/control-ca.pem; SNI/server name localhost.
+  Passing signals: gpuf_validate_mobile_tls_policy rc=0, set_remote_worker_model rc=0, start_remote_worker_with_tls rc=0, start_remote_worker_tasks_with_callback_ptr rc=0, get_remote_worker_status rc=0, stop_remote_worker rc=0.
+  Callback signals: STARTING, SUCCESS, HEARTBEAT, HANDLER_START, LOGIN_SUCCESS, PULL_MODEL_SUCCESS, HANDLER_STOP.
+
+Android plaintext compatibility evidence:
+  Raw runtime log: security-release-evidence/mobile-sdk/evidence/android-remote-worker-plain-runtime.log
+  Passing signals: set_remote_worker_model rc=0, start_remote_worker rc=0, start_remote_worker_tasks_with_callback_ptr rc=0, get_remote_worker_status rc=0, stop_remote_worker rc=0.
+
+Previous iOS integration flow:
+  run_ios_sim_tls_test.sh generates local TLS cert material and then starts the simulator sample with:
+    GPUF_IOS_TEST_TLS=1
+    GPUF_IOS_TEST_CA_CERT_SOURCE_PATH=<generated-ca-cert>
+    GPUF_IOS_TEST_TLS_SERVER_NAME=<test-server-name>
+  The sample calls start_remote_worker_with_tls and registers gpuf_register_remote_worker_callback.
+
+Release conclusion:
+  TLS APIs, negative validation coverage, valid CA-bundle parsing, SHA256 pin format handling, stable C return codes, Android plaintext Remote Worker compatibility, and Android additive TLS Remote Worker startup are covered by passing tests/logs.
+  Attach a saved iOS TLS runtime log for human release review of the simulator/device flow.
+
+Required closure evidence:
+  To clear this blocker for formal mobile SDK release, replace the status with PASS_ANDROID_IOS_TLS_RUNTIME_REVIEWED after attaching iOS runtime logs.
+
+Required iOS TLS runtime fields:
+  raw_log_file: security-release-evidence/mobile-sdk/evidence/ios-simulator-tls-runtime.log or ios-device-tls-runtime.log
+  repo_commit: <commit under test>
+  xcode_version: <xcodebuild -version>
+  ios_runtime: <simulator-or-device-runtime>
+  command: gpuf-c/examples/ios_sim_test/run_ios_sim_tls_test.sh or equivalent Xcode action
+  tls_inputs: CA bundle path redacted, server name/SNI, optional SHA256 test pin
+  passing_signals: gpuf_validate_mobile_tls_policy rc=0, start_remote_worker_with_tls success, callback/status update, get_remote_worker_status started/running, stop lifecycle
+  redaction_check: no production client IDs, tokens, private keys, endpoint secrets, full model paths, CA paths, or pins in attached logs
+
+Until the iOS TLS raw runtime log is attached, this file must keep a blocking status.

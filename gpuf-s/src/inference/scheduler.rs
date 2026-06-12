@@ -185,11 +185,16 @@ impl InferenceScheduler {
         for (client_id, client_info) in clients.iter() {
             if let Some(allowed) = allowed_client_ids {
                 if !allowed.iter().any(|id| id == client_id) {
-                    debug!("Client {} is not allowed", client_id);
+                    debug!("Client {} is not allowed", client_id.log_label());
                     continue;
                 }
             }
-            debug!("Client {} is authed {} model {}", client_id, client_info.authed, model_name);
+            debug!(
+                "Client {} is authed {} model {}",
+                client_id.log_label(),
+                client_info.authed,
+                model_name
+            );
             if !client_info.authed {
                 continue;
             }
@@ -253,7 +258,11 @@ impl InferenceScheduler {
                 self.select_best_device(allowed_client_ids).await?
             }
         };
-        debug!("Selected device {} for model {}", device_id, model);
+        debug!(
+            "Selected device {} for model {}",
+            device_id.log_label(),
+            model
+        );
         let common_messages = messages
             .into_iter()
             .map(|m| common::ChatMessage {
@@ -289,7 +298,8 @@ impl InferenceScheduler {
     pub async fn cancel_inference(&self, task_id: &str, device_id: &ClientId) -> Result<()> {
         debug!(
             "Cancelling inference for task {} on device {}",
-            task_id, device_id
+            task_id,
+            device_id.log_label()
         );
         {
             let mut streams = self.pending_streams.lock().await;
@@ -301,10 +311,10 @@ impl InferenceScheduler {
         let mut clients = self.active_clients.lock().await;
         let client_info = clients
             .get_mut(device_id)
-            .ok_or_else(|| anyhow!("Device {:?} not found or not connected", device_id))?;
+            .ok_or_else(|| anyhow!("Device not found or not connected"))?;
 
         if !client_info.authed {
-            return Err(anyhow!("Device {:?} not authenticated", device_id));
+            return Err(anyhow!("Device not authenticated"));
         }
 
         let mut writer = client_info.writer.lock().await;
@@ -337,17 +347,17 @@ impl InferenceScheduler {
         let mut clients = self.active_clients.lock().await;
         let client_info = clients
             .get_mut(device_id)
-            .ok_or_else(|| anyhow!("Device {:?} not found or not connected", device_id))?;
+            .ok_or_else(|| anyhow!("Device not found or not connected"))?;
 
         if !client_info.authed {
-            error!("Device {:?} not authenticated", device_id);
-            return Err(anyhow!("Device {:?} not authenticated", device_id));
+            error!("Device {} not authenticated", device_id.log_label());
+            return Err(anyhow!("Device not authenticated"));
         }
 
         let mut writer = client_info
             .writer
             .try_lock()
-            .map_err(|_| anyhow!("Device {:?} is busy, please try again", device_id))?;
+            .map_err(|_| anyhow!("Device is busy, please try again"))?;
 
         let chat_task = CommandV1::ChatInferenceTask {
             task_id: task_id.clone(),
@@ -364,8 +374,14 @@ impl InferenceScheduler {
 
         let command = Command::V1(chat_task);
         info!(
-            "sent chat inference task {} to device {:?} :{:?}",
-            task_id, device_id, command
+            "sent chat inference task {} to device {} (messages={}, max_tokens={})",
+            task_id,
+            device_id.log_label(),
+            match &command {
+                Command::V1(CommandV1::ChatInferenceTask { messages, .. }) => messages.len(),
+                _ => 0,
+            },
+            max_tokens
         );
         write_command(&mut *writer, &command).await?;
         writer.flush().await?;
@@ -480,17 +496,17 @@ impl InferenceScheduler {
         );
 
         let mut tasks = self.pending_tasks.lock().await;
-        let all_tasks_before: Vec<String> = tasks.keys().cloned().collect();
-        info!("Current pending tasks count: {}", tasks.len());
-        info!("All tasks before removal: {:?}", all_tasks_before);
+        let pending_count_before = tasks.len();
+        info!("Current pending tasks count: {}", pending_count_before);
 
         // Find the sender for this taskretain
         let sender = tasks.remove(&task_id);
-        info!("pop sender : {:?}", sender);
         if let Some(sender) = sender {
             info!("Found and removed task {} from pending_tasks", task_id);
-            let remaining_tasks: Vec<String> = tasks.keys().cloned().collect();
-            info!("Remaining tasks after removal: {:?}", remaining_tasks);
+            debug!(
+                "Remaining pending task count after removal: {}",
+                tasks.len()
+            );
             let response = if success {
                 Ok(CompletionResponse {
                     id: task_id.clone(),
@@ -530,9 +546,9 @@ impl InferenceScheduler {
             // This commonly happens when the SSE client disconnects and we cancel/remove the
             // stream sender before the device finishes sending its final chunks.
             debug!(
-                "Dropping inference result for task {} because it is no longer pending (likely canceled/disconnected). Available tasks were: {:?}",
+                "Dropping inference result for task {} because it is no longer pending (likely canceled/disconnected). Previously pending count: {}",
                 task_id,
-                all_tasks_before
+                pending_count_before
             );
         }
     }
@@ -587,8 +603,10 @@ impl InferenceScheduler {
 
         if let Some((client_id, _load)) = best_device {
             info!(
-                "Selected device {:?} for inference (load: {}%, available devices: {})",
-                client_id, _load, device_count
+                "Selected device {} for inference (load: {}%, available devices: {})",
+                client_id.log_label(),
+                _load,
+                device_count
             );
             Ok(client_id)
         } else {
@@ -616,19 +634,19 @@ impl InferenceScheduler {
         let mut clients = self.active_clients.lock().await;
         let client_info = clients
             .get_mut(device_id)
-            .ok_or_else(|| anyhow!("Device {:?} not found or not connected", device_id))?;
+            .ok_or_else(|| anyhow!("Device not found or not connected"))?;
 
         // Check if client is authenticated and ready
         if !client_info.authed {
-            error!("Device {:?} not authenticated", device_id);
-            return Err(anyhow!("Device {:?} not authenticated", device_id));
+            error!("Device {} not authenticated", device_id.log_label());
+            return Err(anyhow!("Device not authenticated"));
         }
 
         // Try to acquire writer lock (non-blocking to avoid deadlocks)
         let mut writer = client_info
             .writer
             .try_lock()
-            .map_err(|_| anyhow!("Device {:?} is busy, please try again", device_id))?;
+            .map_err(|_| anyhow!("Device is busy, please try again"))?;
 
         // Create and send inference task command
         let inference_task = CommandV1::InferenceTask {
@@ -645,15 +663,22 @@ impl InferenceScheduler {
 
         let command = Command::V1(inference_task);
         info!(
-            "sent inference task {} to device {:?} :{:?}",
-            task_id, device_id, command
+            "sent inference task {} to device {} (prompt_bytes={}, max_tokens={})",
+            task_id,
+            device_id.log_label(),
+            match &command {
+                Command::V1(CommandV1::InferenceTask { prompt, .. }) => prompt.len(),
+                _ => 0,
+            },
+            max_tokens
         );
         write_command(&mut *writer, &command).await?;
         writer.flush().await?;
 
         info!(
-            "Successfully sent inference task {} to device {:?}",
-            task_id, device_id
+            "Successfully sent inference task {} to device {}",
+            task_id,
+            device_id.log_label()
         );
         Ok(())
     }
@@ -670,23 +695,29 @@ impl InferenceScheduler {
         let (sender, receiver) = oneshot::channel();
         {
             let mut tasks = self.pending_tasks.lock().await;
-            let existing_tasks: Vec<String> = tasks.keys().cloned().collect();
-            info!("Existing tasks before insert: {:?}", existing_tasks);
+            let existing_task_count = tasks.len();
+            debug!(
+                "Existing pending task count before insert: {}",
+                existing_task_count
+            );
             tasks.insert(task_id.clone(), sender);
-            let all_tasks: Vec<String> = tasks.keys().cloned().collect();
             info!(
                 "Stored task {} in pending_tasks (total: {})",
                 task_id,
                 tasks.len()
             );
-            info!("All tasks in pending_tasks: {:?}", all_tasks);
+            debug!("All pending task count after insert: {}", tasks.len());
         }
 
         // Select best available device
         let device_id = self.select_best_device(allowed_client_ids).await?;
 
         // Send task to device
-        info!("About to send task {} to device {:?}", task_id, device_id);
+        info!(
+            "About to send task {} to device {}",
+            task_id,
+            device_id.log_label()
+        );
         if let Err(e) = self
             .send_task_to_device(
                 &device_id,
@@ -706,8 +737,9 @@ impl InferenceScheduler {
             let mut tasks = self.pending_tasks.lock().await;
             tasks.remove(&task_id);
             error!(
-                "Failed to send inference task to device {:?}: {}",
-                device_id, e
+                "Failed to send inference task to device {}: {}",
+                device_id.log_label(),
+                e
             );
             return Err(e);
         }

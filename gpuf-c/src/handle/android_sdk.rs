@@ -5,6 +5,9 @@
 //! and blocking I/O operations.
 
 #[cfg(target_os = "android")]
+use crate::util::mobile_control_stream::connect_mobile_control_stream;
+use crate::util::mobile_control_stream::{MobileControlStream, MobileControlTlsConfig};
+#[cfg(target_os = "android")]
 use anyhow::{anyhow, Result};
 
 #[cfg(target_os = "android")]
@@ -18,13 +21,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 #[cfg(target_os = "android")]
-use super::{Args, AutoWorker, WorkerHandle};
+use super::{Args, WorkerHandle};
 #[cfg(target_os = "android")]
 use common::{DevicesInfo, EngineType};
 #[cfg(target_os = "android")]
 use std::io::Write;
-#[cfg(target_os = "android")]
-use tokio::task::JoinHandle;
 #[cfg(target_os = "android")]
 use tracing::info;
 
@@ -65,6 +66,41 @@ fn build_chat_prompt(messages: &[ChatMessage]) -> String {
 }
 
 #[cfg(target_os = "android")]
+fn command_label(command: &Command) -> &'static str {
+    match command {
+        Command::V1(cmd) => match cmd {
+            CommandV1::RequestNewProxyConn { .. } => "v1.request_new_proxy_conn",
+            CommandV1::NewProxyConn { .. } => "v1.new_proxy_conn",
+            CommandV1::Login { .. } => "v1.login",
+            CommandV1::LoginResult { .. } => "v1.login_result",
+            CommandV1::Heartbeat { .. } => "v1.heartbeat",
+            CommandV1::PullModelResult { .. } => "v1.pull_model_result",
+            CommandV1::ModelStatus { .. } => "v1.model_status",
+            CommandV1::InferenceTask { .. } => "v1.inference_task",
+            CommandV1::ChatInferenceTask { .. } => "v1.chat_inference_task",
+            CommandV1::CancelInference { .. } => "v1.cancel_inference",
+            CommandV1::InferenceResult { .. } => "v1.inference_result",
+            CommandV1::InferenceResultChunk { .. } => "v1.inference_result_chunk",
+            CommandV1::ModelDownloadProgress { .. } => "v1.model_download_progress",
+        },
+        Command::V2(_) => "v2.command",
+    }
+}
+
+#[cfg(target_os = "android")]
+pub type StatusCallback = extern "C" fn(*const std::ffi::c_char, *mut std::ffi::c_void);
+
+#[cfg(target_os = "android")]
+fn call_status_callback(callback: Option<StatusCallback>, message: &CString) {
+    if let Some(callback_fn) = callback {
+        // The SDK entrypoint accepts this function pointer from trusted native
+        // caller code. `message` is a live NUL-terminated CString for the full
+        // callback call, and this Android path does not use callback user_data.
+        callback_fn(message.as_ptr(), std::ptr::null_mut());
+    }
+}
+
+#[cfg(target_os = "android")]
 extern "C" {
     fn llama_get_model(ctx: *const crate::llama_context) -> *const crate::llama_model;
     fn llama_model_get_vocab(model: *const crate::llama_model) -> *const crate::llama_vocab;
@@ -99,18 +135,23 @@ fn count_prompt_tokens(ctx: *mut crate::llama_context, prompt: *const std::os::r
         return 0;
     }
 
+    // SAFETY: `ctx` was checked for null above and is only queried for its model pointer.
     let model = unsafe { llama_get_model(ctx) };
     if model.is_null() {
         return 0;
     }
+    // SAFETY: `model` was returned by llama.cpp and checked for null before this call.
     let vocab = unsafe { llama_model_get_vocab(model) };
     if vocab.is_null() {
         return 0;
     }
 
+    // SAFETY: `prompt` was checked for null and the C API requires a NUL-terminated prompt.
     let prompt_len = unsafe { std::ffi::CStr::from_ptr(prompt) }.to_bytes().len();
 
     let mut tokens: Vec<i32> = vec![0; 512];
+    // SAFETY: `vocab` and `prompt` are valid for this call, and `tokens` is a
+    // writable buffer sized by `tokens.len()`.
     let mut n = unsafe {
         llama_tokenize(
             vocab,
@@ -125,6 +166,7 @@ fn count_prompt_tokens(ctx: *mut crate::llama_context, prompt: *const std::os::r
     if n < 0 {
         let needed = (-n) as usize;
         tokens = vec![0; needed.max(1)];
+        // SAFETY: `tokens` was resized to the capacity requested by llama.cpp.
         n = unsafe {
             llama_tokenize(
                 vocab,
@@ -154,6 +196,7 @@ fn build_chat_prompt_with_gguf_template(
         return None;
     }
 
+    // SAFETY: `ctx` was checked for null above and is only queried for its model pointer.
     let model = unsafe { llama_get_model(ctx) };
     if model.is_null() {
         return None;
@@ -161,6 +204,7 @@ fn build_chat_prompt_with_gguf_template(
 
     let key = CString::new("tokenizer.chat_template").ok()?;
     let mut tmpl_buf = vec![0u8; 8192];
+    // SAFETY: `model`, `key`, and `tmpl_buf` are valid for this metadata copy.
     let got = unsafe {
         llama_model_meta_val_str(
             model,
@@ -173,6 +217,8 @@ fn build_chat_prompt_with_gguf_template(
         return None;
     }
 
+    // SAFETY: llama.cpp returned a positive byte count into `tmpl_buf`; metadata
+    // string values are NUL-terminated C strings.
     let tmpl_cstr = unsafe { CStr::from_ptr(tmpl_buf.as_ptr() as *const std::os::raw::c_char) };
 
     let mut role_cstrs = Vec::with_capacity(messages.len());
@@ -190,6 +236,8 @@ fn build_chat_prompt_with_gguf_template(
         content_cstrs.push(content);
     }
 
+    // SAFETY: `tmpl_cstr` and `chat_msgs` point to live C strings/vectors for
+    // this sizing call; null output buffer with length 0 requests required size.
     let needed = unsafe {
         llama_chat_apply_template(
             tmpl_cstr.as_ptr(),
@@ -205,6 +253,8 @@ fn build_chat_prompt_with_gguf_template(
     }
 
     let mut out = vec![0u8; needed as usize + 1];
+    // SAFETY: `out` is a writable buffer of the advertised length and all chat
+    // message pointers remain owned by `role_cstrs`/`content_cstrs` for the call.
     let written = unsafe {
         llama_chat_apply_template(
             tmpl_cstr.as_ptr(),
@@ -219,6 +269,7 @@ fn build_chat_prompt_with_gguf_template(
         return None;
     }
 
+    // SAFETY: positive `written` indicates `out` now contains a NUL-terminated prompt.
     let s = unsafe { CStr::from_ptr(out.as_ptr() as *const std::os::raw::c_char) }
         .to_string_lossy()
         .to_string();
@@ -269,7 +320,13 @@ impl PhaseSplitter {
                 let cand = (idx, to_phase, tag.len());
                 best = Some(match best {
                     None => cand,
-                    Some(cur) => if cand.0 < cur.0 { cand } else { cur },
+                    Some(cur) => {
+                        if cand.0 < cur.0 {
+                            cand
+                        } else {
+                            cur
+                        }
+                    }
                 });
             }
         }
@@ -279,7 +336,13 @@ impl PhaseSplitter {
                 let cand = (idx, OutputPhase::Final, tag.len());
                 best = Some(match best {
                     None => cand,
-                    Some(cur) => if cand.0 < cur.0 { cand } else { cur },
+                    Some(cur) => {
+                        if cand.0 < cur.0 {
+                            cand
+                        } else {
+                            cur
+                        }
+                    }
                 });
             }
         }
@@ -307,7 +370,13 @@ impl PhaseSplitter {
                     let cand = (0usize, to_phase, pat.len());
                     best = Some(match best {
                         None => cand,
-                        Some(cur) => if cand.0 < cur.0 { cand } else { cur },
+                        Some(cur) => {
+                            if cand.0 < cur.0 {
+                                cand
+                            } else {
+                                cur
+                            }
+                        }
                     });
                 }
             }
@@ -316,7 +385,13 @@ impl PhaseSplitter {
                 let cand = (idx + 1, to_phase, pat.len());
                 best = Some(match best {
                     None => cand,
-                    Some(cur) => if cand.0 < cur.0 { cand } else { cur },
+                    Some(cur) => {
+                        if cand.0 < cur.0 {
+                            cand
+                        } else {
+                            cur
+                        }
+                    }
                 });
             }
         }
@@ -326,15 +401,26 @@ impl PhaseSplitter {
 
     fn split_tail_for_carry<'a>(tail: &'a str) -> (&'a str, &'a str) {
         let markers = [
-            "<analysis>", "</analysis>",
-            "<think>", "</think>",
-            "<reasoning>", "</reasoning>",
-            "<final>", "</final>",
-            "### Final", "Final:", "### Answer",
-            "final:", "final",
-            "### Reasoning", "Reasoning:", "Analysis:",
-            "analysis:", "analysis",
-            "### Answer", "Answer:",
+            "<analysis>",
+            "</analysis>",
+            "<think>",
+            "</think>",
+            "<reasoning>",
+            "</reasoning>",
+            "<final>",
+            "</final>",
+            "### Final",
+            "Final:",
+            "### Answer",
+            "final:",
+            "final",
+            "### Reasoning",
+            "Reasoning:",
+            "Analysis:",
+            "analysis:",
+            "analysis",
+            "### Answer",
+            "Answer:",
         ];
         let max_len = markers.iter().map(|s| s.len()).max().unwrap_or(0);
 
@@ -632,7 +718,7 @@ fn read_disk_usage() -> Option<u32> {
     }
 }
 /// Global TCP connection storage for Android background tasks
-pub static ANDROID_TCP_STREAM: OnceLock<Mutex<Option<Arc<Mutex<std::net::TcpStream>>>>> =
+pub static ANDROID_TCP_STREAM: OnceLock<Mutex<Option<Arc<Mutex<MobileControlStream>>>>> =
     OnceLock::new();
 
 /// Global server address storage for creating separate connections
@@ -640,6 +726,7 @@ pub static ANDROID_SERVER_ADDR: OnceLock<Mutex<Option<String>>> = OnceLock::new(
 
 /// Global control port storage for heartbeat connections
 pub static ANDROID_CONTROL_PORT: OnceLock<Mutex<Option<u16>>> = OnceLock::new();
+pub static ANDROID_CONTROL_TLS: OnceLock<Mutex<MobileControlTlsConfig>> = OnceLock::new();
 
 /// Global client_id storage for Android background tasks
 pub static ANDROID_CLIENT_ID: OnceLock<Mutex<Option<[u8; 16]>>> = OnceLock::new();
@@ -675,16 +762,36 @@ pub async fn perform_android_login(
     client_id: &str,
     auto_models: bool,
 ) -> Result<()> {
+    perform_android_login_with_tls(
+        server_addr,
+        control_port,
+        client_id,
+        auto_models,
+        MobileControlTlsConfig::plaintext(),
+    )
+    .await
+}
+
+#[cfg(target_os = "android")]
+pub async fn perform_android_login_with_tls(
+    server_addr: &str,
+    control_port: u16,
+    client_id: &str,
+    auto_models: bool,
+    tls_config: MobileControlTlsConfig,
+) -> Result<()> {
     info!("🚀 Android: Starting native login process...");
 
-    // Create TCP connection
-    let addr_str = format!("{}:{}", server_addr, control_port);
-    info!("🔧 Android: Connecting to {}...", addr_str);
+    info!(
+        "🔧 Android: Connecting to configured control endpoint (port={}, addr_len={}, tls={})...",
+        control_port,
+        server_addr.len(),
+        tls_config.enabled
+    );
 
-    let mut stream = std::net::TcpStream::connect(&addr_str)
-        .map_err(|e| anyhow!("Failed to connect to {}: {}", addr_str, e))?;
+    let mut stream = connect_mobile_control_stream(server_addr, control_port, &tls_config)?;
 
-    info!("✅ Android: TCP connection established");
+    info!("✅ Android: Control connection established");
 
     let _ = ANDROID_ACTIVE_TASK_ID.set(Mutex::new(None));
 
@@ -695,9 +802,10 @@ pub async fn perform_android_login(
             .await
             .map_err(|e| anyhow!("Failed to collect system info: {}", e))?;
 
-    let (devices_info, device_count) = crate::util::system_info::collect_device_info(common::EngineType::Llama)
-        .await
-        .map_err(|e| anyhow!("Failed to collect device info: {}", e))?;
+    let (devices_info, _device_count) =
+        crate::util::system_info::collect_device_info(common::EngineType::Llama)
+            .await
+            .map_err(|e| anyhow!("Failed to collect device info: {}", e))?;
 
     // Construct SystemInfo struct
     let system_info = SystemInfo {
@@ -767,6 +875,12 @@ pub async fn perform_android_login(
         let mut guard = slot.lock().unwrap();
         *guard = Some(control_port);
     }
+    {
+        let slot =
+            ANDROID_CONTROL_TLS.get_or_init(|| Mutex::new(MobileControlTlsConfig::plaintext()));
+        let mut guard = slot.lock().unwrap();
+        *guard = tls_config;
+    }
 
     // Store client_id globally for background tasks
     let client_id_bytes = hex::decode(client_id)
@@ -785,10 +899,25 @@ pub async fn perform_android_login(
 }
 
 /// Get the stored TCP connection for background tasks
-pub fn get_android_tcp_stream() -> Option<Arc<Mutex<std::net::TcpStream>>> {
+pub fn get_android_tcp_stream() -> Option<Arc<Mutex<MobileControlStream>>> {
     ANDROID_TCP_STREAM
         .get()
         .and_then(|m| m.lock().ok().and_then(|g| g.clone()))
+}
+
+fn get_android_control_tls_config() -> MobileControlTlsConfig {
+    ANDROID_CONTROL_TLS
+        .get()
+        .and_then(|m| m.lock().ok().map(|g| g.clone()))
+        .unwrap_or_else(MobileControlTlsConfig::plaintext)
+}
+
+#[cfg(target_os = "android")]
+fn write_v1_to_control_stream(stream: &Arc<Mutex<MobileControlStream>>, command: CommandV1) {
+    if let Ok(mut stream) = stream.lock() {
+        let _ = common::write_command_sync(&mut *stream, &Command::V1(command));
+        let _ = stream.flush();
+    }
 }
 
 /// Initialize global worker for Android
@@ -831,9 +960,9 @@ pub async fn start_worker_tasks() -> Result<()> {
         .map_err(|_| anyhow!("Failed to set stop signal"))?;
 
     // Spawn heartbeat task using native thread with full heartbeat logic
-    let heartbeat_stream = tcp_stream.clone();
+    let _heartbeat_stream = tcp_stream.clone();
     let heartbeat_stop_signal = stop_signal.clone();
-    let heartbeat_handle = thread::spawn(move || {
+    let _heartbeat_handle = thread::spawn(move || {
         println!("🔧 Android: Heartbeat thread started");
 
         loop {
@@ -890,17 +1019,28 @@ pub async fn start_worker_tasks() -> Result<()> {
                 }
             };
 
-            // Create new connection for each heartbeat to avoid conflicts
-            let mut heartbeat_stream = match std::net::TcpStream::connect(server_addr) {
-                Ok(stream) => {
-                    println!("✅ Android: Connected to server for heartbeat");
-                    stream
-                }
-                Err(e) => {
-                    eprintln!("❌ Android: Failed to connect for heartbeat: {}", e);
+            let control_port = match ANDROID_CONTROL_PORT
+                .get()
+                .and_then(|m| m.lock().ok().and_then(|g| *g))
+            {
+                Some(port) => port,
+                None => {
+                    eprintln!("❌ Android: Control port not stored, skipping heartbeat");
                     continue;
                 }
             };
+            let tls_config = get_android_control_tls_config();
+            let mut heartbeat_stream =
+                match connect_mobile_control_stream(&server_addr, control_port, &tls_config) {
+                    Ok(stream) => {
+                        println!("✅ Android: Connected to server for heartbeat");
+                        stream
+                    }
+                    Err(e) => {
+                        eprintln!("❌ Android: Failed to connect for heartbeat: {}", e);
+                        continue;
+                    }
+                };
 
             // Create heartbeat command
             let client_id = ANDROID_CLIENT_ID
@@ -958,7 +1098,7 @@ pub async fn start_worker_tasks() -> Result<()> {
     // Spawn integrated handler task using native thread
     let handler_stream = tcp_stream.clone();
     let handler_stop_signal = stop_signal.clone();
-    let handler_handle = thread::spawn(move || -> Result<()> {
+    let _handler_handle = thread::spawn(move || -> Result<()> {
         println!("🔧 Android: Integrated handler thread started");
         std::io::stdout().flush().ok();
 
@@ -976,7 +1116,7 @@ pub async fn start_worker_tasks() -> Result<()> {
             // Read command using common library function
             match common::read_command_sync(&mut *stream) {
                 Ok(command) => {
-                    println!("🔧 Android: Received command: {:?}", command);
+                    println!("🔧 Android: Received command: {}", command_label(&command));
                     std::io::stdout().flush().ok();
 
                     // Handle different command types
@@ -1027,7 +1167,7 @@ pub async fn start_worker_tasks() -> Result<()> {
                                         }
                                     }
                                 } else {
-                                    eprintln!("❌ Android: Login failed: {:?}", error);
+                                    eprintln!("❌ Android: Login failed (server message redacted, {} bytes)", error.as_ref().map(|message| message.len()).unwrap_or(0));
                                     break;
                                 }
                             }
@@ -1061,7 +1201,7 @@ pub async fn start_worker_tasks() -> Result<()> {
                                 min_keep: _,
                             } => {
                                 println!("🔧 Android: Received inference task: {}", task_id);
-                                println!("📝 Android: Prompt: {}", prompt);
+                                println!("📝 Android: Prompt received ({} bytes)", prompt.len());
                                 println!("⚙️ Android: Parameters: max_tokens={}, temp={}, top_k={}, top_p={}", 
                                                              max_tokens, temperature, top_k, top_p);
 
@@ -1104,30 +1244,7 @@ pub async fn start_worker_tasks() -> Result<()> {
                                         .unwrap();
                                     *active = Some(task_id.clone());
                                 }
-
-                                let writer_stream = match stream.try_clone() {
-                                    Ok(s) => s,
-                                    Err(e) => {
-                                        let err = format!("Failed to clone TCP stream: {}", e);
-                                        let result_command = CommandV1::InferenceResultChunk {
-                                            task_id: task_id.clone(),
-                                            seq: 0,
-                                            delta: String::new(),
-                                            phase: OutputPhase::Unknown,
-                                            done: true,
-                                            error: Some(err.clone()),
-                                            prompt_tokens: 0,
-                                            completion_tokens: 0,
-                                            analysis_tokens: 0,
-                                            final_tokens: 0,
-                                        };
-                                        let _ = common::write_command_sync(
-                                            &mut *stream,
-                                            &Command::V1(result_command),
-                                        );
-                                        continue;
-                                    }
-                                };
+                                let writer_stream = handler_stream.clone();
 
                                 let task_id_for_thread = task_id.clone();
                                 let prompt_for_thread = prompt.clone();
@@ -1136,7 +1253,7 @@ pub async fn start_worker_tasks() -> Result<()> {
                                     let context_ptr = context_ptr_usize as *mut llama_context;
                                     #[repr(C)]
                                     struct TokenCallbackState {
-                                        stream: std::net::TcpStream,
+                                        stream: Arc<Mutex<MobileControlStream>>,
                                         task_id: String,
                                         seq: u32,
                                         buf: String,
@@ -1158,8 +1275,13 @@ pub async fn start_worker_tasks() -> Result<()> {
                                             return;
                                         }
 
+                                        // SAFETY: `user_data` is created from a live TokenCallbackState
+                                        // immediately before starting synchronous generation and is not
+                                        // moved or dropped until the generation call returns.
                                         let state =
                                             unsafe { &mut *(user_data as *mut TokenCallbackState) };
+                                        // SAFETY: The token callback contract supplies `token` as a
+                                        // non-null, NUL-terminated C string for this callback call.
                                         let token_str =
                                             unsafe { std::ffi::CStr::from_ptr(token).to_str() };
                                         let Ok(token_str) = token_str else {
@@ -1196,10 +1318,12 @@ pub async fn start_worker_tasks() -> Result<()> {
                                                         state.analysis_tokens.saturating_add(1)
                                                 }
                                                 OutputPhase::Final => {
-                                                    state.final_tokens = state.final_tokens.saturating_add(1)
+                                                    state.final_tokens =
+                                                        state.final_tokens.saturating_add(1)
                                                 }
                                                 OutputPhase::Unknown => {
-                                                    state.final_tokens = state.final_tokens.saturating_add(1)
+                                                    state.final_tokens =
+                                                        state.final_tokens.saturating_add(1)
                                                 }
                                             }
 
@@ -1220,10 +1344,7 @@ pub async fn start_worker_tasks() -> Result<()> {
                                                     final_tokens: state.final_tokens,
                                                 };
                                                 state.seq = state.seq.wrapping_add(1);
-                                                let _ = common::write_command_sync(
-                                                    &mut state.stream,
-                                                    &Command::V1(chunk),
-                                                );
+                                                write_v1_to_control_stream(&state.stream, chunk);
                                                 state.buf_phase = phase;
                                             }
 
@@ -1249,10 +1370,7 @@ pub async fn start_worker_tasks() -> Result<()> {
                                         };
                                         state.seq = state.seq.wrapping_add(1);
 
-                                        let _ = common::write_command_sync(
-                                            &mut state.stream,
-                                            &Command::V1(chunk),
-                                        );
+                                        write_v1_to_control_stream(&state.stream, chunk);
                                     }
 
                                     let _lock = GLOBAL_INFERENCE_MUTEX.lock().unwrap();
@@ -1261,7 +1379,6 @@ pub async fn start_worker_tasks() -> Result<()> {
                                         Ok(s) => s,
                                         Err(e) => {
                                             let err = format!("Invalid prompt: {}", e);
-                                            let mut s = writer_stream;
                                             let result_command = CommandV1::InferenceResultChunk {
                                                 task_id: task_id_for_thread.clone(),
                                                 seq: 0,
@@ -1274,9 +1391,9 @@ pub async fn start_worker_tasks() -> Result<()> {
                                                 analysis_tokens: 0,
                                                 final_tokens: 0,
                                             };
-                                            let _ = common::write_command_sync(
-                                                &mut s,
-                                                &Command::V1(result_command),
+                                            write_v1_to_control_stream(
+                                                &writer_stream,
+                                                result_command,
                                             );
                                             return;
                                         }
@@ -1286,7 +1403,7 @@ pub async fn start_worker_tasks() -> Result<()> {
                                         count_prompt_tokens(context_ptr, prompt_cstr.as_ptr());
 
                                     let mut cb_state = TokenCallbackState {
-                                        stream: writer_stream,
+                                        stream: writer_stream.clone(),
                                         task_id: task_id_for_thread.clone(),
                                         seq: 0,
                                         buf: String::new(),
@@ -1300,20 +1417,17 @@ pub async fn start_worker_tasks() -> Result<()> {
                                         suppress: false,
                                     };
 
-                                    let completion_tokens_i32 = unsafe {
-                                        gpuf_start_generation_async(
-                                            context_ptr,
-                                            prompt_cstr.as_ptr(),
-                                            max_tokens as i32,
-                                            temperature,
-                                            top_k as i32,
-                                            top_p,
-                                            repeat_penalty,
-                                            Some(on_token),
-                                            (&mut cb_state as *mut TokenCallbackState)
-                                                as *mut c_void,
-                                        )
-                                    };
+                                    let completion_tokens_i32 = gpuf_start_generation_async(
+                                        context_ptr,
+                                        prompt_cstr.as_ptr(),
+                                        max_tokens as i32,
+                                        temperature,
+                                        top_k as i32,
+                                        top_p,
+                                        repeat_penalty,
+                                        Some(on_token),
+                                        (&mut cb_state as *mut TokenCallbackState) as *mut c_void,
+                                    );
 
                                     if completion_tokens_i32 > 0 {
                                         cb_state.completion_tokens = completion_tokens_i32 as u32;
@@ -1334,10 +1448,7 @@ pub async fn start_worker_tasks() -> Result<()> {
                                             final_tokens: cb_state.final_tokens,
                                         };
                                         cb_state.seq = cb_state.seq.wrapping_add(1);
-                                        let _ = common::write_command_sync(
-                                            &mut cb_state.stream,
-                                            &Command::V1(chunk),
-                                        );
+                                        write_v1_to_control_stream(&cb_state.stream, chunk);
                                     }
 
                                     let done_chunk = CommandV1::InferenceResultChunk {
@@ -1352,10 +1463,7 @@ pub async fn start_worker_tasks() -> Result<()> {
                                         analysis_tokens: cb_state.analysis_tokens,
                                         final_tokens: cb_state.final_tokens,
                                     };
-                                    let _ = common::write_command_sync(
-                                        &mut cb_state.stream,
-                                        &Command::V1(done_chunk),
-                                    );
+                                    write_v1_to_control_stream(&cb_state.stream, done_chunk);
 
                                     {
                                         let mut active = ANDROID_ACTIVE_TASK_ID
@@ -1423,7 +1531,7 @@ pub async fn start_worker_tasks() -> Result<()> {
                                 let prompt =
                                     build_chat_prompt_with_gguf_template(context_ptr, &messages)
                                         .unwrap_or_else(|| build_chat_prompt(&messages));
-                                println!("📝 Android: Prompt: {}", prompt);
+                                println!("📝 Android: Prompt received ({} bytes)", prompt.len());
 
                                 {
                                     let mut active = ANDROID_ACTIVE_TASK_ID
@@ -1433,30 +1541,7 @@ pub async fn start_worker_tasks() -> Result<()> {
                                         .unwrap();
                                     *active = Some(task_id.clone());
                                 }
-
-                                let writer_stream = match stream.try_clone() {
-                                    Ok(s) => s,
-                                    Err(e) => {
-                                        let err = format!("Failed to clone TCP stream: {}", e);
-                                        let result_command = CommandV1::InferenceResultChunk {
-                                            task_id: task_id.clone(),
-                                            seq: 0,
-                                            delta: String::new(),
-                                            phase: OutputPhase::Unknown,
-                                            done: true,
-                                            error: Some(err.clone()),
-                                            prompt_tokens: 0,
-                                            completion_tokens: 0,
-                                            analysis_tokens: 0,
-                                            final_tokens: 0,
-                                        };
-                                        let _ = common::write_command_sync(
-                                            &mut *stream,
-                                            &Command::V1(result_command),
-                                        );
-                                        continue;
-                                    }
-                                };
+                                let writer_stream = handler_stream.clone();
 
                                 let task_id_for_thread = task_id.clone();
                                 let prompt_for_thread = prompt.clone();
@@ -1465,7 +1550,7 @@ pub async fn start_worker_tasks() -> Result<()> {
                                     let context_ptr = context_ptr_usize as *mut llama_context;
                                     #[repr(C)]
                                     struct TokenCallbackState {
-                                        stream: std::net::TcpStream,
+                                        stream: Arc<Mutex<MobileControlStream>>,
                                         task_id: String,
                                         seq: u32,
                                         buf: String,
@@ -1483,8 +1568,13 @@ pub async fn start_worker_tasks() -> Result<()> {
                                             return;
                                         }
 
+                                        // SAFETY: `user_data` is created from a live TokenCallbackState
+                                        // immediately before starting synchronous generation and is not
+                                        // moved or dropped until the generation call returns.
                                         let state =
                                             unsafe { &mut *(user_data as *mut TokenCallbackState) };
+                                        // SAFETY: The token callback contract supplies `token` as a
+                                        // non-null, NUL-terminated C string for this callback call.
                                         let token_str =
                                             unsafe { std::ffi::CStr::from_ptr(token).to_str() };
                                         let Ok(token_str) = token_str else {
@@ -1530,10 +1620,7 @@ pub async fn start_worker_tasks() -> Result<()> {
                                         };
                                         state.seq = state.seq.wrapping_add(1);
 
-                                        let _ = common::write_command_sync(
-                                            &mut state.stream,
-                                            &Command::V1(chunk),
-                                        );
+                                        write_v1_to_control_stream(&state.stream, chunk);
                                     }
 
                                     let _lock = GLOBAL_INFERENCE_MUTEX.lock().unwrap();
@@ -1541,7 +1628,6 @@ pub async fn start_worker_tasks() -> Result<()> {
                                         Ok(s) => s,
                                         Err(e) => {
                                             let err = format!("Invalid prompt: {}", e);
-                                            let mut s = writer_stream;
                                             let result_command = CommandV1::InferenceResultChunk {
                                                 task_id: task_id_for_thread.clone(),
                                                 seq: 0,
@@ -1554,9 +1640,9 @@ pub async fn start_worker_tasks() -> Result<()> {
                                                 analysis_tokens: 0,
                                                 final_tokens: 0,
                                             };
-                                            let _ = common::write_command_sync(
-                                                &mut s,
-                                                &Command::V1(result_command),
+                                            write_v1_to_control_stream(
+                                                &writer_stream,
+                                                result_command,
                                             );
                                             return;
                                         }
@@ -1566,7 +1652,7 @@ pub async fn start_worker_tasks() -> Result<()> {
                                         count_prompt_tokens(context_ptr, prompt_cstr.as_ptr());
 
                                     let mut cb_state = TokenCallbackState {
-                                        stream: writer_stream,
+                                        stream: writer_stream.clone(),
                                         task_id: task_id_for_thread.clone(),
                                         seq: 0,
                                         buf: String::new(),
@@ -1576,20 +1662,17 @@ pub async fn start_worker_tasks() -> Result<()> {
                                         suppress: false,
                                     };
 
-                                    let completion_tokens_i32 = unsafe {
-                                        gpuf_start_generation_async(
-                                            context_ptr,
-                                            prompt_cstr.as_ptr(),
-                                            max_tokens as i32,
-                                            temperature,
-                                            top_k as i32,
-                                            top_p,
-                                            repeat_penalty,
-                                            Some(on_token),
-                                            (&mut cb_state as *mut TokenCallbackState)
-                                                as *mut c_void,
-                                        )
-                                    };
+                                    let completion_tokens_i32 = gpuf_start_generation_async(
+                                        context_ptr,
+                                        prompt_cstr.as_ptr(),
+                                        max_tokens as i32,
+                                        temperature,
+                                        top_k as i32,
+                                        top_p,
+                                        repeat_penalty,
+                                        Some(on_token),
+                                        (&mut cb_state as *mut TokenCallbackState) as *mut c_void,
+                                    );
 
                                     if completion_tokens_i32 > 0 {
                                         cb_state.completion_tokens = completion_tokens_i32 as u32;
@@ -1610,10 +1693,7 @@ pub async fn start_worker_tasks() -> Result<()> {
                                             final_tokens: 0,
                                         };
                                         cb_state.seq = cb_state.seq.wrapping_add(1);
-                                        let _ = common::write_command_sync(
-                                            &mut cb_state.stream,
-                                            &Command::V1(chunk),
-                                        );
+                                        write_v1_to_control_stream(&cb_state.stream, chunk);
                                     }
 
                                     let done_chunk = CommandV1::InferenceResultChunk {
@@ -1628,10 +1708,7 @@ pub async fn start_worker_tasks() -> Result<()> {
                                         analysis_tokens: 0,
                                         final_tokens: 0,
                                     };
-                                    let _ = common::write_command_sync(
-                                        &mut cb_state.stream,
-                                        &Command::V1(done_chunk),
-                                    );
+                                    write_v1_to_control_stream(&cb_state.stream, done_chunk);
 
                                     {
                                         let mut active = ANDROID_ACTIVE_TASK_ID
@@ -1659,7 +1736,9 @@ pub async fn start_worker_tasks() -> Result<()> {
                                     use crate::{gpuf_stop_generation, GLOBAL_CONTEXT_PTR};
                                     let context_ptr = GLOBAL_CONTEXT_PTR.load(Ordering::SeqCst);
                                     if !context_ptr.is_null() {
-                                        unsafe { gpuf_stop_generation(context_ptr) };
+                                        // `context_ptr` was loaded from the global context slot
+                                        // and checked for null before cancellation.
+                                        gpuf_stop_generation(context_ptr);
                                     }
                                 }
                             }
@@ -1705,9 +1784,7 @@ pub async fn start_worker_tasks() -> Result<()> {
 
 /// Start background worker tasks with callback support (heartbeat, handler, etc.)
 #[cfg(target_os = "android")]
-pub async fn start_worker_tasks_with_callback_ptr(
-    callback: Option<extern "C" fn(*const std::ffi::c_char, *mut std::ffi::c_void)>,
-) -> Result<()> {
+pub async fn start_worker_tasks_with_callback_ptr(callback: Option<StatusCallback>) -> Result<()> {
     use std::ffi::CString;
     use std::thread;
 
@@ -1741,9 +1818,7 @@ pub async fn start_worker_tasks_with_callback_ptr(
             };
 
             // Call the C callback function
-            unsafe {
-                callback_fn(combined_cstr.as_ptr(), std::ptr::null_mut());
-            }
+            call_status_callback(Some(callback_fn), &combined_cstr);
         }
     };
 
@@ -1751,9 +1826,10 @@ pub async fn start_worker_tasks_with_callback_ptr(
 
     // Collect device information dynamically in async context
     println!("🔧 Android: Collecting device information...");
-    let (devices_info, device_count) = crate::util::system_info::collect_device_info(common::EngineType::Llama)
-        .await
-        .map_err(|e| anyhow!("Failed to collect device info: {}", e))?;
+    let (devices_info, _device_count) =
+        crate::util::system_info::collect_device_info(common::EngineType::Llama)
+            .await
+            .map_err(|e| anyhow!("Failed to collect device info: {}", e))?;
 
     println!(
         "✅ Android: Device info collected - {} devices, total memory: {}GB",
@@ -1766,10 +1842,10 @@ pub async fn start_worker_tasks_with_callback_ptr(
 
     // Clone device info for use in threads
     let device_info_for_heartbeat = devices_info.clone();
-    let device_info_for_handler = devices_info.clone();
+    let _device_info_for_handler = devices_info.clone();
 
     // Spawn heartbeat task using native thread with full heartbeat logic
-    let heartbeat_stream = tcp_stream.clone();
+    let _heartbeat_stream = tcp_stream.clone();
     let heartbeat_callback = callback;
     let heartbeat_stop_signal = stop_signal.clone();
     let heartbeat_handle = thread::spawn(move || {
@@ -1792,9 +1868,7 @@ pub async fn start_worker_tasks_with_callback_ptr(
                     Ok(s) => s,
                     Err(_) => continue,
                 };
-                unsafe {
-                    callback_fn(heartbeat_msg.as_ptr(), std::ptr::null_mut());
-                }
+                call_status_callback(Some(callback_fn), &heartbeat_msg);
             }
 
             // Get real-time system usage information
@@ -1834,8 +1908,9 @@ pub async fn start_worker_tasks_with_callback_ptr(
                 }
             };
 
+            let tls_config = get_android_control_tls_config();
             let mut stream =
-                match std::net::TcpStream::connect(format!("{}:{}", server_addr, control_port)) {
+                match connect_mobile_control_stream(&server_addr, control_port, &tls_config) {
                     Ok(s) => {
                         println!("✅ Android: Connected to server for heartbeat");
                         s
@@ -1848,9 +1923,7 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                     Ok(s) => s,
                                     Err(_) => continue,
                                 };
-                            unsafe {
-                                callback_fn(error_msg.as_ptr(), std::ptr::null_mut());
-                            }
+                            call_status_callback(Some(callback_fn), &error_msg);
                         }
                         continue;
                     }
@@ -1886,9 +1959,7 @@ pub async fn start_worker_tasks_with_callback_ptr(
                             Ok(s) => s,
                             Err(_) => continue,
                         };
-                    unsafe {
-                        callback_fn(error_msg.as_ptr(), std::ptr::null_mut());
-                    }
+                    call_status_callback(Some(callback_fn), &error_msg);
                 }
             } else {
                 println!("✅ Android: Heartbeat sent successfully");
@@ -1924,9 +1995,7 @@ pub async fn start_worker_tasks_with_callback_ptr(
                         Ok(s) => s,
                         Err(_) => continue,
                     };
-                    unsafe {
-                        callback_fn(success_msg.as_ptr(), std::ptr::null_mut());
-                    }
+                    call_status_callback(Some(callback_fn), &success_msg);
                 }
             }
 
@@ -1967,15 +2036,13 @@ pub async fn start_worker_tasks_with_callback_ptr(
                 Ok(s) => s,
                 Err(_) => return Ok(()),
             };
-            unsafe {
-                callback_fn(start_msg.as_ptr(), std::ptr::null_mut());
-            }
+            call_status_callback(Some(callback_fn), &start_msg);
         }
 
         // Ensure blocking reads wake up periodically so stop signal can be observed
         // (read_command_sync uses read_exact and can otherwise block forever)
         {
-            if let Ok(mut stream) = handler_stream.lock() {
+            if let Ok(stream) = handler_stream.lock() {
                 let _ = stream.set_read_timeout(Some(Duration::from_secs(1)));
             }
         }
@@ -2005,19 +2072,17 @@ pub async fn start_worker_tasks_with_callback_ptr(
             // Read command using common library function
             match common::read_command_sync(&mut *stream) {
                 Ok(command) => {
-                    println!("🔧 Android: Received command: {:?}", command);
+                    println!("🔧 Android: Received command: {}", command_label(&command));
                     std::io::stdout().flush().ok();
 
                     // Invoke callback for received command
                     if let Some(callback_fn) = handler_callback {
-                        let cmd_str = format!("COMMAND_RECEIVED - {:?}", command);
+                        let cmd_str = format!("COMMAND_RECEIVED - {}", command_label(&command));
                         let cmd_msg = match CString::new(cmd_str) {
                             Ok(s) => s,
                             Err(_) => continue,
                         };
-                        unsafe {
-                            callback_fn(cmd_msg.as_ptr(), std::ptr::null_mut());
-                        }
+                        call_status_callback(Some(callback_fn), &cmd_msg);
                     }
 
                     // Handle different command types
@@ -2065,12 +2130,7 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                                 Ok(s) => s,
                                                 Err(_) => continue,
                                             };
-                                            unsafe {
-                                                callback_fn(
-                                                    success_msg.as_ptr(),
-                                                    std::ptr::null_mut(),
-                                                );
-                                            }
+                                            call_status_callback(Some(callback_fn), &success_msg);
                                         }
                                         if !pods_model.is_empty() {
                                             println!(
@@ -2084,19 +2144,20 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                             }
                                         }
                                     } else {
-                                        eprintln!("❌ Android: Login failed: {:?}", error);
+                                        eprintln!("❌ Android: Login failed (server message redacted, {} bytes)", error.as_ref().map(|message| message.len()).unwrap_or(0));
                                         if let Some(callback_fn) = handler_callback {
-                                            let error_str = format!("LOGIN_FAILED - {:?}", error);
+                                            let error_str = format!(
+                                                "LOGIN_FAILED - server message redacted ({} bytes)",
+                                                error
+                                                    .as_ref()
+                                                    .map(|message| message.len())
+                                                    .unwrap_or(0)
+                                            );
                                             let error_msg = match CString::new(error_str) {
                                                 Ok(s) => s,
                                                 Err(_) => break,
                                             };
-                                            unsafe {
-                                                callback_fn(
-                                                    error_msg.as_ptr(),
-                                                    std::ptr::null_mut(),
-                                                );
-                                            }
+                                            call_status_callback(Some(callback_fn), &error_msg);
                                         }
                                         break;
                                     }
@@ -2110,12 +2171,7 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                                 Ok(s) => s,
                                                 Err(_) => continue,
                                             };
-                                            unsafe {
-                                                callback_fn(
-                                                    error_msg.as_ptr(),
-                                                    std::ptr::null_mut(),
-                                                );
-                                            }
+                                            call_status_callback(Some(callback_fn), &error_msg);
                                         }
                                     } else {
                                         println!("✅ Android: Pull model successful");
@@ -2126,12 +2182,7 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                                 Ok(s) => s,
                                                 Err(_) => continue,
                                             };
-                                            unsafe {
-                                                callback_fn(
-                                                    success_msg.as_ptr(),
-                                                    std::ptr::null_mut(),
-                                                );
-                                            }
+                                            call_status_callback(Some(callback_fn), &success_msg);
                                         }
                                         if !pods_model.is_empty() {
                                             println!(
@@ -2158,7 +2209,10 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                     min_keep: _,
                                 } => {
                                     println!("🔧 Android: Received inference task: {}", task_id);
-                                    println!("📝 Android: Prompt: {}", prompt);
+                                    println!(
+                                        "📝 Android: Prompt received ({} bytes)",
+                                        prompt.len()
+                                    );
                                     println!("⚙️ Android: Parameters: max_tokens={}, temp={}, top_k={}, top_p={}", 
                                                              max_tokens, temperature, top_k, top_p);
 
@@ -2209,36 +2263,8 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                             .lock()
                                             .unwrap();
                                         *active = Some(task_id.clone());
-
                                     }
-
-                                    let writer_stream = match stream.try_clone() {
-                                        Ok(s) => s,
-                                        Err(e) => {
-                                            let err = format!("Failed to clone TCP stream: {}", e);
-                                            let result_command = CommandV1::InferenceResultChunk {
-                                                task_id: task_id.clone(),
-                                                seq: 0,
-                                                delta: String::new(),
-                                                phase: OutputPhase::Unknown,
-                                                done: true,
-                                                error: Some(err.clone()),
-                                                prompt_tokens: 0,
-                                                completion_tokens: 0,
-                                                analysis_tokens: 0,
-                                                final_tokens: 0,
-                                            };
-                                            let _ = common::write_command_sync(
-                                                &mut *stream,
-                                                &Command::V1(result_command),
-                                            );
-                                            invoke_callback(
-                                                "INFERENCE_FAILED",
-                                                &format!("Task: {} Error: {}", task_id, err),
-                                            );
-                                            continue;
-                                        }
-                                    };
+                                    let writer_stream = handler_stream.clone();
 
                                     let task_id_for_thread = task_id.clone();
                                     let prompt_for_thread = prompt.clone();
@@ -2247,7 +2273,7 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                         let context_ptr = context_ptr_usize as *mut llama_context;
                                         #[repr(C)]
                                         struct TokenCallbackState {
-                                            stream: std::net::TcpStream,
+                                            stream: Arc<Mutex<MobileControlStream>>,
                                             task_id: String,
                                             seq: u32,
                                             buf: String,
@@ -2269,9 +2295,14 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                                 return;
                                             }
 
+                                            // SAFETY: `user_data` is created from a live TokenCallbackState
+                                            // immediately before starting synchronous generation and is not
+                                            // moved or dropped until the generation call returns.
                                             let state = unsafe {
                                                 &mut *(user_data as *mut TokenCallbackState)
                                             };
+                                            // SAFETY: The token callback contract supplies `token` as a
+                                            // non-null, NUL-terminated C string for this callback call.
                                             let token_str =
                                                 unsafe { std::ffi::CStr::from_ptr(token).to_str() };
                                             let Ok(token_str) = token_str else {
@@ -2334,9 +2365,9 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                                         final_tokens: state.final_tokens,
                                                     };
                                                     state.seq = state.seq.wrapping_add(1);
-                                                    let _ = common::write_command_sync(
-                                                        &mut state.stream,
-                                                        &Command::V1(chunk),
+                                                    write_v1_to_control_stream(
+                                                        &state.stream,
+                                                        chunk,
                                                     );
                                                     state.buf_phase = phase;
                                                 }
@@ -2363,18 +2394,14 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                             };
                                             state.seq = state.seq.wrapping_add(1);
 
-                                            let _ = common::write_command_sync(
-                                                &mut state.stream,
-                                                &Command::V1(chunk),
-                                            );
+                                            write_v1_to_control_stream(&state.stream, chunk);
                                         }
- let _lock = GLOBAL_INFERENCE_MUTEX.lock().unwrap();
+                                        let _lock = GLOBAL_INFERENCE_MUTEX.lock().unwrap();
                                         let start_time = std::time::Instant::now();
                                         let prompt_cstr = match CString::new(prompt_for_thread) {
                                             Ok(s) => s,
                                             Err(e) => {
                                                 let err = format!("Invalid prompt: {}", e);
-                                                let mut s = writer_stream;
                                                 let result_command =
                                                     CommandV1::InferenceResultChunk {
                                                         task_id: task_id_for_thread.clone(),
@@ -2388,9 +2415,9 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                                         analysis_tokens: 0,
                                                         final_tokens: 0,
                                                     };
-                                                let _ = common::write_command_sync(
-                                                    &mut s,
-                                                    &Command::V1(result_command),
+                                                write_v1_to_control_stream(
+                                                    &writer_stream,
+                                                    result_command,
                                                 );
                                                 invoke_callback(
                                                     "INFERENCE_FAILED",
@@ -2407,7 +2434,7 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                             count_prompt_tokens(context_ptr, prompt_cstr.as_ptr());
 
                                         let mut cb_state = TokenCallbackState {
-                                            stream: writer_stream,
+                                            stream: writer_stream.clone(),
                                             task_id: task_id_for_thread.clone(),
                                             seq: 0,
                                             buf: String::new(),
@@ -2421,20 +2448,18 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                             suppress: false,
                                         };
 
-                                        let completion_tokens_i32 = unsafe {
-                                            gpuf_start_generation_async(
-                                                context_ptr,
-                                                prompt_cstr.as_ptr(),
-                                                max_tokens as i32,
-                                                temperature,
-                                                top_k as i32,
-                                                top_p,
-                                                repeat_penalty,
-                                                Some(on_token),
-                                                (&mut cb_state as *mut TokenCallbackState)
-                                                    as *mut c_void,
-                                            )
-                                        };
+                                        let completion_tokens_i32 = gpuf_start_generation_async(
+                                            context_ptr,
+                                            prompt_cstr.as_ptr(),
+                                            max_tokens as i32,
+                                            temperature,
+                                            top_k as i32,
+                                            top_p,
+                                            repeat_penalty,
+                                            Some(on_token),
+                                            (&mut cb_state as *mut TokenCallbackState)
+                                                as *mut c_void,
+                                        );
 
                                         if completion_tokens_i32 > 0 {
                                             cb_state.completion_tokens =
@@ -2456,10 +2481,7 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                                 final_tokens: cb_state.final_tokens,
                                             };
                                             cb_state.seq = cb_state.seq.wrapping_add(1);
-                                            let _ = common::write_command_sync(
-                                                &mut cb_state.stream,
-                                                &Command::V1(chunk),
-                                            );
+                                            write_v1_to_control_stream(&cb_state.stream, chunk);
                                         }
 
                                         let done_chunk = CommandV1::InferenceResultChunk {
@@ -2474,10 +2496,7 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                             analysis_tokens: cb_state.analysis_tokens,
                                             final_tokens: cb_state.final_tokens,
                                         };
-                                        let _ = common::write_command_sync(
-                                            &mut cb_state.stream,
-                                            &Command::V1(done_chunk),
-                                        );
+                                        write_v1_to_control_stream(&cb_state.stream, done_chunk);
 
                                         {
                                             let mut active = ANDROID_ACTIVE_TASK_ID
@@ -2579,34 +2598,7 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                             .unwrap();
                                         *active = Some(task_id.clone());
                                     }
-
-                                    let writer_stream = match stream.try_clone() {
-                                        Ok(s) => s,
-                                        Err(e) => {
-                                            let err = format!("Failed to clone TCP stream: {}", e);
-                                            let result_command = CommandV1::InferenceResultChunk {
-                                                task_id: task_id.clone(),
-                                                seq: 0,
-                                                delta: String::new(),
-                                                phase: OutputPhase::Unknown,
-                                                done: true,
-                                                error: Some(err.clone()),
-                                                prompt_tokens: 0,
-                                                completion_tokens: 0,
-                                                analysis_tokens: 0,
-                                                final_tokens: 0,
-                                            };
-                                            let _ = common::write_command_sync(
-                                                &mut *stream,
-                                                &Command::V1(result_command),
-                                            );
-                                            invoke_callback(
-                                                "INFERENCE_FAILED",
-                                                &format!("Task: {} Error: {}", task_id, err),
-                                            );
-                                            continue;
-                                        }
-                                    };
+                                    let writer_stream = handler_stream.clone();
 
                                     let task_id_for_thread = task_id.clone();
                                     let prompt_for_thread = prompt.clone();
@@ -2616,7 +2608,7 @@ pub async fn start_worker_tasks_with_callback_ptr(
 
                                         #[repr(C)]
                                         struct TokenCallbackState {
-                                            stream: std::net::TcpStream,
+                                            stream: Arc<Mutex<MobileControlStream>>,
                                             task_id: String,
                                             seq: u32,
                                             buf: String,
@@ -2638,9 +2630,14 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                                 return;
                                             }
 
+                                            // SAFETY: `user_data` is created from a live TokenCallbackState
+                                            // immediately before starting synchronous generation and is not
+                                            // moved or dropped until the generation call returns.
                                             let state = unsafe {
                                                 &mut *(user_data as *mut TokenCallbackState)
                                             };
+                                            // SAFETY: The token callback contract supplies `token` as a
+                                            // non-null, NUL-terminated C string for this callback call.
                                             let token_str =
                                                 unsafe { std::ffi::CStr::from_ptr(token).to_str() };
                                             let Ok(token_str) = token_str else {
@@ -2704,9 +2701,9 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                                         final_tokens: state.final_tokens,
                                                     };
                                                     state.seq = state.seq.wrapping_add(1);
-                                                    let _ = common::write_command_sync(
-                                                        &mut state.stream,
-                                                        &Command::V1(chunk),
+                                                    write_v1_to_control_stream(
+                                                        &state.stream,
+                                                        chunk,
                                                     );
                                                     state.buf_phase = phase;
                                                 }
@@ -2732,10 +2729,7 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                             };
                                             state.seq = state.seq.wrapping_add(1);
 
-                                            let _ = common::write_command_sync(
-                                                &mut state.stream,
-                                                &Command::V1(chunk),
-                                            );
+                                            write_v1_to_control_stream(&state.stream, chunk);
                                         }
 
                                         let _lock = GLOBAL_INFERENCE_MUTEX.lock().unwrap();
@@ -2744,7 +2738,6 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                             Ok(s) => s,
                                             Err(e) => {
                                                 let err = format!("Invalid prompt: {}", e);
-                                                let mut s = writer_stream;
                                                 let result_command =
                                                     CommandV1::InferenceResultChunk {
                                                         task_id: task_id_for_thread.clone(),
@@ -2758,9 +2751,9 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                                         analysis_tokens: 0,
                                                         final_tokens: 0,
                                                     };
-                                                let _ = common::write_command_sync(
-                                                    &mut s,
-                                                    &Command::V1(result_command),
+                                                write_v1_to_control_stream(
+                                                    &writer_stream,
+                                                    result_command,
                                                 );
                                                 invoke_callback(
                                                     "INFERENCE_FAILED",
@@ -2777,7 +2770,7 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                             count_prompt_tokens(context_ptr, prompt_cstr.as_ptr());
 
                                         let mut cb_state = TokenCallbackState {
-                                            stream: writer_stream,
+                                            stream: writer_stream.clone(),
                                             task_id: task_id_for_thread.clone(),
                                             seq: 0,
                                             buf: String::new(),
@@ -2791,20 +2784,18 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                             suppress: false,
                                         };
 
-                                        let completion_tokens = unsafe {
-                                            gpuf_start_generation_async(
-                                                context_ptr,
-                                                prompt_cstr.as_ptr(),
-                                                max_tokens as i32,
-                                                temperature,
-                                                top_k as i32,
-                                                top_p,
-                                                repeat_penalty,
-                                                Some(on_token),
-                                                (&mut cb_state as *mut TokenCallbackState)
-                                                    as *mut c_void,
-                                            )
-                                        };
+                                        let completion_tokens = gpuf_start_generation_async(
+                                            context_ptr,
+                                            prompt_cstr.as_ptr(),
+                                            max_tokens as i32,
+                                            temperature,
+                                            top_k as i32,
+                                            top_p,
+                                            repeat_penalty,
+                                            Some(on_token),
+                                            (&mut cb_state as *mut TokenCallbackState)
+                                                as *mut c_void,
+                                        );
 
                                         cb_state.completion_tokens = completion_tokens as u32;
 
@@ -2823,10 +2814,7 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                                 final_tokens: cb_state.final_tokens,
                                             };
                                             cb_state.seq = cb_state.seq.wrapping_add(1);
-                                            let _ = common::write_command_sync(
-                                                &mut cb_state.stream,
-                                                &Command::V1(chunk),
-                                            );
+                                            write_v1_to_control_stream(&cb_state.stream, chunk);
                                         }
 
                                         let done_chunk = CommandV1::InferenceResultChunk {
@@ -2841,10 +2829,7 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                             analysis_tokens: cb_state.analysis_tokens,
                                             final_tokens: cb_state.final_tokens,
                                         };
-                                        let _ = common::write_command_sync(
-                                            &mut cb_state.stream,
-                                            &Command::V1(done_chunk),
-                                        );
+                                        write_v1_to_control_stream(&cb_state.stream, done_chunk);
 
                                         {
                                             let mut active = ANDROID_ACTIVE_TASK_ID
@@ -2885,7 +2870,7 @@ pub async fn start_worker_tasks_with_callback_ptr(
                                         use crate::{gpuf_stop_generation, GLOBAL_CONTEXT_PTR};
                                         let context_ptr = GLOBAL_CONTEXT_PTR.load(Ordering::SeqCst);
                                         if !context_ptr.is_null() {
-                                            unsafe { gpuf_stop_generation(context_ptr) };
+                                            gpuf_stop_generation(context_ptr);
                                         }
                                     }
                                 }
@@ -2929,9 +2914,7 @@ pub async fn start_worker_tasks_with_callback_ptr(
                 Ok(s) => s,
                 Err(_) => return Ok(()),
             };
-            unsafe {
-                callback_fn(stop_msg.as_ptr(), std::ptr::null_mut());
-            }
+            call_status_callback(Some(callback_fn), &stop_msg);
         }
         Ok(())
     });
@@ -2999,6 +2982,12 @@ pub async fn stop_global_worker() {
     if let Some(m) = ANDROID_CONTROL_PORT.get() {
         if let Ok(mut guard) = m.lock() {
             *guard = None;
+        }
+    }
+
+    if let Some(m) = ANDROID_CONTROL_TLS.get() {
+        if let Ok(mut guard) = m.lock() {
+            *guard = MobileControlTlsConfig::plaintext();
         }
     }
 

@@ -10,7 +10,31 @@ echo ""
 SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_ROOT/.." && pwd)"
 WORKSPACE_ROOT="$(cd "$PROJECT_ROOT/.." && pwd)"
-NDK_ROOT="/home/jack/android-ndk-r27d"
+
+detect_android_ndk() {
+    local sdk_ndk_dir candidate
+    for sdk_ndk_dir in "$HOME/Android/Sdk/ndk" "/opt/android-sdk/ndk" "/usr/lib/android-sdk/ndk"; do
+        if [ -d "$sdk_ndk_dir" ]; then
+            candidate="$(find "$sdk_ndk_dir" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+            if [ -n "$candidate" ] && [ -d "$candidate/toolchains/llvm/prebuilt/linux-x86_64/sysroot" ]; then
+                echo "$candidate"
+                return 0
+            fi
+        fi
+    done
+    for candidate in "$HOME/android-ndk-r27d"; do
+        if [ -d "$candidate/toolchains/llvm/prebuilt/linux-x86_64/sysroot" ]; then
+            echo "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+NDK_ROOT="${ANDROID_NDK_ROOT:-${ANDROID_NDK_HOME:-${NDK_ROOT:-}}}"
+if [ -z "$NDK_ROOT" ]; then
+    NDK_ROOT="$(detect_android_ndk || true)"
+fi
 TARGET_ARCH="aarch64-linux-android"
 ANDROID_API="21"
 LLAMA_ANDROID_NDK_DIR="$WORKSPACE_ROOT/target/llama-android-ndk"
@@ -41,8 +65,13 @@ handle_step() {
 setup_environment() {
     handle_step "Setting up build environment..."
     
+    if [ -z "$NDK_ROOT" ] || [ ! -d "$NDK_ROOT" ]; then
+        handle_error "Android NDK not found. Set ANDROID_NDK_ROOT or ANDROID_NDK_HOME."
+    fi
+
     # Set Android NDK environment variables
     export ANDROID_NDK_ROOT="$NDK_ROOT"
+    export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-$NDK_ROOT}"
     export TARGET_AR="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
     export TARGET_CC="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang"
     export TARGET_CXX="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang++"

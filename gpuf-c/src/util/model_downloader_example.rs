@@ -19,9 +19,7 @@ pub async fn download_llama_model() -> Result<()> {
         parallel_chunks: 8,               // Download in 8 parallel chunks
         chunk_size: 16 * 1024 * 1024,     // 16MB chunks
         expected_size: Some(668_066_816), // Expected file size
-        checksum: Some(
-            "7e5a3a8a9c8f5b2d4e6a1b3c7f9e8d5a2b4c6d8e7f9a1b3c5d7e8f9a2b4c6d8".to_string(),
-        ), // Example checksum
+        checksum: "0000000000000000000000000000000000000000000000000000000000000000".to_string(), // Replace with the model publisher's SHA256
         resume: true,
     };
 
@@ -57,7 +55,12 @@ pub async fn simple_download() -> Result<()> {
     let url = "https://example.com/model.bin";
     let output_path = PathBuf::from("/path/to/model.bin");
 
-    crate::util::model_downloader::download_model(url, &output_path).await?;
+    crate::util::model_downloader::download_model(
+        url,
+        &output_path,
+        "0000000000000000000000000000000000000000000000000000000000000000",
+    )
+    .await?;
 
     println!("✅ Download completed!");
     Ok(())
@@ -71,7 +74,7 @@ pub async fn download_for_slow_network() -> Result<()> {
         parallel_chunks: 2,          // Fewer chunks for slow networks
         chunk_size: 4 * 1024 * 1024, // Smaller chunks (4MB)
         expected_size: None,
-        checksum: None,
+        checksum: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
         resume: true,
     };
 
@@ -103,7 +106,8 @@ pub async fn download_multiple_models() -> Result<()> {
             parallel_chunks: 4,
             chunk_size: 8 * 1024 * 1024,
             expected_size: None,
-            checksum: None,
+            checksum: "0000000000000000000000000000000000000000000000000000000000000000"
+                .to_string(),
             resume: true,
         };
 
@@ -136,7 +140,7 @@ pub async fn download_and_initialize_llama() -> Result<()> {
         parallel_chunks: 4,
         chunk_size: 8 * 1024 * 1024,
         expected_size: Some(668_066_816),
-        checksum: None,
+        checksum: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
         resume: true,
     };
 
@@ -184,13 +188,18 @@ mod tests {
             parallel_chunks: 2,
             chunk_size: 1024,
             expected_size: Some(2048),
-            checksum: Some("abc123".to_string()),
+            checksum: "0000000000000000000000000000000000000000000000000000000000000000"
+                .to_string(),
             resume: true,
         };
 
         assert_eq!(config.url, "https://example.com/test.bin");
         assert_eq!(config.parallel_chunks, 2);
         assert_eq!(config.chunk_size, 1024);
+        assert_eq!(
+            config.checksum,
+            "0000000000000000000000000000000000000000000000000000000000000000"
+        );
         assert!(config.resume);
     }
 }

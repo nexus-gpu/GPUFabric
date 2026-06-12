@@ -84,6 +84,7 @@ fi
 
 BUILD_MODE="${BUILD_MODE:-release}"
 FEATURES="${FEATURES:-ios-sdk}"
+export GPUF_SKIP_CBINDGEN="${GPUF_SKIP_CBINDGEN:-1}"
 
 IOS_DEVICE_TARGET="aarch64-apple-ios"
 IOS_SIM_ARM64_TARGET="aarch64-apple-ios-sim"
@@ -93,13 +94,64 @@ BUILD_DIR="$PROJECT_ROOT/build_ios"
 DIST_DIR="$BUILD_DIR/dist"
 INCLUDE_DIR="$DIST_DIR/include"
 
+rm -rf "$DIST_DIR"
 mkdir -p "$BUILD_DIR" "$DIST_DIR" "$INCLUDE_DIR"
 
+sha256_manifest_line() {
+    local base_dir="$1"
+    local rel_path="$2"
+
+    if command -v sha256sum >/dev/null 2>&1; then
+        (cd "$base_dir" && sha256sum "$rel_path")
+        return 0
+    fi
+
+    if command -v shasum >/dev/null 2>&1; then
+        (cd "$base_dir" && shasum -a 256 "$rel_path")
+        return 0
+    fi
+
+    if command -v openssl >/dev/null 2>&1; then
+        local hash
+        hash=$(cd "$base_dir" && openssl dgst -sha256 "$rel_path" | awk '{print $NF}')
+        printf '%s  %s\n' "$hash" "$rel_path"
+        return 0
+    fi
+
+    echo "❌ No SHA256 tool available (need sha256sum, shasum, or openssl)"
+    exit 1
+}
+
+write_sha256_manifest() {
+    local manifest="$1"
+    shift
+
+    : > "$manifest"
+    for item in "$@"; do
+        if [ -f "$item" ]; then
+            sha256_manifest_line "$(dirname "$item")" "$(basename "$item")" >> "$manifest"
+        elif [ -d "$item" ]; then
+            local parent
+            local dir_name
+            parent="$(dirname "$item")"
+            dir_name="$(basename "$item")"
+            while IFS= read -r -d '' rel_path; do
+                sha256_manifest_line "$parent" "$rel_path" >> "$manifest"
+            done < <(cd "$parent" && find "$dir_name" -type f -print0 | sort -z)
+        else
+            echo "❌ Cannot hash missing release artifact: $item"
+            exit 1
+        fi
+    done
+}
+
+if [ -f "$PROJECT_ROOT/gpuf_c_ios.h" ]; then
+    cp "$PROJECT_ROOT/gpuf_c_ios.h" "$INCLUDE_DIR/gpuf_c.h"
+elif [ -f "$PROJECT_ROOT/gpuf_c.h" ]; then
+    cp "$PROJECT_ROOT/gpuf_c.h" "$INCLUDE_DIR/"
+fi
 if [ -f "$PROJECT_ROOT/gpuf_c_minimal.h" ]; then
     cp "$PROJECT_ROOT/gpuf_c_minimal.h" "$INCLUDE_DIR/"
-fi
-if [ -f "$PROJECT_ROOT/gpuf_c.h" ]; then
-    cp "$PROJECT_ROOT/gpuf_c.h" "$INCLUDE_DIR/"
 fi
 
 echo "🦀 Ensuring Rust targets are installed..."
@@ -154,7 +206,7 @@ if [ ! -f "$SIM_ARM64_LIB" ]; then
     exit 1
 fi
 
-SIM_UNIVERSAL_LIB="$DIST_DIR/libgpuf_c_simulator.a"
+SIM_UNIVERSAL_LIB="$BUILD_DIR/libgpuf_c_simulator.a"
 if [ -n "$SIM_X64_LIB" ] && command -v lipo >/dev/null 2>&1; then
     echo "🔗 Creating universal simulator library (arm64 + x86_64)..."
     lipo -create "$SIM_ARM64_LIB" "$SIM_X64_LIB" -output "$SIM_UNIVERSAL_LIB"
@@ -210,8 +262,12 @@ merge_one() {
 LLAMA_DEVICE_DIR="$WORKSPACE_ROOT/target/llama-ios/$IOS_DEVICE_TARGET"
 LLAMA_SIM_ARM64_DIR="$WORKSPACE_ROOT/target/llama-ios/$IOS_SIM_ARM64_TARGET"
 
-MERGED_DEVICE_LIB="$DIST_DIR/libgpuf_c_device.a"
-MERGED_SIM_LIB="$DIST_DIR/libgpuf_c_simulator_merged.a"
+DEVICE_SLICE_DIR="$DIST_DIR/ios-arm64"
+SIM_SLICE_DIR="$DIST_DIR/ios-arm64-simulator"
+mkdir -p "$DEVICE_SLICE_DIR" "$SIM_SLICE_DIR"
+
+MERGED_DEVICE_LIB="$DEVICE_SLICE_DIR/libgpuf_c_sdk.a"
+MERGED_SIM_LIB="$SIM_SLICE_DIR/libgpuf_c_sdk.a"
 
 merge_one "$DEVICE_LIB" "$LLAMA_DEVICE_DIR" "$MERGED_DEVICE_LIB"
 merge_one "$SIM_UNIVERSAL_LIB" "$LLAMA_SIM_ARM64_DIR" "$MERGED_SIM_LIB"
@@ -225,6 +281,15 @@ xcodebuild -create-xcframework \
     -library "$MERGED_SIM_LIB" -headers "$INCLUDE_DIR" \
     -output "$XCFRAMEWORK_OUT"
 
+write_sha256_manifest \
+    "$DIST_DIR/SHA256SUMS" \
+    "$MERGED_DEVICE_LIB" \
+    "$MERGED_SIM_LIB" \
+    "$XCFRAMEWORK_OUT"
+sha256_manifest_line "$DEVICE_SLICE_DIR" "libgpuf_c_sdk.a" > "$DEVICE_SLICE_DIR/libgpuf_c_sdk.a.sha256"
+sha256_manifest_line "$SIM_SLICE_DIR" "libgpuf_c_sdk.a" > "$SIM_SLICE_DIR/libgpuf_c_sdk.a.sha256"
+
 echo "✅ iOS SDK build completed!"
 echo "📦 XCFramework: $XCFRAMEWORK_OUT"
 echo "📁 Headers: $INCLUDE_DIR"
+echo "🔒 SHA256 manifest: $DIST_DIR/SHA256SUMS"

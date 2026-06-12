@@ -7,7 +7,11 @@ use gpuf_c::{
 };
 
 #[cfg(not(target_os = "android"))]
-use gpuf_c::llm_engine::{llama_engine::LlamaEngine, llama_server::start_server, Engine};
+use gpuf_c::llm_engine::{
+    llama_engine::LlamaEngine,
+    llama_server::{start_server_with_security, ServerSecurityConfig},
+    Engine,
+};
 #[cfg(not(target_os = "android"))]
 use std::sync::Arc;
 #[cfg(not(target_os = "android"))]
@@ -65,7 +69,6 @@ async fn run_standalone_llama(mut args: Args) -> Result<()> {
     }
 
     // Get model path
-    let default_model_name = "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf";
     let requested = args
         .llama_model_path
         .clone()
@@ -87,22 +90,10 @@ async fn run_standalone_llama(mut args: Args) -> Result<()> {
     };
 
     if !model_path_buf.exists() {
-        if requested == default_model_name {
-            info!("No local model found, downloading default TinyLlama model...");
-            info!("Downloading {} (~600MB)...", default_model_name);
-            let url = "https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf";
-
-            let response = reqwest::get(url).await?;
-            let bytes = response.bytes().await?;
-            std::fs::write(&model_path_buf, bytes)?;
-
-            info!("Model downloaded successfully!");
-        } else {
-            return Err(anyhow!(
-                "Model file not found: {}",
-                model_path_buf.to_string_lossy()
-            ));
-        }
+        return Err(anyhow!(
+            "Model file not found: {}. Download models explicitly with a verified SHA256 checksum before starting standalone mode.",
+            model_path_buf.to_string_lossy()
+        ));
     } else {
         info!("Using existing model at {:?}", model_path_buf);
     }
@@ -144,7 +135,15 @@ async fn run_standalone_llama(mut args: Args) -> Result<()> {
     info!("  - GET  http://{}:{}/health", host, port);
 
     let engine = Arc::new(RwLock::new(engine));
-    start_server(engine, &host, port).await?;
+    let mut security = ServerSecurityConfig::from_env();
+    if let Some(api_key) = args
+        .api_key
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+    {
+        security.api_key = Some(api_key);
+    }
+    start_server_with_security(engine, &host, port, security).await?;
 
     Ok(())
 }
