@@ -1,6 +1,6 @@
 # GPUFabric `gpuf-c` 安全整改收敛计划
 
-> 更新日期：2026-06-12 | 目标版本：v1.1.0 | 状态：P0-P3 代码层已全部实现并验证（45/45 test pass, fmt clean, secret scan clean, workspace zero warnings）；Android arm64 target 源码 warning 已清零；Android SDK/Remote Worker/TLS 与 Linux sanitizer 证据已附；mobile strict gate 已按 `status:` 阻断未闭环证据；剩余 escalate_to_human：iOS raw runtime、owner sign-off、生产签名/SBOM（4 项）；剩余 CI gate：cargo-audit/cargo-deny（2 项）
+> 更新日期：2026-06-16 | 目标版本：v1.1.0 | 状态：P0-P3 代码层已全部实现并验证（45/45 test pass, fmt clean, secret scan clean, workspace zero warnings）；Android arm64 target 源码 warning 已清零；Android SDK/Remote Worker/TLS 与 Linux sanitizer 证据已附；mobile strict gate 已按 `status:` 阻断未闭环证据；剩余 escalate_to_human：iOS raw runtime、owner sign-off、生产签名/SBOM（4 项）；剩余 CI gate：cargo-audit/cargo-deny（2 项）；2026-06-16 新增 P4 算力分享 KV cache / worker 粘性路由实现计划，并已落地第一阶段 gpuf-s 服务端 session -> worker 粘性路由、响应 metadata、route 上限、sticky route metrics、`CommandV1` session/cache 透传、worker session/cache decision scaffold，以及默认关闭的 worker llama.cpp session state checkpoint 桥接路径（常驻内存 per-session `LlamaContext` / 真正 KV context pool、KV bytes 上限和端到端推理验收仍未完成，不阻断 v1.1.0）
 
 ## 目标
 
@@ -31,6 +31,7 @@
 | 移动/FFI 面 | `src/lib.rs` 有 `static mut` 和大量 `unsafe`；JNI/C callback 生命周期、null/invalid UTF-8、重复 init/destroy、后台恢复还没有专门安全矩阵。 |
 | SSE 生命周期 | Anthropic streaming 把无限 `ping_stream` chain 在 footer 之前，`message_stop` 可能永远不会发送。 |
 | 本地产物泄露 | 当前 `.gitignore` 有 `*.claude`，但没有明确忽略 `.claude/`；`gpuf-c/src/target/` 当前出现在工作区。 |
+| 算力分享 KV cache / worker 粘性路由 | 当前 `gpuf-c` 算力分享已缓存 LLAMA backend/model/global engine；旧 `generate_with_cached_model_sampling` / `stream_with_cached_model_sampling` 仍每次 `new_context(...)`，新 `stream_with_session_state_sampling` 已在算力分享 TCP worker 路径接入默认关闭的 llama.cpp `state_save_file/state_load_file` checkpoint：启用 `GPUF_ENABLE_SESSION_STATE_CACHE=1` 或 `GPUF_ENABLE_SESSION_KV_CACHE=1` 且请求带 `session_id` 时，按 session/model/runtime/prompt hash 保存“最后一个 prompt token 前”的本地 state，命中时 load 后 replay 最后 token，`bypass/unknown` 不读写，`reset` 清理该 session hash 目录后冷启动并重新保存。checkpoint 目录可用 `GPUF_WORKER_SESSION_STATE_DIR` 指定，并已支持 `GPUF_WORKER_SESSION_STATE_MAX_BYTES` 本地磁盘 quota（默认 0 表示只统计不淘汰），超额时按 mtime 淘汰旧 `.state` 文件并记录 metrics；state 文件旁边写 `.meta` sidecar，加载前校验版本、model/runtime hash、prompt hash 和 state SHA256，校验失败按 miss/error 处理，不把损坏文件送进 llama.cpp。`gpuf-s` 已新增第一阶段内存态 `session_id -> worker/client_id` 粘性路由，支持 `x-gpuf-session-id` / body `session_id`、`cache_policy=auto/bypass/reset` 和 bearer token hash owner scope 隔离，并将外部 `session_id` / `client_id` / `cache_status` 透传到 API 响应；route 表已有 TTL、最大条目、LRU 淘汰和受认证 metrics snapshot；`common::CommandV1` 已把 owner-scoped 派生 session key / `cache_policy` 透传到 worker，避免不同 owner 复用同外部 `session_id` 时在 worker 本地 checkpoint 撞 key；`gpuf-c` worker 已统一解析策略、脱敏记录 session 短 hash，并记录 decision、metadata 和 state checkpoint metrics。常驻内存 per-session `LlamaContext` / 真正 KV context pool、真实 KV byte 上限/eviction metrics、Redis 持久化和端到端推理验收尚未落地。 |
 
 ## 优先级总览
 
@@ -40,6 +41,7 @@
 | P1 本迭代必修 | 8 | 8-12 天 | 可拆 PR 并行，但合并前必须进 CI 或发布 gate。 |
 | P2 下迭代加固 | 6 | 8-12 天 | 不阻断 v1.1.0，阻断移动 SDK 大规模分发。 |
 | P3 长期治理 | 4 | 持续 | 进入 release engineering backlog。 |
+| P4 算力分享 KV cache / 粘性路由 | 1 | 分阶段实现 | P4-A/P4-B/P4-C 已落地，P4-D 已有默认关闭的 llama.cpp state checkpoint 桥接路径；常驻内存 per-session `LlamaContext` / 真正 KV context pool、KV 资源上限、持久化和端到端验收未完成，不阻断 v1.1.0。 |
 
 ## 2026-06-04 执行收敛状态
 
@@ -354,6 +356,86 @@ rg -n "serde_yaml|serde_yml" gpuf-c/Cargo.toml gpuf-c/src
 - standalone API 暴露受认证保护的 `/v1/security/metrics` 快照端点。
 - 发布前生成 `security-release-report.md` 和 `scripts/security_release_evidence.sh` 证据包，集中列出证据链接。
 
+## P4 - 算力分享 KV cache / worker 粘性路由实现计划
+
+> 状态：部分实现。`gpuf-s` 已接收 `session_id` / `x-gpuf-session-id` 和 `cache_policy=auto/bypass/reset`，并以内存 `SessionRoute` 表按 bearer token hash 做 owner scope 隔离，将同一 session 粘到同一可用 worker；外部 `session_id` / `client_id` / `cache_status` 已透传到 completion/chat JSON 响应和 `x-gpuf-*` 响应头。route 表已支持 `GPUF_SESSION_ROUTE_MAX_ENTRIES`、`GPUF_SESSION_ROUTE_TTL_SECS`、LRU/TTL 淘汰和受认证 `/api/v1/session/routes/metrics` snapshot。`common::CommandV1::{InferenceTask,ChatInferenceTask}` 已携带 owner-scoped 派生 session key / `cache_policy` 到 `gpuf-c` worker；worker 已通过 `handle::session_cache` 统一解析策略、脱敏记录 session 短 hash，并记录 cold/bypass/reset/unsupported/disabled 决策 metrics；该内部 worker decision snapshot 已纳入 standalone `/v1/security/metrics` 的 `worker_session_cache` 字段，并具备 worker session metadata TTL/LRU 上限。算力分享 TCP worker 路径已接入默认关闭的 llama.cpp session state checkpoint 桥接：启用 `GPUF_ENABLE_SESSION_STATE_CACHE=1` 或 `GPUF_ENABLE_SESSION_KV_CACHE=1` 且请求带 `session_id` 时，可按 scoped session/model/runtime/prompt hash 保存并恢复 prompt prefill state；日志和路径只使用 hash，不写完整 session id 或 prompt；`GPUF_WORKER_SESSION_STATE_MAX_BYTES` 已提供本地 checkpoint 磁盘 quota，超额按 mtime 淘汰旧 `.state` 文件；checkpoint `.meta` sidecar 已记录版本、model/runtime hash、prompt hash 和 state SHA256，load 前校验失败会按 miss/error 回退。`cache_policy=reset/bypass`、跨 owner 复用拒绝、模型切换失效、TTL/allowed worker 校验、容量淘汰、route metrics、协议字段 roundtrip、worker decision scaffold、worker metadata TTL/LRU、worker scoped session key、state checkpoint helper、checkpoint quota 和 sidecar 完整性已有 focused unit tests。常驻内存 per-session `LlamaContext` / 真正 KV context pool、真实 KV byte/hit/miss/eviction resource metrics、Redis 持久化、checkpoint 加密/签名和端到端推理验收仍未落地，本节不能作为 v1.1.0 全部完成项。
+
+### P4-1 会话级 KV cache 与粘性路由
+
+**范围**：`gpuf-s/src/inference/*`、`gpuf-s/src/handle/*`、`gpuf-c/src/llm_engine/llama_engine.rs`、`gpuf-c/src/handle/worker_sdk.rs`、`gpuf-c/src/handle/handle_tcp.rs`、`common/src/lib.rs`、API 文档和 SDK 文档。
+
+**分阶段落地计划**：
+
+| 阶段 | 目标 | 当前状态 | 完成条件 |
+|---|---|---|---|
+| P4-A 服务端 session 路由 | `gpuf-s` 接收 `session_id` / `cache_policy`，同 owner 的同一 session 粘到同一 worker。 | 已实现第一阶段：header/body 解析、owner scope、route TTL/max/LRU、响应 metadata、route metrics 和 focused tests 已落地。 | `cargo test -p gpuf-s inference::scheduler::tests` 通过；同 session 连续请求返回同 `client_id`；跨 owner 复用被拒绝。 |
+| P4-B 协议透传 | `common::CommandV1` 把 session key / `cache_policy` 传到 worker。 | 已实现：`InferenceTask` / `ChatInferenceTask` 已增加字段；`gpuf-s` 发送给 worker 的是 SHA256 派生的 owner-scoped session key，而不是外部原始 `session_id`，API 响应仍返回外部 `session_id`。 | 协议 roundtrip test 通过；旧 worker 字段兼容策略明确；worker scoped session key 单测通过。 |
+| P4-C worker 安全接收边界 | worker 对 session/cache policy 做统一解析、日志脱敏和 metrics scaffold，但仍按冷启动上下文执行。 | 已实现第一阶段：TCP worker、Android SDK worker 和 iOS/mobile `worker_sdk` 入口均调用同一 `handle::session_cache` helper，记录短 hash、policy、status 和 `kv_reuse=false`；standalone `/v1/security/metrics` 已返回 `worker_session_cache` snapshot；worker session metadata map 已有 TTL/LRU 上限；state checkpoint hit/miss/save/reset/error/quota eviction/current bytes/max bytes metrics 已加入 snapshot。 | `cargo test -p gpuf-c handle::session_cache::tests util::security_metrics::tests::snapshot_includes_worker_session_cache_metrics` 通过；`rg -n "session_id: _|cache_policy: _" gpuf-c/src/handle common/src gpuf-s/src` 无静默丢弃；worker 不误报 `kv_hit_total`。 |
+| P4-D worker 内存 KV cache | `LlamaEngine` 维护 per-session `LlamaContext` / token prefix / last_used / estimated bytes。 | 部分实现：算力分享 TCP worker 路径已接入 `stream_with_session_state_sampling`，默认关闭；启用后用 llama.cpp `state_save_file/state_load_file` 对同 session、同模型/runtime、同 prompt 的 prefill state 做本地 checkpoint，命中前校验 sidecar SHA256，命中后 replay 最后 prompt token 再生成。常驻内存 per-session `LlamaContext` / token-prefix 增量复用仍待实现。 | 已有 helper 测试覆盖默认关闭、路径脱敏、`bypass/unknown` 不读写、`reset` 只清理 hash session dir、sidecar 缺失/篡改/版本不匹配 miss；还需真实模型端到端验证：相同 session/prompt 第二次减少 prefill，prefix mismatch/model hot swap 冷启动并记录 miss reason。 |
+| P4-E 资源上限和淘汰 | 增加 worker KV byte/session/token TTL 限制，按 LRU/TTL 淘汰。 | 部分实现：worker session metadata 已支持 `GPUF_WORKER_SESSION_MAX_ENTRIES`、`GPUF_WORKER_SESSION_TTL_SECS`、LRU 淘汰、stale 清理和 reset 删除；checkpoint 文件按 hash session dir 隔离，并支持 `GPUF_WORKER_SESSION_STATE_MAX_BYTES` 本地磁盘 quota（默认 0 表示只统计不淘汰），超额时按 mtime 淘汰旧 `.state` 文件；真实 KV byte/token/context 上限仍待实现。 | metadata 和 checkpoint quota focused tests 通过；真实 KV cache 落地后还需补内存压力、活跃生成保护和 true KV bytes/current metrics。 |
+| P4-F 持久化/恢复 | 可选 Redis route 持久化或磁盘 KV checkpoint。 | 部分实现：worker 本地 llama.cpp session state checkpoint 已可 opt-in，默认关闭，已有 hash 路径、reset 清理、quota 淘汰、sidecar SHA256 完整性校验和 metrics；Redis route 持久化、checkpoint 加密/签名、跨版本兼容策略仍待设计。 | 默认关闭；启用时 helper/quota/sidecar integrity 测试通过；后续需补加密、签名、跨版本兼容、清理和回滚方案。 |
+
+**重连语义**：
+
+- 客户端断开后重新请求同一 `session_id`，`gpuf-s` 会优先使用仍有效的 session route，把请求发回原 `client_id`；如果 worker 离线、权限变化、模型变化、route 过期或被 LRU 淘汰，则会清理旧 route 并冷启动选择 worker。
+- “重连到同 worker”只保证调度粘性，不等于常驻内存 KV cache 命中。当前 opt-in state checkpoint 只能复用同 session、同模型/runtime、同 prompt 的 prefill state；真正 per-session KV hit 还要求原 worker 进程仍在、同模型的 per-session context 未被淘汰、prompt 是已缓存 token 前缀的安全延展，并且 `cache_policy` 不是 `bypass/reset`。
+- worker 进程重启、模型 hot swap、context 被内存压力淘汰或 prefix mismatch 时必须返回 `cold` / `evicted` / miss reason，不能对外报告 `hit`。
+
+**背景事实**：
+
+- KV cache 通常是 GB 级资源，大小随 `layers * kv_heads * head_dim * 2(K+V) * ctx_tokens * bytes_per_elem` 增长；跨 worker 迁移成本高，不适合作为默认调度路径。
+- 当前 `gpuf-c` LLAMA 路径缓存 `LlamaBackend` / `LlamaModel` / `GLOBAL_ENGINE`；旧路径每个请求仍新建 `LlamaContext`。算力分享 TCP worker 新路径在显式启用 state checkpoint 时仍会新建 context，但可从本地 llama.cpp state 文件恢复同 prompt 的 prefill state。
+- P4 第一阶段实现前，`gpuf-s` 只能通过 `x-target-client-id` 显式指定 worker；默认路由会按授权 client 列表或负载重新选择 worker，没有 session id 到 worker 的粘性映射。
+
+**目标**：
+
+- 为算力分享 API 增加 `session_id` 语义：同一会话默认粘到同一个 `client_id`，从而允许 worker 在内存中复用 per-session KV cache。
+- 在 worker 侧维护受控的 `SessionContext` 池，复用 llama context/KV；只有当 prompt 是已缓存 token 前缀的安全延展时才走增量 prefill，否则回退到冷启动 prefill。
+- 保持安全默认：不同用户/API key/token 的 session 不得互相复用 KV；断线、取消、超时、模型切换、权限变化和 worker 下线时必须清理或失效相关 session。
+- 不做默认跨 worker KV 迁移；后续如需磁盘 checkpoint，必须单独设计加密、完整性校验、版本兼容和磁盘配额。
+
+**协议/API 改法**：
+
+- REST/OpenAI 兼容层接受可选 `session_id` 或 `x-gpuf-session-id`；已实现。响应已返回实际绑定的 `session_id`、`client_id` 和 `cache_status`（`cold` / `hit` / `bypass` / `reset` / `evicted`）。
+- `gpuf-s` 新增 `SessionRoute { session_id, owner_scope, client_id, model_id, created_at, last_used, ttl, state }`；内存表已实现核心字段、TTL、容量上限和 LRU 淘汰，`owner_scope` 现绑定 bearer token SHA-256 hash。Redis 同步和显式 `state` 尚未实现。
+- `gpuf-s` 调度优先级：显式 `x-target-client-id` > 已存在且有效的 `session_id` 粘性路由 > 当前负载调度；已实现第一阶段。粘性 worker 离线或不可用时当前会清理 route 并冷启动重选 worker，默认不声称 KV cache hit；可配置诊断错误路径仍待实现。
+- `common::CommandV1::{InferenceTask,ChatInferenceTask}` 已增加并透传可选 session key、`cache_policy`（`auto` / `bypass` / `reset`）；`gpuf-s` 传给 worker 的 session key 是 `owner_scope + 外部 session_id` 的 SHA256 派生值，API 响应仍使用外部 session id；`CommandV2`、`prompt_hash`、`prompt_tokens` 或前缀校验摘要仍待后续实现。
+
+**worker 侧改法**：
+
+- 已新增默认关闭的 `stream_with_session_state_sampling` 桥接路径：算力分享 TCP worker 将 owner-scoped session key / `cache_policy` 传入该路径；启用 `GPUF_ENABLE_SESSION_STATE_CACHE=1` 或 `GPUF_ENABLE_SESSION_KV_CACHE=1` 后，worker 使用 hash session dir 和 hash state filename 保存 llama.cpp prompt state，不在路径或日志中写完整 session id、prompt 或 token。
+- 当前 checkpoint 保存“最后一个 prompt token 前”的 state，保存后写 sidecar meta；恢复时先验证 sidecar 的版本、model/runtime hash、prompt hash 和 state SHA256，再验证 cached token prefix 与当前 prompt token 完全匹配，最后 replay 最后一个 prompt token 产生 logits；`cache_policy=bypass` 和未知策略不读写，`cache_policy=reset` 清理该 session hash dir 后冷启动并重新保存。
+- 待新增真正 per-session context map，值包含 `LlamaContext`、token prefix、last_used、model path/hash、n_ctx、estimated_kv_bytes、active flag。
+- 将当前每次 `new_context(...)` 的生成路径拆成：
+  - `get_or_create_session_context(session_id, model_id, limits)`
+  - `sync_prompt_prefix(session, prompt_tokens)`
+  - `decode_suffix_or_cold_prefill(session, suffix_tokens)`
+  - `generate_from_session(session, sampling, max_tokens)`
+- 当 prompt 与缓存 token prefix 不匹配、模型切换、采样路径要求独立上下文、context 剩余空间不足、或 session 被标记 reset 时，清空该 session 并走冷 prefill。
+- Android/iOS 移动 worker 首期只支持模型 cache，不启用 KV session cache；当前 worker 已安全接收 `session_id` / `cache_policy`、输出脱敏 decision，并仍走冷启动上下文。后续启用 KV 前 API/worker 必须继续避免误报真实内存 KV hit。
+
+**资源与安全限制**：
+
+- 增加 `SessionCacheLimits`：`max_sessions_per_worker`、`max_total_kv_bytes`、`max_kv_bytes_per_session`、`session_ttl_secs`、`max_prompt_tokens_for_cache`、`max_idle_sessions`。第一阶段已实现 server route 表 `GPUF_SESSION_ROUTE_MAX_ENTRIES` 和 `GPUF_SESSION_ROUTE_TTL_SECS`；worker metadata 层已实现 `GPUF_WORKER_SESSION_MAX_ENTRIES` 和 `GPUF_WORKER_SESSION_TTL_SECS`；state checkpoint 目录可用 `GPUF_WORKER_SESSION_STATE_DIR` 指定，磁盘 quota 可用 `GPUF_WORKER_SESSION_STATE_MAX_BYTES` 指定；真实 worker KV byte/token/context 上限仍待实现。
+- LRU/TTL 淘汰必须先取消活跃生成，再释放 context；淘汰、reset、权限失败、prefix mismatch 都进入 metrics。
+- session id 必须是不可预测随机值或服务端生成值；禁止客户端用短字符串造成枚举/碰撞。日志只打印短 hash，不打印 prompt、token 内容或完整 session id。
+- session route 的 owner_scope 校验失败时返回 403，并强制不复用 KV。
+- worker 重连后只有同 `client_id` 且同进程保留了 session context 才能继续 hit；worker 进程重启或模型 hot swap 后必须把相关 route 标记 stale。
+
+**观测与回滚**：
+
+- metrics 增加：`kv_cache_hit_total`、`kv_cache_miss_total`、`kv_cache_eviction_total`、`kv_cache_bytes_current`、`sticky_route_hit_total`、`sticky_route_stale_total`、`session_owner_mismatch_total`。第一阶段已实现受认证 `/api/v1/session/routes/metrics`，返回 route current/max/TTL、hit/miss/bypass/reset/bind/eviction/stale/denied/owner mismatch 计数；worker 侧已新增 decision/metadata/checkpoint metrics scaffold（decisions/session_task/cold/bypass/reset/unsupported/disabled/active_sessions/max_sessions/TTL/metadata_eviction/metadata_stale/kv_hit=0/state_checkpoint_hit/miss/save/reset/error/quota_eviction/bytes_current/max_bytes），并挂到 standalone `/v1/security/metrics` 的 `worker_session_cache` 字段；真实 KV bytes、hit、miss、eviction 仍待 worker KV cache 实现后补齐。
+- trace/release report 记录 cache 决策但不记录 prompt 正文。
+- 配置开关：`GPUF_ENABLE_SESSION_STATE_CACHE=0/1` 或 `GPUF_ENABLE_SESSION_KV_CACHE=0/1` 启用当前 worker state checkpoint；`GPUF_WORKER_SESSION_STATE_DIR` 指定本地 checkpoint 目录；`GPUF_WORKER_SESSION_STATE_MAX_BYTES` 指定本地 checkpoint quota（默认 0 只统计不淘汰）；`GPUF_SESSION_STICKY_ROUTING=0/1`、`GPUF_SESSION_CACHE_MAX_BYTES` 保留给后续完整 KV cache。默认关闭 worker state/KV cache，只开启安全路由验证与显式 opt-in。
+
+**验收**：
+
+- 单元测试：同一 `session_id` 第二次请求命中同 worker；不同 owner/API key 使用同 `session_id` 被拒绝；worker 离线后 route 变 stale；`cache_policy=reset/bypass` 生效。第一阶段 route 表单元测试已覆盖这些调度语义、容量 LRU 淘汰和 metrics 计数；worker-scoped session key 测试已覆盖不同 owner 派生不同 worker key；worker helper 测试已覆盖 checkpoint 默认关闭、路径脱敏、bypass/unknown 不读写、reset hash dir 清理、quota 淘汰旧 `.state` 文件，以及 sidecar 缺失/篡改/版本不匹配校验失败；真实模型 KV/cache hit 语义仍待后续测试。
+- 集成测试：两台 worker 在线时，带同一 `session_id` 的连续请求落到同一 `client_id`；无 `session_id` 请求仍按负载调度。
+- 推理测试：相同长 prompt 的第二次请求减少 prefill token/耗时；prefix mismatch 不复用旧 KV；模型 hot swap 后旧 session 全部失效。
+- 压力测试：超过 `max_total_kv_bytes` 或 `max_sessions_per_worker` 时按 LRU/TTL 淘汰，内存回落且无活跃请求崩溃。
+- 安全测试：session id 枚举、跨 token 复用、日志泄漏、取消/断连后残留 context、worker 重连 stale route 均被覆盖。
+
 ## 推荐执行顺序
 
 ```text
@@ -363,6 +445,7 @@ Day 3: P0-6 -> P1-1 targeted design
 Day 4-6: P1-2 -> P1-3 -> P1-6
 Day 7-10: P1-4 -> P1-5 -> P1-7 -> P1-8
 Next iteration: P2 mobile/unsafe/TLS work
+Later architecture track: P4 session sticky routing -> P4 worker-side KV session cache -> P4 metrics/resource limits
 ```
 
 拆 PR 原则：
@@ -391,6 +474,7 @@ Next iteration: P2 mobile/unsafe/TLS work
 | P1-7 SSE/错误 | stream stop + EOF；断连取消；release 错误脱敏。 |
 | P1-8 外部命令 | timeout、输出上限、PATH 注入、无交互 sudo。 |
 | P2 mobile/unsafe | Android instrumentation、iOS simulator/device、ASAN/TSAN、callback 生命周期。 |
+| P4 算力分享 KV cache | session 粘性路由、owner scope 隔离、同 worker KV hit、prefix mismatch 回退、模型切换失效、LRU/TTL/字节上限淘汰、worker 重连 stale route。 |
 
 ## 发布 gate
 

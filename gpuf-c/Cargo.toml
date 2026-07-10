@@ -1,6 +1,6 @@
 [package]
 name = "gpuf-c"
-version = "1.0.2"
+version = "1.0.4"
 edition = "2021"
 
 [lib]
@@ -44,6 +44,7 @@ sha1 = "0.10"
 md5 = "0.7"
 crc32fast = "1.4"
 encoding_rs = "0.8"
+base64 = "0.22"
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 reqwest = { version = "0.12.5", default-features = false, features = ["json", "native-tls-vendored", "stream"] }
@@ -95,20 +96,23 @@ default = ["cpu"]
 # iOS SDK links prebuilt llama.cpp static libraries from target/llama-ios.
 ios-sdk = []
 
+# Multimodal projector support through llama.cpp mtmd.
+multimodal = ["llama-cpp-2/mtmd"]
+
 # CPU only
-cpu = ["llama-cpp-2/openmp"]
+cpu = ["llama-cpp-2/openmp", "multimodal"]
 
 # CUDA support (NVIDIA GPU)
-cuda = ["llama-cpp-2/cuda","nvml-wrapper"]
+cuda = ["llama-cpp-2/cuda", "multimodal", "nvml-wrapper"]
 
 # Metal support (Apple GPU - iOS/macOS)
-metal = ["llama-cpp-2/metal"]
+metal = ["llama-cpp-2/metal", "multimodal"]
 
 # Android features (Vulkan support)
 android = ["llama-cpp-2/vulkan"]
 
 # Vulkan support (cross-platform GPU)
-vulkan = ["llama-cpp-2/vulkan", "ash"]
+vulkan = ["llama-cpp-2/vulkan", "multimodal", "ash"]
 
 # NVML feature for GPU monitoring
 nvml = ["nvml-wrapper"]
@@ -117,6 +121,7 @@ nvml = ["nvml-wrapper"]
 rocm = ["rocm_smi_lib"]
 
 [dev-dependencies]
+filetime = "0.2"
 tempfile = "3.3"
 
 [build-dependencies]

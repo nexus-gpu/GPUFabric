@@ -138,6 +138,23 @@ cargo run --release --bin gpuf-c -- \
   --local-port 11434
 ```
 
+#### Optional DLLM Plugin Probe
+
+`gpuf-c` can optionally probe a local DLLM shared library at startup. This is a
+control-plane smoke path for future distributed expert routing; if loading
+fails, `gpuf-c` logs a warning and continues without DLLM.
+
+```bash
+cargo run --release --bin gpuf-c -- \
+  --client-id <client-id-32-hex> \
+  --dllm-enable \
+  --dllm-lib-path /opt/dllm/lib/libdllm.so \
+  --dllm-server-key 0xA1FDFFFFFF01FAFAFAFA
+```
+
+The same settings are available through `GPUF_DLLM_ENABLE`,
+`GPUF_DLLM_LIB_PATH`, and `GPUF_DLLM_SERVER_KEY`.
+
 ### Docker Build
 
 #### Build gpuf-s Image
@@ -174,10 +191,11 @@ cargo run --release --bin heartbeat_consumer -- \
 
 ```bash
 # Test with API key
-curl -H "Authorization: Bearer your-api-key" http://localhost:18080
+AUTH_HEADER="Authorization: Bearer ${GPUF_API_KEY}"
+curl -H "$AUTH_HEADER" http://localhost:18080
 
 # Test Ollama integration
-curl -H "Authorization: Bearer your-api-key" \
+curl -H "$AUTH_HEADER" \
   -H "Content-Type: application/json" \
   http://localhost:18080/v1/chat/completions \
   -d '{
@@ -186,7 +204,7 @@ curl -H "Authorization: Bearer your-api-key" \
   }'
 
 # Test streaming (SSE)
-curl -N -H "Authorization: Bearer your-api-key" \
+curl -N -H "$AUTH_HEADER" \
   -H "Content-Type: application/json" \
   http://localhost:18080/v1/chat/completions \
   -d '{
@@ -247,7 +265,7 @@ You can also configure using environment variables:
 ```bash
 export DATABASE_URL="postgres://<db-user>:<db-password>@localhost:5432/<db-name>"
 export REDIS_URL="redis://localhost:6379"
-export API_KEY="your-api-key"
+export API_KEY="replace-with-a-local-api-key"
 export RUST_LOG="gpuf-s=info"
 ```
 

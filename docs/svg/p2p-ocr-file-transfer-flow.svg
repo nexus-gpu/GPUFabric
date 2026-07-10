@@ -1,0 +1,200 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1480" height="1040" viewBox="0 0 1480 1040" role="img" aria-labelledby="title desc">
+  <title id="title">GPUFabric OCR P2P file transfer protocol flow</title>
+  <desc id="desc">Protocol sequence for SDK initiated OCR file transfer through GPUFabric P2P data plane, with gpuf-s signaling, gpuf-c worker, OCR engine, and HTTP relay fallback.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="10" markerHeight="10" orient="auto-start-reverse">
+      <path d="M 1 1 L 11 6 L 1 11 z" fill="#1f2937"/>
+    </marker>
+    <marker id="arrow-blue" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="10" markerHeight="10" orient="auto-start-reverse">
+      <path d="M 1 1 L 11 6 L 1 11 z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="10" markerHeight="10" orient="auto-start-reverse">
+      <path d="M 1 1 L 11 6 L 1 11 z" fill="#047857"/>
+    </marker>
+    <marker id="arrow-orange" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="10" markerHeight="10" orient="auto-start-reverse">
+      <path d="M 1 1 L 11 6 L 1 11 z" fill="#b45309"/>
+    </marker>
+    <filter id="soft-shadow" x="-10%" y="-10%" width="120%" height="125%">
+      <feDropShadow dx="0" dy="8" stdDeviation="9" flood-color="#0f172a" flood-opacity="0.11"/>
+    </filter>
+    <style>
+      .bg { fill: #f8fafc; }
+      .title { font: 700 30px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .subtitle { font: 15px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #475569; }
+      .lane-title { font: 700 17px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .lane-subtitle { font: 13px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #64748b; }
+      .step-title { font: 700 16px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #111827; }
+      .step-text { font: 13px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #374151; }
+      .small { font: 12px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #475569; }
+      .tiny { font: 11px ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; fill: #334155; }
+      .pill { font: 700 12px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #ffffff; }
+      .box { fill: #ffffff; stroke: #cbd5e1; stroke-width: 1.4; rx: 8; filter: url(#soft-shadow); }
+      .box-blue { fill: #eff6ff; stroke: #93c5fd; stroke-width: 1.5; rx: 8; filter: url(#soft-shadow); }
+      .box-green { fill: #ecfdf5; stroke: #86efac; stroke-width: 1.5; rx: 8; filter: url(#soft-shadow); }
+      .box-orange { fill: #fff7ed; stroke: #fdba74; stroke-width: 1.5; rx: 8; filter: url(#soft-shadow); }
+      .box-red { fill: #fef2f2; stroke: #fca5a5; stroke-width: 1.5; rx: 8; filter: url(#soft-shadow); }
+      .line { fill: none; stroke: #1f2937; stroke-width: 2; marker-end: url(#arrow); }
+      .line-blue { fill: none; stroke: #2563eb; stroke-width: 2.4; marker-end: url(#arrow-blue); }
+      .line-green { fill: none; stroke: #047857; stroke-width: 2.4; marker-end: url(#arrow-green); }
+      .line-orange { fill: none; stroke: #b45309; stroke-width: 2.2; marker-end: url(#arrow-orange); }
+      .line-dashed { fill: none; stroke: #b45309; stroke-width: 2.2; stroke-dasharray: 8 7; marker-end: url(#arrow-orange); }
+      .divider { stroke: #e2e8f0; stroke-width: 1.3; stroke-dasharray: 5 7; }
+      .legend-box { fill: #ffffff; stroke: #cbd5e1; stroke-width: 1.2; rx: 8; }
+    </style>
+  </defs>
+
+  <rect class="bg" width="1480" height="1040"/>
+
+  <text class="title" x="56" y="58">GPUFabric OCR P2P 文件传输协议流程</text>
+  <text class="subtitle" x="56" y="86">面向 SDK 上传截图/图片到远端 gpuf-c 的 OCR 场景：gpuf-s 负责信令和鉴权，图片走 P2P 数据面；失败时回退到现有 HTTP/base64 中转链路。</text>
+
+  <rect class="legend-box" x="1056" y="32" width="366" height="78"/>
+  <circle cx="1084" cy="57" r="6" fill="#2563eb"/>
+  <text class="small" x="1100" y="61">控制面：登录、鉴权、候选交换、任务调度</text>
+  <circle cx="1084" cy="82" r="6" fill="#047857"/>
+  <text class="small" x="1100" y="86">数据面：P2P 文件块、ACK、OCR 结果流</text>
+
+  <g transform="translate(48 130)">
+    <rect class="box" x="0" y="0" width="300" height="86"/>
+    <text class="lane-title" x="24" y="32">SDK / 调用方</text>
+    <text class="lane-subtitle" x="24" y="58">桌面截图、移动端拍照、业务文件</text>
+  </g>
+
+  <g transform="translate(404 130)">
+    <rect class="box-blue" x="0" y="0" width="300" height="86"/>
+    <text class="lane-title" x="24" y="32">gpuf-s</text>
+    <text class="lane-subtitle" x="24" y="58">控制面、鉴权、调度、TURN 配置</text>
+  </g>
+
+  <g transform="translate(760 130)">
+    <rect class="box-green" x="0" y="0" width="300" height="86"/>
+    <text class="lane-title" x="24" y="32">gpuf-c Worker</text>
+    <text class="lane-subtitle" x="24" y="58">接收 P2P 文件、校验、执行 OCR</text>
+  </g>
+
+  <g transform="translate(1116 130)">
+    <rect class="box-orange" x="0" y="0" width="300" height="86"/>
+    <text class="lane-title" x="24" y="32">OCR 引擎</text>
+    <text class="lane-subtitle" x="24" y="58">PaddleOCR-VL / multimodal llama.cpp</text>
+  </g>
+
+  <line class="divider" x1="198" y1="236" x2="198" y2="920"/>
+  <line class="divider" x1="554" y1="236" x2="554" y2="920"/>
+  <line class="divider" x1="910" y1="236" x2="910" y2="920"/>
+  <line class="divider" x1="1266" y1="236" x2="1266" y2="920"/>
+
+  <g transform="translate(48 260)">
+    <rect class="box-blue" x="0" y="0" width="300" height="96"/>
+    <text class="step-title" x="18" y="30">1. SDK 登录 / 发起 OCR</text>
+    <text class="step-text" x="18" y="56">携带 token、targetClientId、model</text>
+    <text class="tiny" x="18" y="78">purpose = OcrImage</text>
+  </g>
+  <path class="line-blue" d="M 348 308 C 376 308, 376 308, 404 308"/>
+
+  <g transform="translate(404 260)">
+    <rect class="box-blue" x="0" y="0" width="300" height="96"/>
+    <text class="step-title" x="18" y="30">2. 鉴权与选择节点</text>
+    <text class="step-text" x="18" y="56">校验 token / client_id / model</text>
+    <text class="tiny" x="18" y="78">select gpuf-c: PaddleOCR-VL</text>
+  </g>
+  <path class="line-blue" d="M 704 308 C 732 308, 732 308, 760 308"/>
+
+  <g transform="translate(760 260)">
+    <rect class="box-green" x="0" y="0" width="300" height="96"/>
+    <text class="step-title" x="18" y="30">3. Worker 在线准备</text>
+    <text class="step-text" x="18" y="56">已 Login、上报模型和设备状态</text>
+    <text class="tiny" x="18" y="78">ModelStatus: PaddleOCR-VL-1.6-GGUF</text>
+  </g>
+
+  <g transform="translate(404 394)">
+    <rect class="box-blue" x="0" y="0" width="300" height="116"/>
+    <text class="step-title" x="18" y="30">4. P2P 信令</text>
+    <text class="step-text" x="18" y="56">下发 STUN/TURN、连接 ID</text>
+    <text class="step-text" x="18" y="78">生成 data_plane_secret</text>
+    <text class="tiny" x="18" y="100">P2PConnectionConfig</text>
+  </g>
+  <path class="line-blue" d="M 554 356 L 554 394"/>
+  <path class="line-blue" d="M 704 452 C 732 452, 732 452, 760 452"/>
+  <path class="line-blue" d="M 404 452 C 366 452, 366 452, 348 452"/>
+
+  <g transform="translate(48 394)">
+    <rect class="box-blue" x="0" y="0" width="300" height="116"/>
+    <text class="step-title" x="18" y="30">5. 候选交换</text>
+    <text class="step-text" x="18" y="56">SDK 和 worker 上报 host/srflx/relay</text>
+    <text class="step-text" x="18" y="78">优先 Direct UDP，失败走 TURN</text>
+    <text class="tiny" x="18" y="100">P2PCandidates</text>
+  </g>
+
+  <g transform="translate(760 394)">
+    <rect class="box-blue" x="0" y="0" width="300" height="116"/>
+    <text class="step-title" x="18" y="30">6. 建立数据面</text>
+    <text class="step-text" x="18" y="56">验证 HMAC、时间窗和重放窗口</text>
+    <text class="step-text" x="18" y="78">UDP 分片重组，ACK 确认</text>
+    <text class="tiny" x="18" y="100">P2PDataPlaneEnvelope</text>
+  </g>
+
+  <path class="line-green" d="M 198 540 C 330 570, 770 570, 910 540"/>
+  <text class="small" x="430" y="560">Direct UDP / TURN UDP 数据面建立</text>
+
+  <g transform="translate(48 600)">
+    <rect class="box-green" x="0" y="0" width="300" height="128"/>
+    <text class="step-title" x="18" y="30">7. 发送文件元信息</text>
+    <text class="step-text" x="18" y="56">transfer_id、task_id、mime、size</text>
+    <text class="step-text" x="18" y="78">sha256、file_name、purpose</text>
+    <text class="tiny" x="18" y="103">CommandV2::P2PFileStart</text>
+  </g>
+  <path class="line-green" d="M 348 664 C 464 664, 644 664, 760 664"/>
+
+  <g transform="translate(760 600)">
+    <rect class="box-green" x="0" y="0" width="300" height="128"/>
+    <text class="step-title" x="18" y="30">8. 分块接收与校验</text>
+    <text class="step-text" x="18" y="56">seq、offset、data 分片写入临时文件</text>
+    <text class="step-text" x="18" y="78">ACK 返回 next_offset / received_bytes</text>
+    <text class="tiny" x="18" y="103">P2PFileChunk / P2PFileAck</text>
+  </g>
+  <path class="line-green" d="M 760 704 C 640 736, 468 736, 348 704"/>
+
+  <g transform="translate(48 774)">
+    <rect class="box-green" x="0" y="0" width="300" height="112"/>
+    <text class="step-title" x="18" y="30">9. 传输完成</text>
+    <text class="step-text" x="18" y="56">发送最终 size / sha256</text>
+    <text class="step-text" x="18" y="78">失败可 Cancel 或按 offset 续传</text>
+    <text class="tiny" x="18" y="100">P2PFileDone / P2PFileCancel</text>
+  </g>
+  <path class="line-green" d="M 348 830 C 464 830, 644 830, 760 830"/>
+
+  <g transform="translate(760 774)">
+    <rect class="box-green" x="0" y="0" width="300" height="112"/>
+    <text class="step-title" x="18" y="30">10. 绑定 OCR 任务</text>
+    <text class="step-text" x="18" y="56">sha256 通过后生成本地附件引用</text>
+    <text class="step-text" x="18" y="78">进入多模态 chat / OCR 推理</text>
+    <text class="tiny" x="18" y="100">local attachment URI</text>
+  </g>
+  <path class="line-green" d="M 1060 830 C 1088 830, 1088 830, 1116 830"/>
+
+  <g transform="translate(1116 774)">
+    <rect class="box-orange" x="0" y="0" width="300" height="112"/>
+    <text class="step-title" x="18" y="30">11. OCR 推理</text>
+    <text class="step-text" x="18" y="56">图片 + prompt 输入 PaddleOCR-VL</text>
+    <text class="step-text" x="18" y="78">输出文字、坐标 token 或结构化 JSON</text>
+    <text class="tiny" x="18" y="100">/v1/chat/completions compatible</text>
+  </g>
+
+  <path class="line-green" d="M 1116 904 C 980 968, 340 968, 198 904"/>
+  <text class="small" x="504" y="955">OCR 结果流：P2PInferenceChunk / ChatCompletion delta / Done</text>
+
+  <g transform="translate(404 612)">
+    <rect class="box-red" x="0" y="0" width="300" height="92"/>
+    <text class="step-title" x="18" y="30">回退路径</text>
+    <text class="step-text" x="18" y="56">P2P 不可用或超时</text>
+    <text class="tiny" x="18" y="78">HTTP data:image;base64 via gpuf-s</text>
+  </g>
+  <path class="line-dashed" d="M 198 600 C 278 552, 408 548, 554 612"/>
+  <path class="line-dashed" d="M 704 658 C 742 658, 742 658, 760 658"/>
+
+  <g transform="translate(56 944)">
+    <rect class="legend-box" x="0" y="0" width="1360" height="58"/>
+    <text class="small" x="18" y="24">实现备注：当前分支已新增公共协议类型 P2PFileStart / P2PFileChunk / P2PFileDone / P2PFileAck / P2PFileCancel；后续需要把 gpuf-s 调度、gpuf-c 临时文件落盘、sha256 校验和 OCR 任务绑定接入运行链路。</text>
+    <text class="small" x="18" y="45">安全边界：data_plane_secret 只在内存中使用；P2P 数据面必须校验 HMAC、timestamp、replay window、文件大小、MIME 白名单和传输超时。</text>
+  </g>
+</svg>

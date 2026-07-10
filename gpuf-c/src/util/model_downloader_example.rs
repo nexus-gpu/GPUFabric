@@ -161,6 +161,7 @@ pub async fn download_and_initialize_llama() -> Result<()> {
     println!("🚀 Initializing LlamaEngine...");
     let mut engine = LlamaEngine::with_config(
         model_path.to_string_lossy().to_string(),
+        None,
         2048, // context size
         4096, // batch size
         35,   // GPU layers

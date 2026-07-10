@@ -24,6 +24,8 @@ pub async fn init_db(
         }
     };
     info!("Connected to database successfully");
+    crate::db::token_usage::ensure_token_usage_schema(&db_pool).await?;
+
     // Initialize Redis client
     let redis_client = Arc::new(match Client::open(redis_url) {
         Ok(client) => client,

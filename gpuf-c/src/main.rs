@@ -3,6 +3,7 @@ use clap::Parser;
 use gpuf_c::{
     handle::{new_worker, WorkerHandle},
     util::cmd::Args,
+    util::dllm_loader,
     util::init_logging,
 };
 
@@ -26,6 +27,7 @@ async fn main() -> Result<()> {
     }));
 
     let args = Args::parse().load_config()?;
+    probe_dllm_if_enabled(&args);
 
     // Check if running in standalone LLAMA mode
     #[cfg(not(target_os = "android"))]
@@ -53,6 +55,32 @@ async fn main() -> Result<()> {
         }
 
         tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+    }
+}
+
+fn probe_dllm_if_enabled(args: &Args) {
+    if !args.dllm_enable {
+        return;
+    }
+
+    match dllm_loader::load_and_probe(&args.dllm_lib_path, &args.dllm_server_key) {
+        Ok(info) => {
+            tracing::info!(
+                abi_version = info.abi_version,
+                version = %info.version,
+                server_key = %info.server_key_hex,
+                service_type = format_args!("0x{:02X}", info.service_type),
+                carrier = format_args!("0x{:02X}", info.carrier),
+                "DLLM plugin loaded"
+            );
+        }
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                lib_path = %args.dllm_lib_path,
+                "DLLM plugin unavailable; continuing without DLLM expert routing"
+            );
+        }
     }
 }
 
@@ -105,10 +133,14 @@ async fn run_standalone_llama(mut args: Args) -> Result<()> {
     info!("  - Context size: {}", args.n_ctx);
     info!("  - Batch size: {}", args.n_batch);
     info!("  - GPU layers: {}", args.n_gpu_layers);
+    if let Some(mmproj_path) = &args.llama_mmproj_path {
+        info!("  - Multimodal projector: {}", mmproj_path);
+    }
 
     // Create and initialize engine
     let mut engine = LlamaEngine::with_config(
         model_path.clone(),
+        args.llama_mmproj_path.clone(),
         args.n_ctx,        // context size from args
         args.n_batch,      // batch size from args
         args.n_gpu_layers, // GPU layers from args

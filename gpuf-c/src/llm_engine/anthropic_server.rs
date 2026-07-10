@@ -2,7 +2,7 @@
 use super::llama_engine::SamplingParams;
 use super::llama_server::{
     build_chat_prompt, validate_prompt_and_tokens, ApiServerState, AppError,
-    ChatMessage as LlamaChatMessage,
+    ChatMessage as LlamaChatMessage, ChatMessageContent,
 };
 use axum::{
     extract::State,
@@ -253,7 +253,7 @@ fn build_anthropic_prompt(req: &MessagesRequest) -> String {
         .iter()
         .map(|m| LlamaChatMessage {
             role: m.role.clone(),
-            content: m.content.clone(),
+            content: ChatMessageContent::Text(m.content.clone()),
         })
         .collect();
 
@@ -288,7 +288,7 @@ fn build_anthropic_prompt(req: &MessagesRequest) -> String {
             0,
             LlamaChatMessage {
                 role: "system".to_string(),
-                content: system_content,
+                content: ChatMessageContent::Text(system_content),
             },
         );
     }

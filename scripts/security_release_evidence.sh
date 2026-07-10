@@ -68,7 +68,7 @@ run_or_note toolchain.txt rustc -Vv
 cargo -V >>"$OUT_DIR/toolchain.txt" 2>&1 || true
 
 rm -f "$OUT_DIR/sbom-cargo-metadata.json.tmp" "$OUT_DIR/sbom-cargo-metadata.stderr.txt"
-if cargo metadata --format-version 1 >"$OUT_DIR/sbom-cargo-metadata.json.tmp" 2>"$OUT_DIR/sbom-cargo-metadata.stderr.txt"; then
+if cargo metadata --locked --format-version 1 >"$OUT_DIR/sbom-cargo-metadata.json.tmp" 2>"$OUT_DIR/sbom-cargo-metadata.stderr.txt"; then
   redact_repo_paths <"$OUT_DIR/sbom-cargo-metadata.json.tmp" >"$OUT_DIR/sbom-cargo-metadata.json"
   redact_repo_paths <"$OUT_DIR/sbom-cargo-metadata.stderr.txt" >"$OUT_DIR/sbom-cargo-metadata.stderr.txt.tmp" || true
   mv "$OUT_DIR/sbom-cargo-metadata.stderr.txt.tmp" "$OUT_DIR/sbom-cargo-metadata.stderr.txt"
@@ -94,21 +94,22 @@ cat >"$OUT_DIR/security-gates.txt" <<'EOF'
 Required release gates to attach before publishing:
 
 cargo fmt --all --check
-cargo check -p gpuf-c --lib
-cargo check -p gpuf-c --bin gpuf-c
-cargo check -p gpuf-s
-cargo test -p gpuf-c handle::handle_udp::p2p_security_tests
-cargo test -p gpuf-c llm_engine::llama_server::tests
-cargo test -p gpuf-c util::safe_command::tests
-cargo test -p gpuf-c util::security_metrics::tests
-cargo test -p gpuf-c util::model_downloader::tests
-cargo test -p gpuf-c util::config::tests
-cargo test -p gpuf-c handle::handle_tcp::control_stream_tests
-cargo test -p gpuf-c util::cmd::tests
-cargo test -p gpuf-s util::cmd::tests
+cargo metadata --locked --format-version 1
+cargo check --locked -p gpuf-c --lib
+cargo check --locked -p gpuf-c --bin gpuf-c
+cargo check --locked -p gpuf-s
+cargo test --locked -p gpuf-c handle::handle_udp::p2p_security_tests
+cargo test --locked -p gpuf-c llm_engine::llama_server::tests
+cargo test --locked -p gpuf-c util::safe_command::tests
+cargo test --locked -p gpuf-c util::security_metrics::tests
+cargo test --locked -p gpuf-c util::model_downloader::tests
+cargo test --locked -p gpuf-c util::config::tests
+cargo test --locked -p gpuf-c handle::handle_tcp::control_stream_tests
+cargo test --locked -p gpuf-c util::cmd::tests
+cargo test --locked -p gpuf-s util::cmd::tests
 cargo audit --ignore RUSTSEC-2023-0071
 cargo deny check advisories licenses bans sources
-gitleaks detect --source . --redact
+gitleaks detect --no-git --source . --redact
 EOF
 
 if [[ -n "$ARTIFACT_DIR" && -d "$ARTIFACT_DIR" ]]; then

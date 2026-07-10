@@ -3,15 +3,17 @@ use super::*;
 use crate::db::{
     client,
     models::{self, HotModelClass},
+    token_usage::{insert_token_usage, TokenUsageInsert},
 };
+use crate::util::geo;
 use crate::util::protoc::{ClientId, HeartbeatMessage};
 use bytes::BytesMut;
 use std::collections::HashMap;
 
 use anyhow::{anyhow, Result};
 use common::{
-    format_bytes, os_type_str, CommandV2, DataPlaneSecret, DownloadStatus, Model, OsType, PodModel,
-    RedactedString,
+    format_bytes, os_type_str, CommandV2, DataPlaneSecret, DownloadStatus, Model, OsType,
+    P2PUsageTransport, PodModel, RedactedString,
 };
 use redis::AsyncCommands;
 use redis::Client as RedisClient;
@@ -31,6 +33,7 @@ use base64::Engine;
 use hmac::{Hmac, Mac};
 use rand::RngCore;
 use sha1::Sha1;
+use sha2::{Digest, Sha256};
 
 #[cfg(unix)]
 use socket2::{Socket, TcpKeepalive};
@@ -157,9 +160,12 @@ async fn handle_single_client(
     server_state: Arc<crate::handle::ServerState>,
 ) -> Result<()> {
     let writer = Arc::new(Mutex::new(writer));
+    let connection_id = crate::handle::next_control_connection_id();
 
     let mut authed = false;
     let mut session_client_id = ClientId([0; 16]);
+    let mut consumer_authed = false;
+    let mut session_consumer_id = ClientId([0; 16]);
     let mut buf = BytesMut::with_capacity(1024 * 1024);
 
     loop {
@@ -192,7 +198,11 @@ async fn handle_single_client(
                     &hot_models,
                     &ClientId(id),
                     os_type,
-                    devices_info,
+                    devices_info.clone(),
+                    geo::normalize_public_ip_from_device(
+                        devices_info.first().map(|device| device.ip),
+                        addr.ip(),
+                    ),
                     SystemInfo {
                         cpu_usage: system_info.cpu_usage,
                         memory_usage: system_info.memory_usage,
@@ -203,6 +213,7 @@ async fn handle_single_client(
                         last_heartbeat: Utc::now().into(),
                     },
                     &writer,
+                    connection_id,
                     &mut authed,
                 )
                 .await
@@ -235,8 +246,13 @@ async fn handle_single_client(
                     ClientId(id).log_label()
                 );
                 handle_heartbeat(
+                    &db_pool,
                     &producer,
                     &ClientId(id),
+                    geo::normalize_public_ip_from_device(
+                        devices_info.first().map(|device| device.ip),
+                        addr.ip(),
+                    ),
                     system_info,
                     devices_info,
                     device_memtotal_gb,
@@ -284,8 +300,69 @@ async fn handle_single_client(
             }
             Err(e) => {
                 info!("addr {} disconnected: {}", addr, e);
-                active_clients.lock().await.remove(&session_client_id);
-                client::upsert_client_status(&db_pool, &session_client_id, "offline").await?;
+                if authed {
+                    let should_mark_offline = {
+                        let mut clients = active_clients.lock().await;
+                        match clients.get(&session_client_id) {
+                            Some(info) if info.connection_id == connection_id => {
+                                clients.remove(&session_client_id);
+                                true
+                            }
+                            Some(info) => {
+                                debug!(
+                                    "Ignoring stale disconnect for client {} connection {}; current connection is {}",
+                                    session_client_id.log_label(),
+                                    connection_id,
+                                    info.connection_id
+                                );
+                                false
+                            }
+                            None => false,
+                        }
+                    };
+
+                    if should_mark_offline {
+                        if let Err(status_err) =
+                            client::upsert_client_status(&db_pool, &session_client_id, "offline")
+                                .await
+                        {
+                            warn!(
+                                "Failed to mark client {} offline: {}",
+                                session_client_id.log_label(),
+                                status_err
+                            );
+                        }
+                    }
+                } else if consumer_authed {
+                    let should_remove_consumer = {
+                        let mut consumers = server_state.consumer_sessions.lock().await;
+                        match consumers.get(&session_consumer_id) {
+                            Some(info) if info.connection_id == connection_id => {
+                                consumers.remove(&session_consumer_id);
+                                true
+                            }
+                            Some(info) => {
+                                debug!(
+                                    "Ignoring stale disconnect for consumer {} connection {}; current connection is {}",
+                                    session_consumer_id.log_label(),
+                                    connection_id,
+                                    info.connection_id
+                                );
+                                false
+                            }
+                            None => false,
+                        }
+                    };
+
+                    if should_remove_consumer {
+                        info!(
+                            "P2P consumer {} disconnected",
+                            session_consumer_id.log_label()
+                        );
+                    }
+                } else {
+                    debug!("Unauthenticated control connection {} disconnected", addr);
+                }
                 return Ok(());
             }
             Ok(Command::V1(CommandV1::InferenceResult {
@@ -342,6 +419,18 @@ async fn handle_single_client(
                         analysis_tokens,
                         final_tokens,
                     )
+                    .await;
+            }
+            Ok(Command::V1(CommandV1::EmbeddingResult {
+                task_id,
+                success,
+                embeddings,
+                error,
+                prompt_tokens,
+            })) => {
+                server_state
+                    .inference_scheduler
+                    .handle_embedding_result(task_id, success, embeddings, error, prompt_tokens)
                     .await;
             }
 
@@ -402,35 +491,107 @@ async fn handle_single_client(
                 .await;
             }
 
+            Ok(Command::V2(CommandV2::P2PConsumerLogin {
+                consumer_id,
+                api_token,
+            })) => {
+                if authed {
+                    return Err(anyhow!("P2PConsumerLogin after device login"));
+                }
+                if consumer_authed {
+                    return Err(anyhow!("P2PConsumerLogin repeated on same session"));
+                }
+
+                let token = api_token.into_inner();
+                let login_result = handle_consumer_login(
+                    &db_pool,
+                    &server_state,
+                    &ClientId(consumer_id),
+                    token,
+                    &writer,
+                    connection_id,
+                    &mut consumer_authed,
+                )
+                .await;
+
+                let response = match login_result {
+                    Ok(()) => {
+                        session_consumer_id = ClientId(consumer_id);
+                        CommandV2::P2PConsumerLoginResult {
+                            success: true,
+                            error: None,
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            "P2P consumer {} login failed: {}",
+                            ClientId(consumer_id).log_label(),
+                            e
+                        );
+                        CommandV2::P2PConsumerLoginResult {
+                            success: false,
+                            error: Some(e.to_string()),
+                        }
+                    }
+                };
+                write_command(&mut *writer.lock().await, &Command::V2(response)).await?;
+            }
+
             Ok(Command::V2(CommandV2::P2PConnectionRequest {
                 source_client_id,
                 target_client_id,
                 connection_id,
             })) => {
-                if !authed {
-                    return Err(anyhow!("P2PConnectionRequest before login"));
-                }
-
-                if session_client_id.0 != source_client_id {
-                    return Err(anyhow!(
-                        "P2PConnectionRequest source_client_id mismatch with session"
-                    ));
-                }
-
                 let source_id = ClientId(source_client_id);
                 let target_id = ClientId(target_client_id);
 
-                let (source_writer, target_writer) = {
+                let (source_writer, target_writer, source_consumer_token_hash) = {
                     let clients = active_clients.lock().await;
-                    let source = clients
-                        .get(&source_id)
-                        .map(|c| c.writer.clone())
-                        .ok_or_else(|| anyhow!("Source client not online"))?;
                     let target = clients
                         .get(&target_id)
                         .map(|c| c.writer.clone())
                         .ok_or_else(|| anyhow!("Target client not online"))?;
-                    (source, target)
+
+                    let source = if authed {
+                        if session_client_id != source_id {
+                            return Err(anyhow!(
+                                "P2PConnectionRequest source_client_id mismatch with device session"
+                            ));
+                        }
+                        clients
+                            .get(&source_id)
+                            .map(|c| c.writer.clone())
+                            .ok_or_else(|| anyhow!("Source client not online"))?
+                    } else if consumer_authed {
+                        if session_consumer_id != source_id {
+                            return Err(anyhow!(
+                                "P2PConnectionRequest source_client_id mismatch with consumer session"
+                            ));
+                        }
+                        drop(clients);
+                        let consumers = server_state.consumer_sessions.lock().await;
+                        let consumer = consumers
+                            .get(&source_id)
+                            .ok_or_else(|| anyhow!("Source consumer not online"))?;
+                        if !consumer.authed {
+                            return Err(anyhow!("Source consumer not authenticated"));
+                        }
+                        if !consumer.allowed_client_ids.contains(&target_id) {
+                            return Err(anyhow!("Target client is not allowed for this consumer"));
+                        }
+                        consumer.writer.clone()
+                    } else {
+                        return Err(anyhow!("P2PConnectionRequest before login"));
+                    };
+
+                    let source_consumer_token_hash = if consumer_authed {
+                        let consumers = server_state.consumer_sessions.lock().await;
+                        consumers.get(&source_id).map(|c| c.token_hash.clone())
+                    } else {
+                        None
+                    };
+
+                    (source, target, source_consumer_token_hash)
                 };
 
                 let turn_host =
@@ -499,6 +660,29 @@ async fn handle_single_client(
                     force_tls: false,
                 });
 
+                if consumer_authed {
+                    let mut sessions = server_state.p2p_usage_sessions.lock().await;
+                    prune_p2p_usage_sessions(&mut sessions);
+                    let conn_key = ClientId(connection_id);
+                    if sessions.contains_key(&conn_key) {
+                        return Err(anyhow!("Duplicate P2P connection_id"));
+                    }
+                    sessions.insert(
+                        conn_key,
+                        P2PUsageSession {
+                            source_client_id: source_id,
+                            target_client_id: target_id,
+                            source_is_consumer: true,
+                            consumer_token_hash: source_consumer_token_hash,
+                            created_at: Utc::now(),
+                            recording: false,
+                            recorded: false,
+                            consumer_report: None,
+                            target_receipt: None,
+                        },
+                    );
+                }
+
                 write_command(&mut *source_writer.lock().await, &to_source).await?;
                 write_command(&mut *target_writer.lock().await, &to_target).await?;
 
@@ -517,7 +701,7 @@ async fn handle_single_client(
                 connection_id,
                 candidates,
             })) => {
-                if !authed {
+                if !authed && !consumer_authed {
                     return Err(anyhow!("P2PCandidates before login"));
                 }
 
@@ -525,7 +709,9 @@ async fn handle_single_client(
                 let dst = ClientId(target_client_id);
 
                 // Require that the sender matches the current session.
-                if session_client_id != src {
+                let sender_matches_session = (authed && session_client_id == src)
+                    || (consumer_authed && session_consumer_id == src);
+                if !sender_matches_session {
                     return Err(anyhow!("P2PCandidates source mismatch with session"));
                 }
 
@@ -541,10 +727,16 @@ async fn handle_single_client(
 
                 let target_writer = {
                     let clients = active_clients.lock().await;
-                    clients
-                        .get(&dst)
-                        .map(|c| c.writer.clone())
-                        .ok_or_else(|| anyhow!("Target client not online"))?
+                    if let Some(client) = clients.get(&dst) {
+                        client.writer.clone()
+                    } else {
+                        drop(clients);
+                        let consumers = server_state.consumer_sessions.lock().await;
+                        consumers
+                            .get(&dst)
+                            .map(|c| c.writer.clone())
+                            .ok_or_else(|| anyhow!("Target peer not online"))?
+                    }
                 };
 
                 let forward = Command::V2(CommandV2::P2PCandidates {
@@ -555,6 +747,104 @@ async fn handle_single_client(
                 });
                 write_command(&mut *target_writer.lock().await, &forward).await?;
             }
+            Ok(Command::V2(CommandV2::P2PUsageReport {
+                consumer_id,
+                target_client_id,
+                connection_id,
+                task_id,
+                request_id,
+                model,
+                endpoint,
+                transport,
+                stream,
+                multimodal,
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+                analysis_tokens,
+                final_tokens,
+                bytes_up,
+                bytes_down,
+                chunk_count,
+                retry_count,
+                connect_ms,
+                ttft_ms,
+                total_ms,
+                success,
+                error,
+                output_sha256,
+            })) => {
+                if !consumer_authed {
+                    return Err(anyhow!("P2PUsageReport before consumer login"));
+                }
+                handle_p2p_usage_report(
+                    &db_pool,
+                    &server_state,
+                    session_consumer_id,
+                    ClientId(consumer_id),
+                    ClientId(target_client_id),
+                    ClientId(connection_id),
+                    task_id,
+                    request_id,
+                    model,
+                    endpoint,
+                    transport,
+                    stream,
+                    multimodal,
+                    prompt_tokens,
+                    completion_tokens,
+                    total_tokens,
+                    analysis_tokens,
+                    final_tokens,
+                    bytes_up,
+                    bytes_down,
+                    chunk_count,
+                    retry_count,
+                    connect_ms,
+                    ttft_ms,
+                    total_ms,
+                    success,
+                    error,
+                    output_sha256,
+                )
+                .await?;
+            }
+            Ok(Command::V2(CommandV2::P2PUsageReceipt {
+                source_client_id,
+                target_client_id,
+                connection_id,
+                task_id,
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+                analysis_tokens,
+                final_tokens,
+                success,
+                error,
+                output_sha256,
+            })) => {
+                if !authed {
+                    return Err(anyhow!("P2PUsageReceipt before device login"));
+                }
+                handle_p2p_usage_receipt(
+                    &db_pool,
+                    &server_state,
+                    session_client_id,
+                    ClientId(source_client_id),
+                    ClientId(target_client_id),
+                    ClientId(connection_id),
+                    task_id,
+                    prompt_tokens,
+                    completion_tokens,
+                    total_tokens,
+                    analysis_tokens,
+                    final_tokens,
+                    success,
+                    error,
+                    output_sha256,
+                )
+                .await?;
+            }
             _ => {
                 warn!("Received unexpected command from client addr {}", addr);
             }
@@ -562,6 +852,399 @@ async fn handle_single_client(
     }
     #[allow(unreachable_code)]
     Ok(()) // This is theoretically unreachable but required by compiler
+}
+
+fn prune_p2p_usage_sessions(sessions: &mut HashMap<ClientId, P2PUsageSession>) {
+    let now = Utc::now();
+    sessions.retain(|_, session| {
+        !session.recorded
+            && now.signed_duration_since(session.created_at) <= chrono::Duration::hours(1)
+    });
+}
+
+fn sanitize_usage_string(value: String, max_chars: usize) -> String {
+    value
+        .trim()
+        .chars()
+        .filter(|ch| !ch.is_control())
+        .take(max_chars)
+        .collect()
+}
+
+fn sanitize_optional_usage_string(value: Option<String>, max_chars: usize) -> Option<String> {
+    value
+        .map(|value| sanitize_usage_string(value, max_chars))
+        .filter(|value| !value.is_empty())
+}
+
+fn normalize_p2p_endpoint(endpoint: String) -> Result<String> {
+    let endpoint = sanitize_usage_string(endpoint, 64).to_ascii_lowercase();
+    match endpoint.as_str() {
+        "chat.completion" | "completion" | "embeddings" | "sophnet_embeddings" | "ocr"
+        | "ocr.image" | "multimodal.chat" => Ok(endpoint),
+        _ => Err(anyhow!("Unsupported P2P usage endpoint")),
+    }
+}
+
+fn normalized_usage_total(prompt_tokens: u32, completion_tokens: u32, total_tokens: u32) -> u32 {
+    if total_tokens == 0 {
+        prompt_tokens.saturating_add(completion_tokens)
+    } else {
+        total_tokens
+    }
+}
+
+fn p2p_usage_matches(
+    report: &P2PConsumerUsageReport,
+    receipt: &P2PTargetUsageReceipt,
+) -> Result<()> {
+    if report.task_id != receipt.task_id {
+        return Err(anyhow!("P2P usage task_id mismatch"));
+    }
+    if report.success != receipt.success {
+        return Err(anyhow!("P2P usage success mismatch"));
+    }
+
+    let report_total = normalized_usage_total(
+        report.prompt_tokens,
+        report.completion_tokens,
+        report.total_tokens,
+    );
+    let receipt_total = normalized_usage_total(
+        receipt.prompt_tokens,
+        receipt.completion_tokens,
+        receipt.total_tokens,
+    );
+
+    if report.success {
+        if report.output_sha256.is_none() || receipt.output_sha256.is_none() {
+            return Err(anyhow!(
+                "P2P success usage requires output hash from both peers"
+            ));
+        }
+        if report.output_sha256 != receipt.output_sha256 {
+            return Err(anyhow!("P2P usage output hash mismatch"));
+        }
+        if report.prompt_tokens != receipt.prompt_tokens
+            || report.completion_tokens != receipt.completion_tokens
+            || report_total != receipt_total
+            || report.analysis_tokens != receipt.analysis_tokens
+            || report.final_tokens != receipt.final_tokens
+        {
+            return Err(anyhow!("P2P usage token counts mismatch"));
+        }
+    } else if report.error.as_deref() != receipt.error.as_deref() {
+        debug!(
+            "P2P failure usage errors differ: consumer_error_present={} target_error_present={}",
+            report.error.is_some(),
+            receipt.error.is_some()
+        );
+    }
+
+    Ok(())
+}
+
+fn finalize_p2p_usage_if_ready(session: &mut P2PUsageSession) -> Result<Option<TokenUsageInsert>> {
+    if session.recorded || session.recording {
+        return Ok(None);
+    }
+    if !session.source_is_consumer {
+        return Ok(None);
+    }
+
+    let (Some(report), Some(receipt)) = (&session.consumer_report, &session.target_receipt) else {
+        return Ok(None);
+    };
+
+    if let Err(err) = p2p_usage_matches(report, receipt) {
+        session.recorded = true;
+        return Err(err);
+    }
+
+    let token_hash = session
+        .consumer_token_hash
+        .clone()
+        .ok_or_else(|| anyhow!("P2P usage session missing consumer token hash"))?;
+    let total_tokens = normalized_usage_total(
+        report.prompt_tokens,
+        report.completion_tokens,
+        report.total_tokens,
+    );
+    if report.success && total_tokens == 0 {
+        session.recorded = true;
+        return Err(anyhow!("P2P success usage has zero tokens"));
+    }
+
+    session.recording = true;
+    Ok(Some(TokenUsageInsert {
+        request_id: report.request_id.clone(),
+        token_hash: Some(token_hash),
+        client_id: session.target_client_id,
+        model: report.model.clone(),
+        endpoint: report.endpoint.clone(),
+        prompt_tokens: report.prompt_tokens,
+        completion_tokens: report.completion_tokens,
+        success: report.success,
+        stream: report.stream,
+    }))
+}
+
+async fn insert_finalized_p2p_usage(
+    db_pool: &Arc<Pool<Postgres>>,
+    server_state: &Arc<crate::handle::ServerState>,
+    connection_id: ClientId,
+    usage: Option<TokenUsageInsert>,
+) -> Result<()> {
+    let Some(usage) = usage else {
+        return Ok(());
+    };
+    if let Err(err) = insert_token_usage(db_pool, usage).await {
+        let mut sessions = server_state.p2p_usage_sessions.lock().await;
+        if let Some(session) = sessions.get_mut(&connection_id) {
+            session.recording = false;
+        }
+        return Err(err);
+    }
+    let mut sessions = server_state.p2p_usage_sessions.lock().await;
+    if let Some(session) = sessions.get_mut(&connection_id) {
+        session.recording = false;
+        session.recorded = true;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_p2p_usage_report(
+    db_pool: &Arc<Pool<Postgres>>,
+    server_state: &Arc<crate::handle::ServerState>,
+    session_consumer_id: ClientId,
+    consumer_id: ClientId,
+    target_client_id: ClientId,
+    connection_id: ClientId,
+    task_id: String,
+    request_id: Option<String>,
+    model: String,
+    endpoint: String,
+    transport: P2PUsageTransport,
+    stream: bool,
+    multimodal: bool,
+    prompt_tokens: u32,
+    completion_tokens: u32,
+    total_tokens: u32,
+    analysis_tokens: u32,
+    final_tokens: u32,
+    bytes_up: u64,
+    bytes_down: u64,
+    chunk_count: u32,
+    retry_count: u32,
+    connect_ms: u64,
+    ttft_ms: Option<u64>,
+    total_ms: u64,
+    success: bool,
+    error: Option<String>,
+    output_sha256: Option<[u8; 32]>,
+) -> Result<()> {
+    if session_consumer_id != consumer_id {
+        return Err(anyhow!("P2PUsageReport consumer_id mismatch with session"));
+    }
+    if matches!(transport, P2PUsageTransport::FallbackHttp) {
+        return Err(anyhow!(
+            "Fallback HTTP usage must be recorded by the HTTP gateway"
+        ));
+    }
+
+    let consumer_token_hash = {
+        let consumers = server_state.consumer_sessions.lock().await;
+        let consumer = consumers
+            .get(&consumer_id)
+            .ok_or_else(|| anyhow!("P2P consumer session not found"))?;
+        if !consumer.authed {
+            return Err(anyhow!("P2P consumer session is not authenticated"));
+        }
+        if !consumer.allowed_client_ids.contains(&target_client_id) {
+            return Err(anyhow!("P2P usage target is not allowed for this consumer"));
+        }
+        consumer.token_hash.clone()
+    };
+
+    let report = P2PConsumerUsageReport {
+        task_id: sanitize_usage_string(task_id, 128),
+        request_id: sanitize_optional_usage_string(request_id, 128),
+        model: sanitize_usage_string(model, 128),
+        endpoint: normalize_p2p_endpoint(endpoint)?,
+        stream,
+        multimodal,
+        prompt_tokens,
+        completion_tokens,
+        total_tokens,
+        analysis_tokens,
+        final_tokens,
+        success,
+        error: sanitize_optional_usage_string(error, 512),
+        output_sha256,
+    };
+
+    debug!(
+        "P2P usage report consumer={} target={} conn={} endpoint={} stream={} multimodal={} transport={:?} bytes_up={} bytes_down={} chunks={} retries={} connect_ms={} ttft_ms={:?} total_ms={} success={}",
+        consumer_id.log_label(),
+        target_client_id.log_label(),
+        connection_id.log_label(),
+        report.endpoint,
+        report.stream,
+        report.multimodal,
+        transport,
+        bytes_up,
+        bytes_down,
+        chunk_count,
+        retry_count,
+        connect_ms,
+        ttft_ms,
+        total_ms,
+        report.success
+    );
+
+    let usage = {
+        let mut sessions = server_state.p2p_usage_sessions.lock().await;
+        prune_p2p_usage_sessions(&mut sessions);
+        let session = sessions
+            .get_mut(&connection_id)
+            .ok_or_else(|| anyhow!("Unknown P2P usage connection_id"))?;
+        if session.source_client_id != consumer_id || session.target_client_id != target_client_id {
+            session.recorded = true;
+            return Err(anyhow!("P2PUsageReport connection ownership mismatch"));
+        }
+        if !session.source_is_consumer {
+            return Err(anyhow!(
+                "P2PUsageReport is only accepted for consumer sessions"
+            ));
+        }
+        match &session.consumer_token_hash {
+            Some(token_hash) if token_hash == &consumer_token_hash => {}
+            Some(_) => {
+                session.recorded = true;
+                return Err(anyhow!("P2PUsageReport token binding mismatch"));
+            }
+            None => session.consumer_token_hash = Some(consumer_token_hash),
+        }
+        session.consumer_report = Some(report);
+        finalize_p2p_usage_if_ready(session)?
+    };
+
+    insert_finalized_p2p_usage(db_pool, server_state, connection_id, usage).await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_p2p_usage_receipt(
+    db_pool: &Arc<Pool<Postgres>>,
+    server_state: &Arc<crate::handle::ServerState>,
+    session_client_id: ClientId,
+    source_client_id: ClientId,
+    target_client_id: ClientId,
+    connection_id: ClientId,
+    task_id: String,
+    prompt_tokens: u32,
+    completion_tokens: u32,
+    total_tokens: u32,
+    analysis_tokens: u32,
+    final_tokens: u32,
+    success: bool,
+    error: Option<String>,
+    output_sha256: Option<[u8; 32]>,
+) -> Result<()> {
+    if session_client_id != target_client_id {
+        return Err(anyhow!(
+            "P2PUsageReceipt target_client_id mismatch with device session"
+        ));
+    }
+
+    let receipt = P2PTargetUsageReceipt {
+        task_id: sanitize_usage_string(task_id, 128),
+        prompt_tokens,
+        completion_tokens,
+        total_tokens,
+        analysis_tokens,
+        final_tokens,
+        success,
+        error: sanitize_optional_usage_string(error, 512),
+        output_sha256,
+    };
+
+    debug!(
+        "P2P usage receipt source={} target={} conn={} success={}",
+        source_client_id.log_label(),
+        target_client_id.log_label(),
+        connection_id.log_label(),
+        receipt.success
+    );
+
+    let usage = {
+        let mut sessions = server_state.p2p_usage_sessions.lock().await;
+        prune_p2p_usage_sessions(&mut sessions);
+        let session = sessions
+            .get_mut(&connection_id)
+            .ok_or_else(|| anyhow!("Unknown P2P usage receipt connection_id"))?;
+        if session.source_client_id != source_client_id
+            || session.target_client_id != target_client_id
+        {
+            session.recorded = true;
+            return Err(anyhow!("P2PUsageReceipt connection ownership mismatch"));
+        }
+        session.target_receipt = Some(receipt);
+        finalize_p2p_usage_if_ready(session)?
+    };
+
+    insert_finalized_p2p_usage(db_pool, server_state, connection_id, usage).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn usage_pair() -> (P2PConsumerUsageReport, P2PTargetUsageReceipt) {
+        let output_sha256 = Some([7u8; 32]);
+        (
+            P2PConsumerUsageReport {
+                task_id: "task-1".to_string(),
+                request_id: Some("req-1".to_string()),
+                model: "gpuf".to_string(),
+                endpoint: "chat.completion".to_string(),
+                stream: false,
+                multimodal: false,
+                prompt_tokens: 3,
+                completion_tokens: 2,
+                total_tokens: 5,
+                analysis_tokens: 0,
+                final_tokens: 2,
+                success: true,
+                error: None,
+                output_sha256,
+            },
+            P2PTargetUsageReceipt {
+                task_id: "task-1".to_string(),
+                prompt_tokens: 3,
+                completion_tokens: 2,
+                total_tokens: 5,
+                analysis_tokens: 0,
+                final_tokens: 2,
+                success: true,
+                error: None,
+                output_sha256,
+            },
+        )
+    }
+
+    #[test]
+    fn p2p_usage_requires_matching_receipt() {
+        let (report, receipt) = usage_pair();
+        assert!(p2p_usage_matches(&report, &receipt).is_ok());
+    }
+
+    #[test]
+    fn p2p_usage_rejects_output_hash_mismatch() {
+        let (report, mut receipt) = usage_pair();
+        receipt.output_sha256 = Some([8u8; 32]);
+        assert!(p2p_usage_matches(&report, &receipt).is_err());
+    }
 }
 
 async fn handle_login(
@@ -574,15 +1257,21 @@ async fn handle_login(
     client_id: &ClientId,
     os_type: OsType,
     devices_info: Vec<DevicesInfo>,
+    public_ip: String,
     system_info: SystemInfo,
     writer: &Arc<Mutex<ControlWriter>>,
+    connection_id: crate::handle::ConnectionId,
     authed: &mut bool,
 ) -> Result<CommandV1> {
     info!("Registration attempt for client {}", client_id.log_label());
     let mut clients = active_clients.lock().await;
-    if clients.contains_key(&client_id) {
-        warn!("Client {} already registered.", client_id.log_label());
-        return Err(anyhow!("Client ID already registered"));
+    if let Some(existing) = clients.get(client_id) {
+        warn!(
+            "Client {} already registered on connection {}, replacing with new connection {}.",
+            client_id.log_label(),
+            existing.connection_id,
+            connection_id
+        );
     }
     debug!("Login os_type: {:?}", &os_type_str(&os_type).unwrap());
 
@@ -597,6 +1286,21 @@ async fn handle_login(
     let validate_result = if is_valid {
         info!("Client {} registered successfully", client_id.log_label());
         *authed = true;
+
+        if let Err(e) = client::mark_client_online_seen(db_pool, client_id).await {
+            warn!(
+                "Failed to mark client {} online on login: {}",
+                client_id.log_label(),
+                e
+            );
+        }
+
+        let geo_location = geo::lookup_geo(&public_ip).await;
+        if let Err(e) =
+            client::update_client_network_geo(db_pool, client_id, &public_ip, &geo_location).await
+        {
+            warn!("Failed to update client network geo: {}", e);
+        }
 
         // Only recommend models if auto_models is enabled
         let pods_model = if auto_models {
@@ -631,27 +1335,91 @@ async fn handle_login(
         }
     );
 
-    clients.insert(
-        *client_id,
-        ClientInfo {
+    if *authed {
+        clients.insert(
+            *client_id,
+            ClientInfo {
+                connection_id,
+                writer: writer.clone(),
+                authed: true,
+                version,
+                os_type,
+                system_info: Some(SystemInfo {
+                    cpu_usage: system_info.cpu_usage,
+                    memory_usage: system_info.memory_usage,
+                    disk_usage: system_info.disk_usage,
+                    device_memsize: system_info.device_memsize,
+                    total_tflops: system_info.total_tflops,
+                    memsize_gb: system_info.memsize_gb,
+                    last_heartbeat: Utc::now().into(),
+                }),
+                connected_at: Utc::now(),
+                models: None,
+                devices_info,
+            },
+        );
+    }
+    Ok(validate_result)
+}
+
+async fn handle_consumer_login(
+    db_pool: &Arc<Pool<Postgres>>,
+    server_state: &Arc<crate::handle::ServerState>,
+    consumer_id: &ClientId,
+    api_token: String,
+    writer: &Arc<Mutex<ControlWriter>>,
+    connection_id: crate::handle::ConnectionId,
+    authed: &mut bool,
+) -> Result<()> {
+    let token = api_token.trim();
+    if token.is_empty() {
+        return Err(anyhow!("Missing API token"));
+    }
+    if token.len() != 48 {
+        return Err(anyhow!("Invalid API token length"));
+    }
+
+    let (allowed_client_ids, _access_level) =
+        client::get_user_client_by_token(db_pool, token).await?;
+    let token_hash = hex::encode(Sha256::digest(token.as_bytes()));
+
+    {
+        let clients = server_state.active_clients.lock().await;
+        if clients.contains_key(consumer_id) {
+            return Err(anyhow!(
+                "P2P consumer id conflicts with an online compute client"
+            ));
+        }
+    }
+
+    let mut consumers = server_state.consumer_sessions.lock().await;
+    if let Some(existing) = consumers.get(consumer_id) {
+        warn!(
+            "P2P consumer {} already registered on connection {}, replacing with new connection {}.",
+            consumer_id.log_label(),
+            existing.connection_id,
+            connection_id
+        );
+    }
+
+    *authed = true;
+    consumers.insert(
+        *consumer_id,
+        ConsumerSession {
+            connection_id,
             writer: writer.clone(),
-            authed: *authed,
-            version,
-            system_info: Some(SystemInfo {
-                cpu_usage: system_info.cpu_usage,
-                memory_usage: system_info.memory_usage,
-                disk_usage: system_info.disk_usage,
-                device_memsize: system_info.device_memsize,
-                total_tflops: system_info.total_tflops,
-                memsize_gb: system_info.memsize_gb,
-                last_heartbeat: Utc::now().into(),
-            }),
+            authed: true,
+            allowed_client_ids,
+            token_hash,
             connected_at: Utc::now(),
-            models: None,
-            devices_info,
         },
     );
-    Ok(validate_result)
+
+    info!(
+        "P2P consumer {} registered successfully",
+        consumer_id.log_label()
+    );
+    Ok(())
 }
 
 async fn handle_models_status(
@@ -727,8 +1495,10 @@ async fn upsert_client_models_in_redis(
 }
 
 async fn handle_heartbeat(
+    db_pool: &Pool<Postgres>,
     producer: &Arc<FutureProducer>,
     client_id: &ClientId,
+    public_ip: String,
     system_info: common::SystemInfo,
     devices_info: Vec<common::DevicesInfo>,
     device_memtotal_gb: u32,
@@ -736,6 +1506,21 @@ async fn handle_heartbeat(
     total_tflops: u32,
 ) {
     debug!("Sending heartbeat to consumer client {} cpu_usage {}% memory_usage {}% disk_usage {}% device_memtotal_gb {} GB device_count {} total_tflops {} tflops", client_id.log_label(), system_info.cpu_usage, system_info.memory_usage, system_info.disk_usage, device_memtotal_gb, device_count, total_tflops);
+
+    if let Err(e) = client::mark_client_online_seen(db_pool, client_id).await {
+        warn!(
+            "Failed to refresh client {} online status on heartbeat: {}",
+            client_id.log_label(),
+            e
+        );
+    }
+
+    let geo_location = geo::lookup_geo(&public_ip).await;
+    if let Err(e) =
+        client::update_client_network_geo(db_pool, client_id, &public_ip, &geo_location).await
+    {
+        warn!("Failed to update client heartbeat network geo: {}", e);
+    }
 
     let heartbeat_message = HeartbeatMessage {
         client_id: client_id.clone(),
@@ -829,6 +1614,3 @@ async fn update_model_download_progress_in_redis(
         let _: Result<(), _> = conn.expire(&key, 60).await;
     }
 }
-
-#[cfg(test)]
-mod tests {}

@@ -79,6 +79,12 @@ int gpuf_validate_mobile_tls_policy(
     const char *cert_sha256_pin
 );
 
+int gpuf_configure_remote_worker_proxy_tls(
+    const char *ca_cert_path,
+    const char *proxy_tls_server_name,
+    const char *cert_sha256_pin
+);
+
 int start_remote_worker_tasks(void);
 int start_remote_worker_tasks_with_callback_ptr(gpuf_status_callback callback);
 int gpuf_register_remote_worker_callback(gpuf_status_callback callback, void *user_data);

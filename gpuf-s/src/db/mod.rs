@@ -1,7 +1,10 @@
 pub mod apk;
+pub mod banking_admin;
 pub mod client;
+pub mod compute_map;
 pub mod models;
 pub mod stats;
+pub mod token_usage;
 
 const GPU_ASSETS_TABLE: &str = "gpu_assets";
 const HEARTBEAT_TABLE: &str = "heartbeat";

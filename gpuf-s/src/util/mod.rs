@@ -1,5 +1,6 @@
 pub mod cmd;
 pub mod db;
+pub mod geo;
 pub mod msg;
 pub mod pack;
 pub mod policy;

@@ -12,7 +12,9 @@
 *.oss
 output
 dhat-heap.json
+# Commit the workspace lockfile so CI uses the same dependency graph as local tests.
 Cargo.lock
+!/Cargo.lock
 zookeeper_data
 zookeeper_logs
 kafka_data

@@ -8,6 +8,8 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+#define DLLM_ABI_VERSION 1
+
 #define DEFAULT_OUTPUT_LIMIT (256 * 1024)
 
 typedef enum ProjectorType {
@@ -615,6 +617,18 @@ int gpuf_generate_single_token(const struct llama_model *model,
 int gpuf_validate_mobile_tls_policy(const char *ca_cert_path,
                                     const char *server_name,
                                     const char *cert_sha256_pin);
+
+/**
+ * Configure TLS trust material for the mobile proxy/data connection.
+ *
+ * `start_remote_worker_with_tls` configures the control connection. The
+ * legacy public gateway uses a separate proxy port that is TLS even when the
+ * control port is plaintext, so apps can call this before
+ * `start_remote_worker_tasks` to supply the proxy CA/SNI/pin.
+ */
+int gpuf_configure_remote_worker_proxy_tls(const char *ca_cert_path,
+                                           const char *proxy_tls_server_name,
+                                           const char *cert_sha256_pin);
 
 /**
  * Start remote worker and initialize global worker (C API)

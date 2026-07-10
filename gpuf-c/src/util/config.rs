@@ -67,6 +67,9 @@ pub struct ClientConfig {
 
     #[serde(rename = "llama_devices")]
     pub llama_devices: Option<String>,
+
+    #[serde(rename = "llama_mmproj_path")]
+    pub llama_mmproj_path: Option<String>,
 }
 
 impl Config {

@@ -423,7 +423,6 @@ impl Engine for VLLMEngine {
 
 #[tokio::test]
 async fn test_pull_model_success() {
-    use crate::util;
     let _ = tracing_subscriber::fmt().try_init();
 
     let mut engine = VLLMEngine::new(None, None);

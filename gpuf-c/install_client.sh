@@ -11,6 +11,14 @@ NC='\033[0m' # No Color
 LOG_FILE="/tmp/gpuf_c_llamacpp_install_$(date +%Y%m%d_%H%M%S).log"
 echo "Installation started at $(date)" > "$LOG_FILE"
 
+DEFAULT_BGE_M3_MODEL_URL="https://modelscope.cn/models/OllmOne/bge-m3-GGUF/resolve/master/bge-m3-q8_0.gguf"
+DEFAULT_BGE_M3_MODEL_FILE="bge-m3-q8_0.gguf"
+DEFAULT_ONLINE_SERVER_ADDR="agent.gpunexus.com"
+DEFAULT_ONLINE_TLS_SERVER_NAME="agent.gpunexus.com"
+DEFAULT_ONLINE_CLIENT_ID="00112233445566778899aabbccddeeff"
+DEFAULT_CONTROL_PORT="17000"
+DEFAULT_PROXY_PORT="17001"
+
 # log function
 log() {
     echo -e "$1"
@@ -149,6 +157,27 @@ calc_sha256() {
     return 1
 }
 
+calc_md5() {
+    local file="$1"
+
+    if command -v md5sum &> /dev/null; then
+        md5sum "$file" | awk '{print $1}'
+        return 0
+    fi
+
+    if command -v md5 &> /dev/null; then
+        md5 -q "$file"
+        return 0
+    fi
+
+    if command -v openssl &> /dev/null; then
+        openssl md5 "$file" | awk '{print $NF}'
+        return 0
+    fi
+
+    return 1
+}
+
 read_sha256_file() {
     local sha_file="$1"
     local archive_name="$2"
@@ -200,6 +229,76 @@ verify_sha256_required() {
     fi
 
     log "${GREEN}sha256 match ok: $actual${NC}"
+}
+
+read_md5_prefix_from_filename() {
+    local file_path="$1"
+    local base
+    base=$(basename "$file_path")
+
+    if [[ "$base" =~ ^([0-9a-fA-F]{6})- ]]; then
+        echo "${BASH_REMATCH[1]}" | tr '[:upper:]' '[:lower:]'
+        return 0
+    fi
+
+    echo ""
+}
+
+verify_md5_prefix_from_filename_if_possible() {
+    local file="$1"
+
+    if [ ! -f "$file" ]; then
+        log "${RED}md5 check failed: file not found: $file${NC}"
+        return 1
+    fi
+
+    local prefix
+    prefix=$(read_md5_prefix_from_filename "$file")
+    if [ -z "$prefix" ]; then
+        log "${YELLOW}warning: md5 prefix not found in filename (skip md5 prefix check): $(basename "$file")${NC}"
+        return 0
+    fi
+
+    local md5
+    if ! md5=$(calc_md5 "$file"); then
+        log "${RED}md5 check failed: md5 tool not available (need md5sum/md5/openssl)${NC}"
+        return 1
+    fi
+
+    md5=$(echo "$md5" | tr '[:upper:]' '[:lower:]')
+    if [ "${md5:0:6}" != "$prefix" ]; then
+        log "${RED}md5 prefix mismatch for $file${NC}"
+        log "${YELLOW}expected prefix: $prefix${NC}"
+        log "${YELLOW}actual md5:      $md5${NC}"
+        return 1
+    fi
+
+    log "${GREEN}md5 prefix match ok: $md5${NC}"
+}
+
+verify_binary_name_checksums() {
+    local extracted_dir="$1"
+
+    if [ "$OS" = "linux" ]; then
+        local linux_cuda
+        linux_cuda=$(find "$extracted_dir" -maxdepth 1 -type f -name "*-cuda-gpuf-c" | head -n 1)
+        local linux_vulkan
+        linux_vulkan=$(find "$extracted_dir" -maxdepth 1 -type f -name "*-vulkan-gpuf-c" | head -n 1)
+
+        if [ -n "$linux_vulkan" ] && [ -f "$linux_vulkan" ]; then
+            verify_md5_prefix_from_filename_if_possible "$linux_vulkan"
+        fi
+
+        if [ -n "$linux_cuda" ] && [ -f "$linux_cuda" ]; then
+            verify_md5_prefix_from_filename_if_possible "$linux_cuda"
+        fi
+    else
+        local mac_bin
+        mac_bin=$(find "$extracted_dir" -maxdepth 1 -type f -name "*-metal-gpuf-c" | head -n 1)
+        if [ -n "$mac_bin" ] && [ -f "$mac_bin" ]; then
+            verify_md5_prefix_from_filename_if_possible "$mac_bin"
+        fi
+    fi
 }
 
 ensure_dir() {
@@ -317,6 +416,90 @@ install_from_extracted_dir() {
     fi
 }
 
+install_bge_m3_model() {
+    if [ "${GPUF_C_SKIP_BGE_M3_DOWNLOAD:-false}" = "true" ]; then
+        log "${YELLOW}skip bge-m3 model download: GPUF_C_SKIP_BGE_M3_DOWNLOAD=true${NC}"
+        return 0
+    fi
+
+    local share_dir
+    share_dir=$(get_share_dir)
+
+    local model_dir="${GPUF_C_MODEL_DIR:-$share_dir/models}"
+    local model_file="${GPUF_C_MODEL_FILE:-$DEFAULT_BGE_M3_MODEL_FILE}"
+    local model_url="${GPUF_C_MODEL_URL:-$DEFAULT_BGE_M3_MODEL_URL}"
+    local model_path="$model_dir/$model_file"
+
+    sudo mkdir -p "$model_dir" >> "$LOG_FILE" 2>&1
+
+    if [ -s "$model_path" ]; then
+        log "${GREEN}model already exists: $model_path${NC}"
+        return 0
+    fi
+
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+    local tmp_model="$tmp_dir/$model_file"
+
+    if ! download_file "$model_url" "$tmp_model"; then
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+
+    sudo install -m 0644 "$tmp_model" "$model_path" >> "$LOG_FILE" 2>&1
+    rm -rf "$tmp_dir"
+    log "${GREEN}installed bge-m3 model: $model_path${NC}"
+}
+
+install_online_bge_m3_start_script() {
+    local share_dir
+    share_dir=$(get_share_dir)
+    sudo mkdir -p "$share_dir" >> "$LOG_FILE" 2>&1
+
+    local model_dir="${GPUF_C_MODEL_DIR:-$share_dir/models}"
+    local model_file="${GPUF_C_MODEL_FILE:-$DEFAULT_BGE_M3_MODEL_FILE}"
+    local model_path="$model_dir/$model_file"
+
+    local script_path="$share_dir/start-gpuf-c-bge-m3-online.sh"
+    local tmp_script
+    tmp_script=$(mktemp)
+
+    cat > "$tmp_script" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+GPUF_C_BIN="\${GPUF_C_BIN:-$INSTALL_DIR/gpuf-c}"
+GPUF_C_CLIENT_ID="\${GPUF_C_CLIENT_ID:-$DEFAULT_ONLINE_CLIENT_ID}"
+GPUF_C_SERVER_ADDR="\${GPUF_C_SERVER_ADDR:-$DEFAULT_ONLINE_SERVER_ADDR}"
+GPUF_C_CONTROL_PORT="\${GPUF_C_CONTROL_PORT:-$DEFAULT_CONTROL_PORT}"
+GPUF_C_PROXY_PORT="\${GPUF_C_PROXY_PORT:-$DEFAULT_PROXY_PORT}"
+GPUF_C_CONTROL_TLS_SERVER_NAME="\${GPUF_C_CONTROL_TLS_SERVER_NAME:-$DEFAULT_ONLINE_TLS_SERVER_NAME}"
+GPUF_C_CERT_CHAIN_PATH="\${GPUF_C_CERT_CHAIN_PATH:-$INSTALL_DIR/ca-cert.pem}"
+GPUF_C_MODEL_PATH="\${GPUF_C_MODEL_PATH:-$model_path}"
+GPUF_C_N_GPU_LAYERS="\${GPUF_C_N_GPU_LAYERS:-99}"
+GPUF_C_N_CTX="\${GPUF_C_N_CTX:-2048}"
+GPUF_C_N_BATCH="\${GPUF_C_N_BATCH:-512}"
+
+exec env RUST_LOG="\${RUST_LOG:-gpuf_c=debug,common=info}" "\$GPUF_C_BIN" \\
+  --client-id "\$GPUF_C_CLIENT_ID" \\
+  --server-addr "\$GPUF_C_SERVER_ADDR" \\
+  --control-port "\$GPUF_C_CONTROL_PORT" \\
+  --proxy-port "\$GPUF_C_PROXY_PORT" \\
+  --engine-type llama \\
+  --llama-model-path "\$GPUF_C_MODEL_PATH" \\
+  --n-gpu-layers "\$GPUF_C_N_GPU_LAYERS" \\
+  --n-ctx "\$GPUF_C_N_CTX" \\
+  --n-batch "\$GPUF_C_N_BATCH" \\
+  --control-tls \\
+  --control-tls-server-name "\$GPUF_C_CONTROL_TLS_SERVER_NAME" \\
+  --cert-chain-path "\$GPUF_C_CERT_CHAIN_PATH"
+EOF
+
+    sudo install -m 0755 "$tmp_script" "$script_path" >> "$LOG_FILE" 2>&1
+    rm -f "$tmp_script"
+    log "${GREEN}installed online bge-m3 startup script: $script_path${NC}"
+}
+
 verify_installation() {
     log "${GREEN}=== installation completed ===${NC}"
     log "${YELLOW}verify installation:${NC}"
@@ -333,6 +516,11 @@ verify_installation() {
         gpuf-c --version 2>/dev/null || true
     else
         log "${RED}✗ gpuf-c installation failed${NC}"
+    fi
+
+    if [ -x "$share_dir/start-gpuf-c-bge-m3-online.sh" ]; then
+        log "${YELLOW}online bge-m3 startup:${NC}"
+        log "  ${GREEN}$share_dir/start-gpuf-c-bge-m3-online.sh${NC}"
     fi
 }
 
@@ -363,7 +551,7 @@ main() {
             fi
 
             local archive_name
-            archive_name="v1.0.2-${pkg_os}-gpuf-c.tar.gz"
+            archive_name="v1.0.4-${pkg_os}-gpuf-c.tar.gz"
 
             ARCHIVE_NAME="${GPUF_C_CLIENT_ARCHIVE_NAME:-$archive_name}"
 
@@ -405,6 +593,8 @@ main() {
                 payload="$top"
             fi
 
+            verify_binary_name_checksums "$payload"
+
             if [ "$OS" = "linux" ]; then
                 if command -v nvidia-smi &> /dev/null; then
                     log "${GREEN}detected: NVIDIA (CUDA)${NC}"
@@ -417,6 +607,8 @@ main() {
             fi
 
             install_from_extracted_dir "$payload"
+            install_bge_m3_model
+            install_online_bge_m3_start_script
 
             rm -rf "$tmp_dir"
             ;;

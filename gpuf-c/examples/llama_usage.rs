@@ -46,6 +46,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
         println!("📁 Model file found: {}", model_path);
         LlamaEngine::with_config(
             model_path.to_string(),
+            None,
             2048,
             4096,
             0,

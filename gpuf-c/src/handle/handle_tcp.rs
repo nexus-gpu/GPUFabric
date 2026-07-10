@@ -1,6 +1,7 @@
 use super::*;
 #[cfg(not(target_os = "android"))]
 use crate::handle::handle_udp::{P2PReplayWindow, P2PUdpReassemblyState};
+use crate::handle::session_cache::record_worker_cache_decision;
 // LLM engine is not available in lightweight Android version
 #[cfg(not(target_os = "android"))]
 use crate::llm_engine::{self, llama_engine::LlamaEngine};
@@ -21,6 +22,7 @@ use tokio::io::AsyncWriteExt;
 use futures_util::StreamExt;
 
 use bytes::BytesMut;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::collections::HashSet;
 #[cfg(not(target_os = "android"))]
@@ -28,7 +30,6 @@ use std::collections::VecDeque;
 use std::fs::File;
 use std::io::BufReader;
 use std::net::ToSocketAddrs;
-#[cfg(not(target_os = "android"))]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -47,6 +48,60 @@ use std::sync::OnceLock;
 #[cfg(not(target_os = "android"))]
 static GLOBAL_ENGINE: OnceLock<Arc<Mutex<Option<AnyEngine>>>> = OnceLock::new();
 
+struct ConnectionTaskGuard(Arc<AtomicBool>);
+
+impl Drop for ConnectionTaskGuard {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+fn start_llama_http_server_once(
+    engine: &AnyEngine,
+    local_addr: String,
+    local_port: u16,
+) -> Result<()> {
+    info!(
+        "Starting LLAMA HTTP API server on {}:{}",
+        local_addr, local_port
+    );
+
+    if !HTTP_SERVER_STARTED.swap(true, Ordering::SeqCst) {
+        let server_engine = match engine {
+            AnyEngine::Llama(e) => e.clone(),
+            _ => anyhow::bail!("LLAMA HTTP server requires a LLAMA engine"),
+        };
+        let engine_arc = Arc::new(tokio::sync::RwLock::new(server_engine));
+        let local_addr_clone = local_addr.clone();
+
+        tokio::spawn(async move {
+            if let Err(e) = crate::llm_engine::llama_server::start_server(
+                engine_arc,
+                &local_addr_clone,
+                local_port,
+            )
+            .await
+            {
+                error!("LLAMA HTTP server error: {}", e);
+                HTTP_SERVER_STARTED.store(false, Ordering::SeqCst);
+            }
+        });
+
+        info!(
+            "LLAMA HTTP API server started successfully on {}:{}",
+            local_addr, local_port
+        );
+    } else {
+        info!(
+            "LLAMA HTTP API server already running on {}:{}",
+            local_addr, local_port
+        );
+    }
+
+    Ok(())
+}
+
 #[cfg(not(target_os = "android"))]
 use tokio_rustls::{
     rustls::{
@@ -59,6 +114,7 @@ use tracing::{debug, error, info, warn};
 use url::Url;
 
 const DEFAULT_TURNS_PORT: u16 = 5349;
+const P2P_UDP_IDLE_TIMEOUT_SECS: u64 = 300;
 
 // Filter internal GGUF control tokens from streaming output
 fn filter_control_tokens(text: &str) -> String {
@@ -388,7 +444,7 @@ fn derive_model_id_from_path(model_path: &str) -> String {
     base.to_string()
 }
 
-const CURRENT_VERSION: u32 = 1;
+const CURRENT_VERSION: u32 = common::CURRENT_COMMAND_V1_VERSION;
 
 impl ClientWorker {
     /// Execute inference task using local LLM engine (Android specific)
@@ -509,6 +565,8 @@ impl ClientWorker {
         repeat_penalty: f32,
         repeat_last_n: i32,
         min_keep: u32,
+        session_id: Option<String>,
+        cache_policy: Option<String>,
     ) -> Result<()> {
         #[cfg(not(target_os = "android"))]
         {
@@ -558,7 +616,13 @@ impl ClientWorker {
             };
 
             let stream = llama
-                .stream_with_cached_model_sampling(&prompt, max_tokens as usize, &sampling)
+                .stream_with_session_state_sampling(
+                    &prompt,
+                    max_tokens as usize,
+                    &sampling,
+                    session_id.as_deref(),
+                    cache_policy.as_deref(),
+                )
                 .await?;
 
             let mut stream = Box::pin(stream);
@@ -715,9 +779,257 @@ impl ClientWorker {
                 repeat_penalty,
                 repeat_last_n,
                 min_keep,
+                session_id,
+                cache_policy,
             );
             Err(anyhow!("Android streaming is not implemented"))
         }
+    }
+
+    #[cfg(not(target_os = "android"))]
+    fn convert_chat_message_v2(
+        message: common::ChatMessageV2,
+    ) -> crate::llm_engine::llama_server::ChatMessage {
+        crate::llm_engine::llama_server::ChatMessage {
+            role: message.role,
+            content: match message.content {
+                common::ChatMessageContent::Text(text) => {
+                    crate::llm_engine::llama_server::ChatMessageContent::Text(text)
+                }
+                common::ChatMessageContent::Parts(parts) => {
+                    crate::llm_engine::llama_server::ChatMessageContent::Parts(
+                        parts
+                            .into_iter()
+                            .map(|part| crate::llm_engine::llama_server::ChatContentPart {
+                                r#type: part.r#type,
+                                text: part.text,
+                                image_url: part.image_url.map(|image_url| match image_url {
+                                    common::ImageUrlValue::Url(url) => {
+                                        crate::llm_engine::llama_server::ImageUrlValue::Url(url)
+                                    }
+                                    common::ImageUrlValue::Object { url, detail } => {
+                                        crate::llm_engine::llama_server::ImageUrlValue::Object {
+                                            url,
+                                            detail,
+                                        }
+                                    }
+                                }),
+                                image: part.image,
+                            })
+                            .collect(),
+                    )
+                }
+            },
+        }
+    }
+
+    #[cfg(not(target_os = "android"))]
+    async fn stream_chat_v2_task_to_server(
+        &self,
+        task_id: String,
+        messages: Vec<common::ChatMessageV2>,
+        max_tokens: u32,
+        temperature: f32,
+        top_k: u32,
+        top_p: f32,
+        repeat_penalty: f32,
+        repeat_last_n: i32,
+        min_keep: u32,
+        session_id: Option<String>,
+        cache_policy: Option<String>,
+    ) -> Result<()> {
+        let messages = messages
+            .into_iter()
+            .map(Self::convert_chat_message_v2)
+            .collect::<Vec<_>>();
+        let prepared = crate::llm_engine::llama_server::prepare_chat_messages(&messages)
+            .map_err(|e| anyhow!("Failed to prepare chat messages: {:?}", e))?;
+        let fallback_prompt =
+            crate::llm_engine::llama_server::build_chat_prompt_from_prepared(&prepared.messages);
+        let role_content = prepared
+            .messages
+            .iter()
+            .map(|message| (message.role.clone(), message.content.clone()))
+            .collect::<Vec<_>>();
+
+        let llama = {
+            let engine_guard = self.engine.lock().await;
+            let engine = engine_guard
+                .as_ref()
+                .ok_or_else(|| anyhow!("Engine not initialized"))?;
+
+            let AnyEngine::Llama(llama) = engine else {
+                return Err(anyhow!(
+                    "stream_chat_v2_task_to_server is only supported for LLAMA engine"
+                ));
+            };
+            llama.clone()
+        };
+
+        let prompt = llama
+            .render_chat_prompt(&role_content, true)
+            .await
+            .unwrap_or_else(|err| {
+                info!("Falling back to built-in chat prompt template: {}", err);
+                fallback_prompt
+            });
+        let image_data = crate::llm_engine::llama_server::load_chat_images(&prepared.image_urls)
+            .await
+            .map_err(|e| anyhow!("Failed to load chat images: {:?}", e))?;
+
+        if image_data.is_empty() {
+            return self
+                .stream_inference_task_to_server(
+                    task_id,
+                    prompt,
+                    max_tokens,
+                    temperature,
+                    top_k,
+                    top_p,
+                    repeat_penalty,
+                    repeat_last_n,
+                    min_keep,
+                    session_id,
+                    cache_policy,
+                )
+                .await;
+        }
+
+        let sampling = crate::llm_engine::llama_engine::SamplingParams {
+            temperature,
+            top_k: top_k as i32,
+            top_p,
+            repeat_penalty,
+            repeat_last_n,
+            seed: 0,
+            min_keep: min_keep as usize,
+            thinking_budget_tokens: None,
+        };
+
+        let (response_text, prompt_tokens, completion_tokens) = llama
+            .generate_multimodal_with_cached_model_sampling(
+                &prompt,
+                image_data,
+                max_tokens as usize,
+                &sampling,
+            )
+            .await?;
+        let prompt_tokens = prompt_tokens.min(u32::MAX as usize) as u32;
+        let completion_tokens = completion_tokens.min(u32::MAX as usize) as u32;
+
+        if !response_text.is_empty() {
+            self.send_command(CommandV1::InferenceResultChunk {
+                task_id: task_id.clone(),
+                seq: 0,
+                delta: response_text,
+                phase: OutputPhase::Unknown,
+                done: false,
+                error: None,
+                prompt_tokens,
+                completion_tokens,
+                analysis_tokens: 0,
+                final_tokens: 0,
+            })
+            .await?;
+        }
+
+        self.send_command(CommandV1::InferenceResultChunk {
+            task_id,
+            seq: 1,
+            delta: String::new(),
+            phase: OutputPhase::Unknown,
+            done: true,
+            error: None,
+            prompt_tokens,
+            completion_tokens,
+            analysis_tokens: 0,
+            final_tokens: 0,
+        })
+        .await?;
+
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "android"))]
+    #[allow(clippy::too_many_arguments)]
+    async fn run_chat_v2_multimodal_once_with_engine(
+        engine: Arc<Mutex<Option<AnyEngine>>>,
+        messages: Vec<common::ChatMessageV2>,
+        max_tokens: u32,
+        temperature: f32,
+        top_k: u32,
+        top_p: f32,
+        repeat_penalty: f32,
+        repeat_last_n: i32,
+        min_keep: u32,
+    ) -> Result<(String, u32, u32)> {
+        let messages = messages
+            .into_iter()
+            .map(Self::convert_chat_message_v2)
+            .collect::<Vec<_>>();
+        let prepared = crate::llm_engine::llama_server::prepare_chat_messages(&messages)
+            .map_err(|e| anyhow!("Failed to prepare P2P chat messages: {:?}", e))?;
+        let fallback_prompt =
+            crate::llm_engine::llama_server::build_chat_prompt_from_prepared(&prepared.messages);
+        let role_content = prepared
+            .messages
+            .iter()
+            .map(|message| (message.role.clone(), message.content.clone()))
+            .collect::<Vec<_>>();
+
+        let llama = {
+            let engine_guard = engine.lock().await;
+            let engine_ref = engine_guard
+                .as_ref()
+                .ok_or_else(|| anyhow!("Engine not initialized"))?;
+            let AnyEngine::Llama(llama) = engine_ref else {
+                return Err(anyhow!(
+                    "P2P multimodal chat task is only supported for LLAMA engine"
+                ));
+            };
+            llama.clone()
+        };
+
+        let prompt = llama
+            .render_chat_prompt(&role_content, true)
+            .await
+            .unwrap_or_else(|err| {
+                info!("Falling back to built-in P2P chat prompt template: {}", err);
+                fallback_prompt
+            });
+        let image_data = crate::llm_engine::llama_server::load_chat_images(&prepared.image_urls)
+            .await
+            .map_err(|e| anyhow!("Failed to load P2P chat images: {:?}", e))?;
+        if image_data.is_empty() {
+            return Err(anyhow!(
+                "P2P ChatInferenceTask requires image content; use P2PInferenceRequest for text"
+            ));
+        }
+
+        let sampling = crate::llm_engine::llama_engine::SamplingParams {
+            temperature,
+            top_k: top_k as i32,
+            top_p,
+            repeat_penalty,
+            repeat_last_n,
+            seed: 0,
+            min_keep: min_keep as usize,
+            thinking_budget_tokens: None,
+        };
+
+        let (response_text, prompt_tokens, completion_tokens) = llama
+            .generate_multimodal_with_cached_model_sampling(
+                &prompt,
+                image_data,
+                max_tokens as usize,
+                &sampling,
+            )
+            .await?;
+        Ok((
+            response_text,
+            prompt_tokens.min(u32::MAX as usize) as u32,
+            completion_tokens.min(u32::MAX as usize) as u32,
+        ))
     }
 
     fn build_chat_prompt_fallback(&self, messages: &[common::ChatMessage]) -> String {
@@ -780,6 +1092,47 @@ impl ClientWorker {
         write_command(&mut *w, &command).await?;
         w.flush().await?;
         Ok(())
+    }
+
+    fn estimate_p2p_token_count(text: &str) -> u32 {
+        text.split_whitespace().count().max(1) as u32
+    }
+
+    fn p2p_output_sha256(text: &str) -> [u8; 32] {
+        Sha256::digest(text.as_bytes()).into()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn send_p2p_usage_receipt_on_writer(
+        writer: Arc<Mutex<ControlWriter>>,
+        source_client_id: [u8; 16],
+        target_client_id: [u8; 16],
+        connection_id: [u8; 16],
+        task_id: String,
+        prompt_tokens: u32,
+        completion_tokens: u32,
+        analysis_tokens: u32,
+        final_tokens: u32,
+        output_sha256: [u8; 32],
+    ) -> Result<()> {
+        Self::send_command_v2_on_writer(
+            writer,
+            CommandV2::P2PUsageReceipt {
+                source_client_id,
+                target_client_id,
+                connection_id,
+                task_id,
+                prompt_tokens,
+                completion_tokens,
+                total_tokens: prompt_tokens.saturating_add(completion_tokens),
+                analysis_tokens,
+                final_tokens,
+                success: true,
+                error: None,
+                output_sha256: Some(output_sha256),
+            },
+        )
+        .await
     }
 
     fn parse_turns_url(url: &str) -> Result<(String, u16)> {
@@ -1001,6 +1354,47 @@ impl ClientWorker {
             return Ok(ip.to_string());
         }
         Ok(Self::detect_outbound_ip().await?.to_string())
+    }
+
+    async fn get_public_ipv4_for_report(args: &Args) -> Option<u32> {
+        if let Some(ip) = args.p2p_advertise_ip.as_deref() {
+            let ip = ip.trim();
+            if let Ok(std::net::IpAddr::V4(ip)) = ip.parse::<std::net::IpAddr>() {
+                return Some(u32::from(ip));
+            }
+        }
+
+        if let Some(endpoint) = args.public_ip_endpoint.as_deref() {
+            let endpoint = endpoint.trim();
+            if !endpoint.is_empty() {
+                match reqwest::get(endpoint).await {
+                    Ok(resp) => match resp.error_for_status() {
+                        Ok(resp) => match resp.text().await {
+                            Ok(text) => {
+                                let ip = text.trim();
+                                if let Ok(std::net::IpAddr::V4(ip)) = ip.parse::<std::net::IpAddr>()
+                                {
+                                    return Some(u32::from(ip));
+                                }
+                                warn!("Public IP endpoint returned a non-IPv4 response");
+                            }
+                            Err(e) => warn!("Failed to read public IP endpoint response: {}", e),
+                        },
+                        Err(e) => warn!("Public IP endpoint returned an error: {}", e),
+                    },
+                    Err(e) => warn!("Failed to call public IP endpoint: {}", e),
+                }
+            }
+        }
+
+        match Self::detect_outbound_ip().await {
+            Ok(std::net::IpAddr::V4(ip)) => Some(u32::from(ip)),
+            Ok(std::net::IpAddr::V6(_)) => None,
+            Err(e) => {
+                warn!("Failed to detect outbound IP for reporting: {}", e);
+                None
+            }
+        }
     }
 
     #[cfg(not(target_os = "android"))]
@@ -1469,6 +1863,7 @@ impl ClientWorker {
                         );
                         llm_engine::AnyEngine::Llama(LlamaEngine::with_config(
                             model_path.clone(),
+                            args.llama_mmproj_path.clone(),
                             args.n_ctx,
                             args.n_batch,
                             args.n_gpu_layers,
@@ -1524,52 +1919,11 @@ impl ClientWorker {
                 // Drop the lock before starting HTTP server
                 drop(cached_engine);
 
-                // Start local HTTP API server for LLAMA (for proxy forwarding)
-                // Use the SAME engine instance for both worker and HTTP server
-                let local_addr = args.local_addr.clone();
-                let local_port = args.local_port;
-                let local_addr_clone = local_addr.clone();
-                info!(
-                    "Starting LLAMA HTTP API server on {}:{}",
-                    local_addr, local_port
-                );
-
-                use crate::llm_engine::llama_server::start_server;
-                use std::sync::Arc;
-                use tokio::sync::RwLock;
-
-                // Only start HTTP server if not already running (prevent port conflicts on reconnection)
-                if !HTTP_SERVER_STARTED.swap(true, Ordering::SeqCst) {
-                    // Extract LlamaEngine from AnyEngine for HTTP server
-                    let server_engine = match engine.as_ref().unwrap() {
-                        AnyEngine::Llama(e) => e.clone(),
-                        _ => unreachable!(),
-                    };
-
-                    // Wrap the shared engine in Arc<RwLock> for HTTP server
-                    let engine_arc = Arc::new(RwLock::new(server_engine));
-
-                    // Spawn server in background
-                    tokio::spawn(async move {
-                        if let Err(e) =
-                            start_server(engine_arc, &local_addr_clone, local_port).await
-                        {
-                            error!("LLAMA HTTP server error: {}", e);
-                            // Reset flag on error so it can be retried
-                            HTTP_SERVER_STARTED.store(false, Ordering::SeqCst);
-                        }
-                    });
-
-                    info!(
-                        "LLAMA HTTP API server started successfully on {}:{}",
-                        local_addr, local_port
-                    );
-                } else {
-                    info!(
-                        "LLAMA HTTP API server already running on {}:{}",
-                        local_addr, local_port
-                    );
-                }
+                start_llama_http_server_once(
+                    engine.as_ref().unwrap(),
+                    args.local_addr.clone(),
+                    args.local_port,
+                )?;
             }
         }
         #[cfg(target_os = "macos")]
@@ -1614,6 +1968,7 @@ impl ClientWorker {
                         );
                         llm_engine::AnyEngine::Llama(LlamaEngine::with_config(
                             model_path.clone(),
+                            args.llama_mmproj_path.clone(),
                             args.n_ctx,
                             args.n_batch,
                             args.n_gpu_layers,
@@ -1665,6 +2020,11 @@ impl ClientWorker {
                     *cached_engine = Some(llama_worker.clone());
                     engine = Some(llama_worker);
                 }
+                start_llama_http_server_once(
+                    engine.as_ref().unwrap(),
+                    args.local_addr.clone(),
+                    args.local_port,
+                )?;
             }
         }
         let device_memtotal_gb = device_memtotal_mb as u32;
@@ -1688,6 +2048,11 @@ impl ClientWorker {
         ));
         //system info
         let (cpu_useage, mem_useage, disk_useage, _computer_name) = collect_system_info().await?;
+        let public_ipv4 = Self::get_public_ipv4_for_report(&args).await;
+        let mut device_info = device_info;
+        if let Some(ip) = public_ipv4 {
+            device_info.ip = ip;
+        }
 
         let stats = network_monitor.lock().await.refresh().unwrap_or((0, 0));
         let worker = ClientWorker {
@@ -1707,6 +2072,7 @@ impl ClientWorker {
                 network_rx: stats.0,
                 network_tx: stats.1,
             }),
+            public_ipv4,
             client_id: args.client_id.expect("client_id is required"),
             device_memtotal_gb,
             device_total_tflops,
@@ -1718,6 +2084,7 @@ impl ClientWorker {
                 cancelled: Mutex::new(HashSet::new()),
                 notify: tokio::sync::Notify::new(),
             }),
+            connection_closed: Arc::new(AtomicBool::new(false)),
         };
         Ok(worker)
     }
@@ -2258,10 +2625,15 @@ impl WorkerHandle for ClientWorker {
             info!("{} Model task started", log_icon("✅", "[OK]"));
             let local_port = self.args.local_port;
             let devices_info = self.devices_info.clone();
+            let connection_closed = Arc::clone(&self.connection_closed);
             tokio::spawn(async move {
                 let mut interval = interval(Duration::from_secs(300)); // Send heartbeat every 10 seconds
                 loop {
                     interval.tick().await;
+                    if connection_closed.load(Ordering::SeqCst) {
+                        debug!("Model status task exiting because control connection closed");
+                        break;
+                    }
 
                     let models: Vec<common::Model> = match engine_type {
                         common::EngineType::Ollama => match get_engine_models(local_port).await {
@@ -2336,13 +2708,19 @@ impl WorkerHandle for ClientWorker {
             let writer_clone = Arc::clone(&self.writer);
             let client_id = Arc::new(self.client_id.clone());
             let network_monitor = Arc::clone(&self.network_monitor);
+            let public_ipv4 = self.public_ipv4;
             let engine_type = self.engine_type; // Clone engine_type for use in spawn
-                                                // network_monitor.lock().await.update();
+            let connection_closed = Arc::clone(&self.connection_closed);
+            // network_monitor.lock().await.update();
             tokio::spawn(async move {
                 let mut interval = interval(Duration::from_secs(120)); // Send heartbeat every 120 seconds
 
                 loop {
                     interval.tick().await;
+                    if connection_closed.load(Ordering::SeqCst) {
+                        debug!("Heartbeat task exiting because control connection closed");
+                        break;
+                    }
 
                     let (cpu_usage, memory_usage, disk_usage, _computer_name) =
                         match collect_system_info().await {
@@ -2354,7 +2732,7 @@ impl WorkerHandle for ClientWorker {
                         };
 
                     // device_info should be real-time for monitoring
-                    let (device_info, device_memtotal_mb) =
+                    let (mut device_info, device_memtotal_mb) =
                         match collect_device_info(engine_type).await {
                             Ok(info) => info,
                             Err(e) => {
@@ -2362,6 +2740,9 @@ impl WorkerHandle for ClientWorker {
                                 (DevicesInfo::default(), 0)
                             }
                         };
+                    if let Some(ip) = public_ipv4 {
+                        device_info.ip = ip;
+                    }
 
                     // TODO: device_info is remote device info
                     info!("heartbeat: cpu_usage {}% memory_usage {}% disk_usage {}% device_memtotal {}mb", cpu_usage, memory_usage, disk_usage, device_memtotal_mb);
@@ -2413,6 +2794,7 @@ impl WorkerHandle for ClientWorker {
 
     fn handler(&self) -> impl Future<Output = Result<()>> + Send {
         async move {
+            let _connection_guard = ConnectionTaskGuard(Arc::clone(&self.connection_closed));
             let mut buf = BytesMut::with_capacity(MAX_MESSAGE_SIZE);
             let mut p2p_turn_config: HashMap<[u8; 16], P2PConnectionRuntimeConfig> = HashMap::new();
             loop {
@@ -2563,6 +2945,8 @@ impl WorkerHandle for ClientWorker {
                             }
                             CommandV1::ChatInferenceTask {
                                 task_id,
+                                session_id,
+                                cache_policy,
                                 model: _model,
                                 messages,
                                 max_tokens,
@@ -2578,6 +2962,18 @@ impl WorkerHandle for ClientWorker {
                                     task_id,
                                     messages.len(),
                                     max_tokens
+                                );
+                                let cache_decision = record_worker_cache_decision(
+                                    session_id.as_deref(),
+                                    cache_policy.as_deref(),
+                                );
+                                info!(
+                                    task_id = %task_id,
+                                    session = cache_decision.session_hash.as_deref().unwrap_or("none"),
+                                    policy = cache_decision.policy.as_str(),
+                                    status = cache_decision.status.as_str(),
+                                    kv_reuse_enabled = cache_decision.kv_reuse_enabled,
+                                    "Worker session cache decision for chat task"
                                 );
                                 let prompt = {
                                     #[cfg(target_os = "android")]
@@ -2668,6 +3064,8 @@ impl WorkerHandle for ClientWorker {
                                         repeat_penalty,
                                         repeat_last_n,
                                         min_keep,
+                                        session_id,
+                                        cache_policy,
                                     )
                                     .await;
 
@@ -2687,8 +3085,68 @@ impl WorkerHandle for ClientWorker {
                                     self.send_command(chunk).await?;
                                 }
                             }
+                            CommandV1::EmbeddingTask {
+                                task_id,
+                                model,
+                                input,
+                                normalize,
+                            } => {
+                                info!(
+                                    "Received embedding task: {} model: {} inputs: {}",
+                                    task_id,
+                                    model,
+                                    input.len()
+                                );
+
+                                #[cfg(not(target_os = "android"))]
+                                let result = {
+                                    let llama_engine = {
+                                        let engine_guard = self.engine.lock().await;
+                                        match engine_guard.as_ref() {
+                                            Some(AnyEngine::Llama(llama)) => Ok(llama.clone()),
+                                            Some(_) => Err(anyhow!(
+                                                "EmbeddingTask is only supported for LLAMA engine"
+                                            )),
+                                            None => Err(anyhow!("Engine not initialized")),
+                                        }
+                                    };
+
+                                    match llama_engine {
+                                        Ok(llama) => {
+                                            llama.generate_embeddings(input, normalize).await
+                                        }
+                                        Err(e) => Err(e),
+                                    }
+                                };
+
+                                #[cfg(target_os = "android")]
+                                let result: Result<(
+                                    Vec<Vec<f32>>,
+                                    u32,
+                                )> = Err(anyhow!("EmbeddingTask is not supported on Android yet"));
+
+                                let response = match result {
+                                    Ok((embeddings, prompt_tokens)) => CommandV1::EmbeddingResult {
+                                        task_id,
+                                        success: true,
+                                        embeddings,
+                                        error: None,
+                                        prompt_tokens,
+                                    },
+                                    Err(e) => CommandV1::EmbeddingResult {
+                                        task_id,
+                                        success: false,
+                                        embeddings: Vec::new(),
+                                        error: Some(e.to_string()),
+                                        prompt_tokens: 0,
+                                    },
+                                };
+                                self.send_command(response).await?;
+                            }
                             CommandV1::InferenceTask {
                                 task_id,
+                                session_id,
+                                cache_policy,
                                 prompt,
                                 max_tokens,
                                 temperature,
@@ -2701,6 +3159,18 @@ impl WorkerHandle for ClientWorker {
                                 info!(
                                     "Received inference task: {} max_tokens: {}",
                                     task_id, max_tokens
+                                );
+                                let cache_decision = record_worker_cache_decision(
+                                    session_id.as_deref(),
+                                    cache_policy.as_deref(),
+                                );
+                                info!(
+                                    task_id = %task_id,
+                                    session = cache_decision.session_hash.as_deref().unwrap_or("none"),
+                                    policy = cache_decision.policy.as_str(),
+                                    status = cache_decision.status.as_str(),
+                                    kv_reuse_enabled = cache_decision.kv_reuse_enabled,
+                                    "Worker session cache decision for inference task"
                                 );
 
                                 let start_time = std::time::Instant::now();
@@ -2718,6 +3188,8 @@ impl WorkerHandle for ClientWorker {
                                             repeat_penalty,
                                             repeat_last_n,
                                             min_keep,
+                                            session_id,
+                                            cache_policy,
                                         )
                                         .await;
 
@@ -2834,6 +3306,94 @@ impl WorkerHandle for ClientWorker {
                     }
                     Command::V2(cmd_v2) => {
                         match cmd_v2 {
+                            CommandV2::ChatInferenceTask {
+                                task_id,
+                                session_id,
+                                cache_policy,
+                                model: _model,
+                                messages,
+                                max_tokens,
+                                temperature,
+                                top_k,
+                                top_p,
+                                repeat_penalty,
+                                repeat_last_n,
+                                min_keep,
+                            } => {
+                                info!(
+                                    "Received chat inference v2 task: {} messages: {} max_tokens: {}",
+                                    task_id,
+                                    messages.len(),
+                                    max_tokens
+                                );
+                                let cache_decision = record_worker_cache_decision(
+                                    session_id.as_deref(),
+                                    cache_policy.as_deref(),
+                                );
+                                info!(
+                                    task_id = %task_id,
+                                    session = cache_decision.session_hash.as_deref().unwrap_or("none"),
+                                    policy = cache_decision.policy.as_str(),
+                                    status = cache_decision.status.as_str(),
+                                    kv_reuse_enabled = cache_decision.kv_reuse_enabled,
+                                    "Worker session cache decision for chat v2 task"
+                                );
+
+                                #[cfg(not(target_os = "android"))]
+                                {
+                                    let result = self
+                                        .stream_chat_v2_task_to_server(
+                                            task_id.clone(),
+                                            messages,
+                                            max_tokens,
+                                            temperature,
+                                            top_k,
+                                            top_p,
+                                            repeat_penalty,
+                                            repeat_last_n,
+                                            min_keep,
+                                            session_id,
+                                            cache_policy,
+                                        )
+                                        .await;
+
+                                    if let Err(e) = result {
+                                        let chunk = CommandV1::InferenceResultChunk {
+                                            task_id,
+                                            seq: 0,
+                                            delta: String::new(),
+                                            phase: OutputPhase::Unknown,
+                                            done: true,
+                                            error: Some(e.to_string()),
+                                            prompt_tokens: 0,
+                                            completion_tokens: 0,
+                                            analysis_tokens: 0,
+                                            final_tokens: 0,
+                                        };
+                                        self.send_command(chunk).await?;
+                                    }
+                                }
+
+                                #[cfg(target_os = "android")]
+                                {
+                                    let chunk = CommandV1::InferenceResultChunk {
+                                        task_id,
+                                        seq: 0,
+                                        delta: String::new(),
+                                        phase: OutputPhase::Unknown,
+                                        done: true,
+                                        error: Some(
+                                            "ChatInferenceTask v2 is not supported on Android yet"
+                                                .to_string(),
+                                        ),
+                                        prompt_tokens: 0,
+                                        completion_tokens: 0,
+                                        analysis_tokens: 0,
+                                        final_tokens: 0,
+                                    };
+                                    self.send_command(chunk).await?;
+                                }
+                            }
                             CommandV2::P2PConnectionConfig {
                                 peer_id,
                                 connection_id,
@@ -2870,27 +3430,70 @@ impl WorkerHandle for ClientWorker {
                                         bind_addr
                                     ));
                                 }
-                                let socket =
-                                    Arc::new(UdpSocket::bind(&bind_addr).await.map_err(|e| {
-                                        anyhow!("P2P UDP bind failed on {}: {}", bind_addr, e)
-                                    })?);
+                                let socket = match UdpSocket::bind(&bind_addr).await {
+                                    Ok(socket) => Arc::new(socket),
+                                    Err(bind_err) if self.args.p2p_udp_port != 0 => {
+                                        let fallback_bind_addr =
+                                            format!("{}:0", self.args.p2p_bind_addr);
+                                        warn!(
+                                            "P2P UDP bind failed on {}; falling back to {}: {}",
+                                            bind_addr, fallback_bind_addr, bind_err
+                                        );
+                                        Arc::new(
+                                            UdpSocket::bind(&fallback_bind_addr)
+                                                .await
+                                                .map_err(|fallback_err| {
+                                                    anyhow!(
+                                                        "P2P UDP bind failed on {}: {}; fallback {} failed: {}",
+                                                        bind_addr,
+                                                        bind_err,
+                                                        fallback_bind_addr,
+                                                        fallback_err
+                                                    )
+                                                })?,
+                                        )
+                                    }
+                                    Err(e) => {
+                                        return Err(anyhow!(
+                                            "P2P UDP bind failed on {}: {}",
+                                            bind_addr,
+                                            e
+                                        ));
+                                    }
+                                };
                                 let local_port = socket.local_addr()?.port();
                                 let advertise_ip = self.get_advertise_ip().await?;
 
                                 #[cfg(not(target_os = "android"))]
                                 {
                                     let engine = Arc::clone(&self.engine);
+                                    let writer = Arc::clone(&self.writer);
+                                    let source_client_id_copy = peer_id;
+                                    let target_client_id_copy = self.client_id;
                                     let socket = Arc::clone(&socket);
+                                    let listener_addr = socket.local_addr().ok();
                                     let data_plane_secret_copy = data_plane_secret;
                                     tokio::spawn(async move {
                                         let mut next_msg_id: u32 = 1;
                                         let mut reassembly = P2PUdpReassemblyState::new();
                                         let mut buf = vec![0u8; 64 * 1024];
                                         loop {
-                                            let (n, from) = match socket.recv_from(&mut buf).await {
-                                                Ok(v) => v,
-                                                Err(e) => {
+                                            let recv_result = timeout(
+                                                Duration::from_secs(P2P_UDP_IDLE_TIMEOUT_SECS),
+                                                socket.recv_from(&mut buf),
+                                            )
+                                            .await;
+                                            let (n, from) = match recv_result {
+                                                Ok(Ok(v)) => v,
+                                                Ok(Err(e)) => {
                                                     error!("P2P UDP recv error: {}", e);
+                                                    return;
+                                                }
+                                                Err(_) => {
+                                                    info!(
+                                                        "P2P UDP listener idle timeout on {:?}",
+                                                        listener_addr
+                                                    );
                                                     return;
                                                 }
                                             };
@@ -2961,6 +3564,170 @@ impl WorkerHandle for ClientWorker {
                                                     warn!("P2P UDP decode failed: {}", e);
                                                     continue;
                                                 }
+                                            };
+
+                                            let cmd = match cmd {
+                                                Command::V2(CommandV2::ChatInferenceTask {
+                                                    task_id,
+                                                    session_id: _,
+                                                    cache_policy: _,
+                                                    model: _model,
+                                                    messages,
+                                                    max_tokens,
+                                                    temperature,
+                                                    top_k,
+                                                    top_p,
+                                                    repeat_penalty,
+                                                    repeat_last_n,
+                                                    min_keep,
+                                                }) => {
+                                                    let result =
+                                                        Self::run_chat_v2_multimodal_once_with_engine(
+                                                            Arc::clone(&engine),
+                                                            messages,
+                                                            max_tokens,
+                                                            temperature,
+                                                            top_k,
+                                                            top_p,
+                                                            repeat_penalty,
+                                                            repeat_last_n,
+                                                            min_keep,
+                                                        )
+                                                        .await;
+
+                                                    match result {
+                                                        Ok((
+                                                            response_text,
+                                                            prompt_tokens,
+                                                            completion_tokens,
+                                                        )) => {
+                                                            if !response_text.is_empty() {
+                                                                let chunk = Command::V2(
+                                                                    CommandV2::P2PInferenceChunk {
+                                                                        connection_id,
+                                                                        task_id: task_id.clone(),
+                                                                        seq: 0,
+                                                                        delta: response_text
+                                                                            .clone(),
+                                                                        phase: OutputPhase::Unknown,
+                                                                        done: false,
+                                                                        error: None,
+                                                                        analysis_tokens: 0,
+                                                                        final_tokens:
+                                                                            completion_tokens,
+                                                                    },
+                                                                );
+                                                                if let Ok(pkt) = Self::p2p_udp_encode_command_payload(&chunk) {
+                                                                let msg_id = next_msg_id;
+                                                                next_msg_id = next_msg_id.wrapping_add(1);
+                                                                let _ = Self::p2p_udp_send_reliable(
+                                                                    &socket,
+                                                                    from,
+                                                                    connection_id,
+                                                                    data_plane_secret_copy,
+                                                                    msg_id,
+                                                                    &pkt,
+                                                                )
+                                                                .await;
+                                                            }
+                                                            }
+
+                                                            let total_tokens = prompt_tokens
+                                                                .saturating_add(completion_tokens);
+                                                            let output_sha256 =
+                                                                Self::p2p_output_sha256(
+                                                                    &response_text,
+                                                                );
+                                                            if let Err(e) =
+                                                            Self::send_p2p_usage_receipt_on_writer(
+                                                                Arc::clone(&writer),
+                                                                source_client_id_copy,
+                                                                target_client_id_copy,
+                                                                connection_id,
+                                                                task_id.clone(),
+                                                                prompt_tokens,
+                                                                completion_tokens,
+                                                                0,
+                                                                completion_tokens,
+                                                                output_sha256,
+                                                            )
+                                                            .await
+                                                        {
+                                                            warn!(
+                                                                "Failed to report P2P UDP multimodal usage receipt: {}",
+                                                                e
+                                                            );
+                                                        }
+
+                                                            let done = Command::V2(
+                                                                CommandV2::P2PInferenceDone {
+                                                                    connection_id,
+                                                                    task_id,
+                                                                    prompt_tokens,
+                                                                    completion_tokens,
+                                                                    total_tokens,
+                                                                    analysis_tokens: 0,
+                                                                    final_tokens: completion_tokens,
+                                                                },
+                                                            );
+                                                            if let Ok(pkt) =
+                                                                Self::p2p_udp_encode_command_payload(
+                                                                    &done,
+                                                                )
+                                                            {
+                                                                let msg_id = next_msg_id;
+                                                                next_msg_id =
+                                                                    next_msg_id.wrapping_add(1);
+                                                                let _ =
+                                                                    Self::p2p_udp_send_reliable(
+                                                                        &socket,
+                                                                        from,
+                                                                        connection_id,
+                                                                        data_plane_secret_copy,
+                                                                        msg_id,
+                                                                        &pkt,
+                                                                    )
+                                                                    .await;
+                                                            }
+                                                        }
+                                                        Err(e) => {
+                                                            let chunk = Command::V2(
+                                                                CommandV2::P2PInferenceChunk {
+                                                                    connection_id,
+                                                                    task_id,
+                                                                    seq: 0,
+                                                                    delta: String::new(),
+                                                                    phase: OutputPhase::Unknown,
+                                                                    done: true,
+                                                                    error: Some(e.to_string()),
+                                                                    analysis_tokens: 0,
+                                                                    final_tokens: 0,
+                                                                },
+                                                            );
+                                                            if let Ok(pkt) =
+                                                                Self::p2p_udp_encode_command_payload(
+                                                                    &chunk,
+                                                                )
+                                                            {
+                                                                let msg_id = next_msg_id;
+                                                                next_msg_id =
+                                                                    next_msg_id.wrapping_add(1);
+                                                                let _ =
+                                                                    Self::p2p_udp_send_reliable(
+                                                                        &socket,
+                                                                        from,
+                                                                        connection_id,
+                                                                        data_plane_secret_copy,
+                                                                        msg_id,
+                                                                        &pkt,
+                                                                    )
+                                                                    .await;
+                                                            }
+                                                        }
+                                                    }
+                                                    continue;
+                                                }
+                                                other => other,
                                             };
 
                                             let Command::V2(CommandV2::P2PInferenceRequest {
@@ -3115,11 +3882,16 @@ impl WorkerHandle for ClientWorker {
 
                                             let mut token_stream = Box::pin(token_stream);
                                             let mut seq: u32 = 0;
+                                            let prompt_tokens =
+                                                Self::estimate_p2p_token_count(&prompt);
+                                            let mut output_text = String::new();
+                                            let mut stream_failed = false;
 
                                             while let Some(piece_res) = token_stream.next().await {
                                                 let piece = match piece_res {
                                                     Ok(p) => p,
                                                     Err(e) => {
+                                                        stream_failed = true;
                                                         let chunk = Command::V2(
                                                             CommandV2::P2PInferenceChunk {
                                                                 connection_id,
@@ -3178,6 +3950,7 @@ impl WorkerHandle for ClientWorker {
                                                     }
                                                     let delta = filtered[start..end].to_string();
                                                     start = end;
+                                                    output_text.push_str(&delta);
 
                                                     let chunk =
                                                         Command::V2(CommandV2::P2PInferenceChunk {
@@ -3210,14 +3983,45 @@ impl WorkerHandle for ClientWorker {
                                                 }
                                             }
 
+                                            if stream_failed {
+                                                continue;
+                                            }
+
+                                            let completion_tokens =
+                                                Self::estimate_p2p_token_count(&output_text);
+                                            let total_tokens =
+                                                prompt_tokens.saturating_add(completion_tokens);
+                                            let final_tokens = completion_tokens;
+                                            let output_sha256 =
+                                                Self::p2p_output_sha256(&output_text);
+                                            if let Err(e) = Self::send_p2p_usage_receipt_on_writer(
+                                                Arc::clone(&writer),
+                                                source_client_id_copy,
+                                                target_client_id_copy,
+                                                connection_id,
+                                                task_id.clone(),
+                                                prompt_tokens,
+                                                completion_tokens,
+                                                0,
+                                                final_tokens,
+                                                output_sha256,
+                                            )
+                                            .await
+                                            {
+                                                warn!(
+                                                    "Failed to report P2P UDP usage receipt: {}",
+                                                    e
+                                                );
+                                            }
+
                                             let done = Command::V2(CommandV2::P2PInferenceDone {
                                                 connection_id,
                                                 task_id,
-                                                prompt_tokens: 0,
-                                                completion_tokens: 0,
-                                                total_tokens: 0,
+                                                prompt_tokens,
+                                                completion_tokens,
+                                                total_tokens,
                                                 analysis_tokens: 0,
-                                                final_tokens: 0,
+                                                final_tokens,
                                             });
                                             if let Ok(pkt) =
                                                 Self::p2p_udp_encode_command_payload(&done)
@@ -3293,9 +4097,11 @@ impl WorkerHandle for ClientWorker {
                                                     connection_id: connection_id_copy,
                                                     candidates: vec![relay_candidate],
                                                 };
-                                                if let Err(e) =
-                                                    Self::send_command_v2_on_writer(writer, cmd)
-                                                        .await
+                                                if let Err(e) = Self::send_command_v2_on_writer(
+                                                    Arc::clone(&writer),
+                                                    cmd,
+                                                )
+                                                .await
                                                 {
                                                     error!(
                                                         "Failed to send TURN relay candidate: {}",
@@ -3592,6 +4398,10 @@ impl WorkerHandle for ClientWorker {
                                                         let mut token_stream =
                                                             Box::pin(token_stream);
                                                         let mut seq: u32 = 0;
+                                                        let prompt_tokens =
+                                                            Self::estimate_p2p_token_count(&prompt);
+                                                        let mut output_text = String::new();
+                                                        let mut stream_failed = false;
 
                                                         while let Some(piece_res) =
                                                             token_stream.next().await
@@ -3599,6 +4409,7 @@ impl WorkerHandle for ClientWorker {
                                                             let piece = match piece_res {
                                                                 Ok(p) => p,
                                                                 Err(e) => {
+                                                                    stream_failed = true;
                                                                     let chunk = Command::V2(CommandV2::P2PInferenceChunk {
                                                                         connection_id: connection_id_copy,
                                                                         task_id: task_id.clone(),
@@ -3656,6 +4467,7 @@ impl WorkerHandle for ClientWorker {
                                                                 let delta = filtered[start..end]
                                                                     .to_string();
                                                                 start = end;
+                                                                output_text.push_str(&delta);
 
                                                                 let chunk = Command::V2(
                                                                     CommandV2::P2PInferenceChunk {
@@ -3691,15 +4503,49 @@ impl WorkerHandle for ClientWorker {
                                                             }
                                                         }
 
+                                                        if stream_failed {
+                                                            continue;
+                                                        }
+
+                                                        let completion_tokens =
+                                                            Self::estimate_p2p_token_count(
+                                                                &output_text,
+                                                            );
+                                                        let total_tokens = prompt_tokens
+                                                            .saturating_add(completion_tokens);
+                                                        let final_tokens = completion_tokens;
+                                                        let output_sha256 =
+                                                            Self::p2p_output_sha256(&output_text);
+                                                        if let Err(e) =
+                                                            Self::send_p2p_usage_receipt_on_writer(
+                                                                Arc::clone(&writer),
+                                                                peer_id_copy,
+                                                                source_client_id_copy,
+                                                                connection_id_copy,
+                                                                task_id.clone(),
+                                                                prompt_tokens,
+                                                                completion_tokens,
+                                                                0,
+                                                                final_tokens,
+                                                                output_sha256,
+                                                            )
+                                                            .await
+                                                        {
+                                                            warn!(
+                                                                "Failed to report P2P TURN/UDP usage receipt: {}",
+                                                                e
+                                                            );
+                                                        }
+
                                                         let done = Command::V2(
                                                             CommandV2::P2PInferenceDone {
                                                                 connection_id: connection_id_copy,
                                                                 task_id,
-                                                                prompt_tokens: 0,
-                                                                completion_tokens: 0,
-                                                                total_tokens: 0,
+                                                                prompt_tokens,
+                                                                completion_tokens,
+                                                                total_tokens,
                                                                 analysis_tokens: 0,
-                                                                final_tokens: 0,
+                                                                final_tokens,
                                                             },
                                                         );
                                                         if let Ok(pkt) =

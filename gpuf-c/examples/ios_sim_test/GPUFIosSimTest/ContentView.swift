@@ -43,7 +43,7 @@ struct ContentView: View {
 }
 
 private func startRemoteWorkerOnce() -> String {
-    let modelFileName = "Llama-3.2-1B-Instruct-Q8_0.gguf"
+    let modelFileName = environment["GPUF_IOS_TEST_MODEL_FILE_NAME"] ?? "Llama-3.2-1B-Instruct-Q8_0.gguf"
 
     let documentsModelPath: String? = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)
         .first?
@@ -77,6 +77,8 @@ private func startRemoteWorkerWithModelPath(_ modelPath: String) -> String {
     let caCertPath = environment["GPUF_IOS_TEST_CA_CERT_PATH"]
     let controlTLSServerName = environment["GPUF_IOS_TEST_TLS_SERVER_NAME"] ?? serverAddr
     let certSHA256Pin = environment["GPUF_IOS_TEST_CERT_SHA256_PIN"]
+    let proxyTLSServerName = environment["GPUF_IOS_TEST_PROXY_TLS_SERVER_NAME"] ?? environment["GPUF_IOS_TEST_TLS_SERVER_NAME"] ?? serverAddr
+    let proxyCertSHA256Pin = environment["GPUF_IOS_TEST_PROXY_CERT_SHA256_PIN"] ?? certSHA256Pin
 
     remoteWorkerLogger.info("Starting remote worker with clientId: \(clientId, privacy: .public), tls: \(useTLS)")
 
@@ -115,6 +117,20 @@ private func startRemoteWorkerWithModelPath(_ modelPath: String) -> String {
     if startRc != 0 {
         remoteWorkerLogger.error("start_remote_worker failed: \(startRc)")
         return "❌ start_remote_worker failed: \(startRc)"
+    }
+
+    if caCertPath != nil || proxyCertSHA256Pin != nil {
+        let proxyTLSRc = proxyTLSServerName.withCString { proxyName in
+            withOptionalCString(caCertPath) { ca in
+                withOptionalCString(proxyCertSHA256Pin) { pin in
+                    gpuf_configure_remote_worker_proxy_tls(ca, proxyName, pin)
+                }
+            }
+        }
+        if proxyTLSRc != 0 {
+            remoteWorkerLogger.error("gpuf_configure_remote_worker_proxy_tls failed: \(proxyTLSRc)")
+            return "❌ gpuf_configure_remote_worker_proxy_tls failed: \(proxyTLSRc)"
+        }
     }
 
     let cb: (@convention(c) (UnsafePointer<CChar>?, UnsafeMutableRawPointer?) -> Void) = remoteWorkerCallback

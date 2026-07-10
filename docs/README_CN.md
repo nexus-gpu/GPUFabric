@@ -111,7 +111,8 @@ cd GPUFabric
 docker compose -f docker/gpuf_s_compose.yaml up -d
 
 # 4) 验证服务
-curl -H "Authorization: Bearer your-api-key" http://localhost:18080
+AUTH_HEADER="Authorization: Bearer ${GPUF_API_KEY}"
+curl -H "$AUTH_HEADER" http://localhost:18080
 ```
 
 更多使用示例（gpuf-s 参数、gpuf-c 启动、Docker 构建等），请见下方文档索引。
@@ -195,10 +196,11 @@ cargo run --release --bin heartbeat_consumer -- \
 
 ```bash
 # 使用 API Key 测试
-curl -H "Authorization: Bearer your-api-key" http://localhost:18080
+AUTH_HEADER="Authorization: Bearer ${GPUF_API_KEY}"
+curl -H "$AUTH_HEADER" http://localhost:18080
 
 # 测试 Ollama 集成
-curl -H "Authorization: Bearer your-api-key" \
+curl -H "$AUTH_HEADER" \
   -H "Content-Type: application/json" \
   http://localhost:18080/v1/chat/completions \
   -d '{
@@ -251,7 +253,7 @@ v1.1.0 为兼容保留明文控制 TCP 默认值；非 loopback 明文连接会�
 ```bash
 export DATABASE_URL="postgres://<db-user>:<db-password>@localhost:5432/<db-name>"
 export REDIS_URL="redis://localhost:6379"
-export API_KEY="your-api-key"
+export API_KEY="replace-with-a-local-api-key"
 export RUST_LOG="gpuf-s=info"
 ```
 

@@ -2,6 +2,7 @@ pub mod asm;
 pub mod cmd;
 pub mod config;
 pub mod device_info;
+pub mod dllm_loader;
 pub mod mobile_control_stream;
 pub mod mobile_tls_policy;
 pub mod model_downloader;

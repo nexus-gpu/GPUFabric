@@ -1,5 +1,7 @@
 pub mod apk;
+pub mod banking_admin;
 pub mod client;
+pub mod compute_map;
 pub mod handle_api;
 pub mod models;
 pub mod points;
@@ -21,6 +23,7 @@ impl ApiServer {
     #[allow(dead_code)] // Public API function, may be used in tests or future
     pub async fn new(db_url: &str, redis_url: &str) -> Result<Self> {
         let db_pool = Pool::connect(db_url).await?;
+        crate::db::token_usage::ensure_token_usage_schema(&db_pool).await?;
 
         let redis_client = Arc::new(match RedisClient::open(redis_url) {
             Ok(client) => client,

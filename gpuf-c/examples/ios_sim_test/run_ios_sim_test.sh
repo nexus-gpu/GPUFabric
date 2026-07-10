@@ -139,8 +139,10 @@ if [ -n "${GPUF_IOS_TEST_MODEL_SOURCE_PATH:-}" ]; then
 
   APP_CONTAINER="${APP_CONTAINER:-$(xcrun simctl get_app_container "$BOOTED_UDID" "$BUNDLE_ID" data)}"
   mkdir -p "$APP_CONTAINER/Documents"
-  cp "$GPUF_IOS_TEST_MODEL_SOURCE_PATH" "$APP_CONTAINER/Documents/Llama-3.2-1B-Instruct-Q8_0.gguf"
-  echo "🧠 Copied model to simulator Documents: $APP_CONTAINER/Documents/Llama-3.2-1B-Instruct-Q8_0.gguf"
+  MODEL_FILE_NAME="${GPUF_IOS_TEST_MODEL_FILE_NAME:-$(basename "$GPUF_IOS_TEST_MODEL_SOURCE_PATH")}"
+  cp "$GPUF_IOS_TEST_MODEL_SOURCE_PATH" "$APP_CONTAINER/Documents/$MODEL_FILE_NAME"
+  export GPUF_IOS_TEST_MODEL_FILE_NAME="$MODEL_FILE_NAME"
+  echo "🧠 Copied model to simulator Documents: $APP_CONTAINER/Documents/$MODEL_FILE_NAME"
 fi
 
 echo "🚀 Launching app... (check Console output in Xcode or: Console.app -> Simulator)"
@@ -152,7 +154,10 @@ for key in \
   GPUF_IOS_TEST_TLS \
   GPUF_IOS_TEST_CA_CERT_PATH \
   GPUF_IOS_TEST_TLS_SERVER_NAME \
-  GPUF_IOS_TEST_CERT_SHA256_PIN
+  GPUF_IOS_TEST_CERT_SHA256_PIN \
+  GPUF_IOS_TEST_PROXY_TLS_SERVER_NAME \
+  GPUF_IOS_TEST_PROXY_CERT_SHA256_PIN \
+  GPUF_IOS_TEST_MODEL_FILE_NAME
 do
   if [ -n "${!key:-}" ]; then
     export "SIMCTL_CHILD_$key=${!key}"

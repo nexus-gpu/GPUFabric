@@ -22,6 +22,22 @@ If an older integration relied on a hidden public-IP fallback, update configurat
 ## Architecture
 ![gpuf-c_code_map](svg/gpuf-c_code_map.svg)
 
+## Roadmap
+
+- [gpuf-c multi-model sharing plan](gpuf-c-multi-model-sharing-plan.md)
+
+## P2P API Proxy
+
+- [gpuf-p2p-proxy lightweight forwarding client](gpuf-p2p-proxy.md)
+
+### P2P Usage Receipt
+
+When `gpuf-c` serves a P2P inference request, it sends a `P2PUsageReceipt` to `gpuf-s` before `P2PInferenceDone`. `gpuf-s` records consumer P2P token usage only after this target-side receipt matches the proxy-side report. This prevents a consumer/proxy from unilaterally forging successful P2P usage for an arbitrary token or client.
+
+## Build And Release
+
+- [Linux gpuf-c build flow](linux-gpuf-c-build-flow.md)
+
 ## Configuration
 Create a config.toml file:
 
@@ -65,6 +81,7 @@ control_tls_server_name = "gpuf.example.internal"
 | `--control-tls` | Connect to the gpuf-s control port over TLS | false |
 | `--control-tls-server-name` | Optional SNI/server-name override for control TLS validation | None |
 | `--client-id` | Unique ID for this client instance | Auto-generated |
+| `--public-ip-endpoint` | Optional endpoint returning this client's public egress IP as plain text | None |
 
 ### Worker Types
 - `tcp`: Standard TCP connection

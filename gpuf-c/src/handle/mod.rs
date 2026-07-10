@@ -2,6 +2,7 @@ pub mod android_sdk;
 pub mod handle_tcp;
 pub mod handle_udp;
 pub mod handle_ws;
+pub mod session_cache;
 pub mod worker_sdk;
 use crate::util::cmd::{Args, EngineType, WorkerType};
 use crate::util::log_icon;
@@ -19,6 +20,7 @@ use futures_util::stream::{SplitSink, SplitStream};
 use std::future::Future;
 #[allow(unused_imports)]
 use std::marker::PhantomData;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_tungstenite::{tungstenite::Message, WebSocketStream};
@@ -52,6 +54,7 @@ pub struct ClientWorker {
     reader: Arc<Mutex<ControlReader>>,
     writer: Arc<Mutex<ControlWriter>>,
     system_info: Arc<SystemInfo>,
+    public_ipv4: Option<u32>,
     devices_info: Arc<Vec<DevicesInfo>>,
     device_memtotal_gb: u32,
     device_total_tflops: u32,
@@ -61,6 +64,7 @@ pub struct ClientWorker {
     engine_type: ClientEngineType,
     args: Args,
     cancel_state: Arc<CancelState>,
+    connection_closed: Arc<AtomicBool>,
     #[cfg(not(target_os = "android"))]
     engine: Arc<Mutex<Option<AnyEngine>>>,
     #[cfg(target_os = "android")]

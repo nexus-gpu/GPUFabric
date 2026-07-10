@@ -48,12 +48,14 @@ WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY gpuf-s/Cargo.toml gpuf-s/
 COPY gpuf-c/Cargo.toml gpuf-c/
+COPY gpuf-p2p-proxy/Cargo.toml gpuf-p2p-proxy/
 COPY common/Cargo.toml common/
 
 # Create empty src trees with placeholder files to satisfy cargo
-RUN mkdir -p gpuf-s/src gpuf-c/src common/src && \
+RUN mkdir -p gpuf-s/src gpuf-c/src gpuf-p2p-proxy/src common/src && \
     echo "fn main() {}" > gpuf-s/src/lib.rs && \
     echo "fn main() {}" > gpuf-c/src/lib.rs && \
+    echo "fn main() {}" > gpuf-p2p-proxy/src/main.rs && \
     echo "fn main() {}" > common/src/lib.rs
 
 # Fetch dependencies (cached if manifests unchanged)
@@ -62,6 +64,7 @@ RUN cargo fetch
 # Now copy the actual source code
 COPY gpuf-s/ gpuf-s/
 COPY gpuf-c/ gpuf-c/
+COPY gpuf-p2p-proxy/ gpuf-p2p-proxy/
 COPY common/ common/
 
 # Build the selected binary

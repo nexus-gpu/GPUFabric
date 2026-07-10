@@ -217,7 +217,7 @@ env ANDROID_NDK_ROOT=<android-ndk> \
     gpuf-c/scripts/test_android_inference.sh
 ```
 
-The script deploys `libgpuf_c_sdk_v9.so`, `libc++_shared.so`, a GGUF model, and a small C test binary through adb. It validates `gpuf_init`, `gpuf_load_model`, `gpuf_create_context`, `gpuf_generate_final_solution_text`, and `gpuf_generate_with_sampling` on the device.
+The script deploys `libgpuf_c_sdk_v9.so`, a GGUF model, and a small C test binary through adb. The SDK package intentionally does not ship `libc++_shared.so`; host Android apps should use their own React Native/fbjni-compatible C++ runtime when needed. The script validates `gpuf_init`, `gpuf_load_model`, `gpuf_create_context`, `gpuf_generate_final_solution_text`, and `gpuf_generate_with_sampling` on the device.
 
 **Features**:
 - ✅ Copy .so files to test directory

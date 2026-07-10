@@ -227,6 +227,34 @@ fn main() {
         }
     }
 
+    // Link CUDA runtime on Linux when building the CUDA binary. llama.cpp's CUDA
+    // objects call cudaRuntime APIs, while llama-cpp-sys only links the driver lib.
+    if target_os == "linux" && cfg!(feature = "cuda") {
+        println!("cargo:rerun-if-env-changed=CUDA_HOME");
+        println!("cargo:rerun-if-env-changed=CUDA_PATH");
+
+        let cuda_roots = env::var("CUDA_HOME")
+            .ok()
+            .into_iter()
+            .chain(env::var("CUDA_PATH").ok())
+            .chain([
+                "/usr/local/cuda".to_string(),
+                "/usr/local/cuda-13".to_string(),
+                "/usr/local/cuda-13.0".to_string(),
+            ]);
+
+        for root in cuda_roots {
+            for suffix in ["lib64", "targets/x86_64-linux/lib"] {
+                let lib_dir = PathBuf::from(&root).join(suffix);
+                if lib_dir.join("libcudart.so").exists() {
+                    println!("cargo:rustc-link-search=native={}", lib_dir.display());
+                }
+            }
+        }
+
+        println!("cargo:rustc-link-lib=cudart");
+    }
+
     // Link OpenMP on Linux target explicitly (LLVM OpenMP)
     // This is required because llama.cpp is compiled with Clang and uses __kmpc_* symbols
     if target_os == "linux" {
@@ -494,6 +522,21 @@ fn main() {
         }
 
         println!("cargo:rustc-link-search=native={}", llama_lib_dir.display());
+        println!("cargo:rerun-if-changed={}", llama_lib_dir.display());
+        for lib in [
+            "libllama.a",
+            "libggml.a",
+            "libggml-base.a",
+            "libggml-cpu.a",
+            "libggml-metal.a",
+            "libggml-blas.a",
+            "libmtmd.a",
+        ] {
+            println!(
+                "cargo:rerun-if-changed={}",
+                llama_lib_dir.join(lib).display()
+            );
+        }
 
         // Core llama.cpp libs
         println!("cargo:rustc-link-lib=static=llama");

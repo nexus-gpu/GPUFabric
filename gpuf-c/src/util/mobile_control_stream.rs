@@ -144,8 +144,12 @@ pub fn connect_mobile_control_stream(
         .as_deref()
         .ok_or_else(|| anyhow!("mobile control TLS server name is required"))?
         .to_string();
-    let server_name = ServerName::try_from(server_name_raw.clone())
-        .map_err(|_| anyhow!("invalid mobile control TLS server name: {server_name_raw}"))?;
+    let server_name = match server_name_raw.parse::<std::net::IpAddr>() {
+        Ok(ip) => ServerName::try_from(ip)
+            .map_err(|_| anyhow!("invalid mobile control TLS server name: {server_name_raw}"))?,
+        Err(_) => ServerName::try_from(server_name_raw.clone())
+            .map_err(|_| anyhow!("invalid mobile control TLS server name: {server_name_raw}"))?,
+    };
 
     let config = build_client_config(tls)?;
     let conn = ClientConnection::new(Arc::new(config), server_name)?;

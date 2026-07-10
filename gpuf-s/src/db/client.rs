@@ -1,3 +1,4 @@
+use crate::util::geo::GeoLocation;
 use crate::util::policy::AccessLevel;
 use crate::util::protoc::ClientId;
 use anyhow::{anyhow, Result};
@@ -106,6 +107,68 @@ pub async fn update_client_db(
     Ok(())
 }
 
+pub async fn update_client_network_geo(
+    pool: &Pool<Postgres>,
+    client_id: &ClientId,
+    public_ip: &str,
+    geo: &GeoLocation,
+) -> Result<()> {
+    let has_resolved_geo = geo
+        .city
+        .as_deref()
+        .map(|city| !city.trim().is_empty())
+        .unwrap_or(false)
+        && geo.latitude.is_some()
+        && geo.longitude.is_some();
+
+    if has_resolved_geo {
+        sqlx::query(
+            r#"
+            UPDATE "public"."gpu_assets"
+            SET public_ip = $1::inet,
+                geo_country = $2,
+                geo_region = $3,
+                geo_city = $4,
+                geo_latitude = $5,
+                geo_longitude = $6,
+                geo_source = $7,
+                geo_updated_at = NOW(),
+                updated_at = NOW()
+            WHERE client_id = $8 AND valid_status = 'valid'
+            "#,
+        )
+        .bind(public_ip)
+        .bind(&geo.country)
+        .bind(&geo.region)
+        .bind(&geo.city)
+        .bind(geo.latitude)
+        .bind(geo.longitude)
+        .bind(&geo.source)
+        .bind(client_id)
+        .execute(pool)
+        .await
+        .map_err(|e| anyhow!("Database query failed: {}", e))?;
+    } else {
+        sqlx::query(
+            r#"
+            UPDATE "public"."gpu_assets"
+            SET public_ip = $1::inet,
+                geo_source = $2,
+                geo_updated_at = NOW(),
+                updated_at = NOW()
+            WHERE client_id = $3 AND valid_status = 'valid'
+            "#,
+        )
+        .bind(public_ip)
+        .bind(&geo.source)
+        .bind(client_id)
+        .execute(pool)
+        .await
+        .map_err(|e| anyhow!("Database query failed: {}", e))?;
+    }
+    Ok(())
+}
+
 #[derive(FromRow)]
 struct ClientStatusRow {
     client_id: [u8; 16],
@@ -121,6 +184,14 @@ struct ClientStatusRow {
     total_tflops: Option<i32>,
     health_rate: f64,
     uptime_days: Option<i32>,
+    public_ip: Option<String>,
+    geo_country: Option<String>,
+    geo_region: Option<String>,
+    geo_city: Option<String>,
+    geo_latitude: Option<f64>,
+    geo_longitude: Option<f64>,
+    geo_source: Option<String>,
+    geo_updated_at: Option<DateTime<Utc>>,
 }
 
 #[derive(serde::Serialize)]
@@ -139,6 +210,14 @@ pub struct ClientDeviceInfo {
     pub created_at: DateTime<Utc>,
     pub uptime_days: u32,
     pub loaded_models: Vec<Model>,
+    pub public_ip: Option<String>,
+    pub geo_country: Option<String>,
+    pub geo_region: Option<String>,
+    pub geo_city: Option<String>,
+    pub geo_latitude: Option<f64>,
+    pub geo_longitude: Option<f64>,
+    pub geo_source: Option<String>,
+    pub geo_updated_at: Option<DateTime<Utc>>,
 }
 
 pub async fn get_loaded_models_batch_from_redis(
@@ -208,6 +287,14 @@ pub async fn get_user_client_status_list(
         si.mem_usage as memory_usage,
         si.disk_usage as storage_usage,
         si.total_tflops as total_tflops,
+        ga.public_ip::TEXT as public_ip,
+        ga.geo_country as geo_country,
+        ga.geo_region as geo_region,
+        ga.geo_city as geo_city,
+        ga.geo_latitude as geo_latitude,
+        ga.geo_longitude as geo_longitude,
+        ga.geo_source as geo_source,
+        ga.geo_updated_at as geo_updated_at,
         COALESCE((
             SELECT (ROUND((AVG(LEAST(1.0, total_heartbeats::FLOAT / 720) * 100.0))::numeric, 2))::FLOAT8
             FROM client_daily_stats 
@@ -317,6 +404,14 @@ pub async fn get_user_client_status_list(
                 created_at: row.created_at,
                 uptime_days: row.uptime_days.unwrap_or(0) as u32,
                 loaded_models: vec![],
+                public_ip: row.public_ip,
+                geo_country: row.geo_country,
+                geo_region: row.geo_region,
+                geo_city: row.geo_city,
+                geo_latitude: row.geo_latitude,
+                geo_longitude: row.geo_longitude,
+                geo_source: row.geo_source,
+                geo_updated_at: row.geo_updated_at,
             }
         })
         .collect();
@@ -564,6 +659,10 @@ pub async fn upsert_client_status(
     .execute(pool)
     .await?;
     Ok(())
+}
+
+pub async fn mark_client_online_seen(pool: &Pool<Postgres>, client_id: &ClientId) -> Result<()> {
+    upsert_client_status(pool, client_id, "online").await
 }
 
 // redis

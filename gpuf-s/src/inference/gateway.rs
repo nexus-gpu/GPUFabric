@@ -7,6 +7,7 @@ use axum::{
     Router,
 };
 use rdkafka::producer::FutureProducer;
+use sha2::{Digest, Sha256};
 use sqlx::{Pool, Postgres};
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
@@ -26,6 +27,7 @@ use std::time::Duration;
 pub struct AuthContext {
     pub client_ids: Vec<ClientId>,
     pub access_level: AccessLevel,
+    pub token_hash: String,
 }
 
 /// Inference Gateway - Handles external API requests and routes them to Android devices
@@ -84,10 +86,12 @@ impl InferenceGateway {
         debug!("Received bearer token ({} bytes)", token.len());
         match get_user_client_by_token(&db_pool, token.as_str()).await {
             Ok((client_ids, access_level)) => {
+                let token_hash = hex::encode(Sha256::digest(token.as_bytes()));
                 let mut req = req;
                 req.extensions_mut().insert(AuthContext {
                     client_ids,
                     access_level,
+                    token_hash,
                 });
                 next.run(req).await
             }
@@ -157,12 +161,21 @@ impl InferenceGateway {
                 "/v1/chat/completions",
                 post(handlers::handle_chat_completion),
             )
+            .route("/v1/embeddings", post(handlers::handle_embeddings))
+            .route(
+                "/api/open-apis/projects/:project_id/easyllms/embeddings",
+                post(handlers::handle_sophnet_embeddings),
+            )
             .route("/v1/models", get(handlers::list_models))
             // Device Management APIs
             .route("/api/v1/devices", get(handlers::list_devices))
             .route(
                 "/api/v1/devices/:id/status",
                 get(handlers::get_device_status),
+            )
+            .route(
+                "/api/v1/session/routes/metrics",
+                get(handlers::session_route_metrics),
             )
             .route_layer(middleware::from_fn_with_state(
                 self.db_pool.clone(),

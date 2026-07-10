@@ -6,7 +6,7 @@ use axum::{
     Router,
 };
 
-use crate::api_server::{apk, client, models, points};
+use crate::api_server::{apk, banking_admin, client, compute_map, models, points};
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 use tracing::{info, warn};
@@ -56,6 +56,25 @@ impl ApiServer {
             .route(
                 "/api/user/model_download_progress",
                 get(client::get_model_download_progress),
+            )
+            // Public compute map API
+            .route("/api/compute-map", get(compute_map::get_compute_map))
+            // Banking admin dashboard APIs
+            .route(
+                "/api/banking/admin/overview",
+                get(banking_admin::get_overview),
+            )
+            .route(
+                "/api/banking/admin/network-map",
+                get(banking_admin::get_network_map),
+            )
+            .route(
+                "/api/banking/admin/compute-nodes",
+                get(banking_admin::get_compute_nodes),
+            )
+            .route(
+                "/api/banking/admin/token-throughput",
+                get(banking_admin::get_token_throughput),
             )
             // Model Management APIs
             .route("/api/models/insert", post(models::create_or_update_model))

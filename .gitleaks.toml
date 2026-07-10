@@ -1,0 +1,19 @@
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Generated artifacts, local credentials, and vendored trees are not release source."
+paths = [
+  '''(^|/)target/''',
+  '''(^|/)backups/''',
+  '''(^|/)llama\.cpp/''',
+  '''(^|/)gpuf-c/build_android/''',
+  '''(^|/)gpuf-c/build_ios/''',
+  '''(^|/)gpuf-c/build_llama_ios/''',
+  '''(^|/)gpuf-c/src/target/''',
+  '''(^|/)gpuf-c/examples/.*/DerivedData/''',
+  '''(^|/)docker/\.env\.gpuf-s-test$''',
+  '''(^|/)(ca-key|key|cert|ca-cert)\.pem$''',
+  '''(^|/)docker/(ca-key|key|cert|ca-cert)\.pem$''',
+  '''(^|/).*\.srl$''',
+]

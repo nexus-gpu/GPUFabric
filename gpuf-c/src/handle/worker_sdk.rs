@@ -1,3 +1,5 @@
+#[cfg(not(target_os = "ios"))]
+use crate::handle::session_cache::record_worker_cache_decision;
 use crate::util::mobile_control_stream::{
     connect_mobile_control_stream, MobileControlStream, MobileControlTlsConfig,
 };
@@ -5,17 +7,125 @@ use anyhow::{anyhow, Result};
 use common::{
     Command, CommandV1, DevicesInfo, EngineType as CommonEngineType, Model, OsType, SystemInfo,
 };
+use serde::{Deserialize, Serialize};
 use std::ffi::{c_char, c_void};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-const CURRENT_VERSION: u32 = 1;
+const CURRENT_VERSION: u32 = common::COMMAND_V1_BASE_VERSION;
+const DEFAULT_PROXY_SERVER_NAME: &str = "localhost";
+
+#[cfg(target_os = "ios")]
+#[derive(Debug, Clone, Copy)]
+enum MobileWorkerCachePolicy {
+    Auto,
+    Bypass,
+    Reset,
+    Unknown,
+}
+
+#[cfg(target_os = "ios")]
+impl MobileWorkerCachePolicy {
+    fn parse(raw: Option<&str>) -> Self {
+        match raw.map(str::trim).filter(|s| !s.is_empty()) {
+            None => Self::Auto,
+            Some(value) if value.eq_ignore_ascii_case("auto") => Self::Auto,
+            Some(value) if value.eq_ignore_ascii_case("bypass") => Self::Bypass,
+            Some(value) if value.eq_ignore_ascii_case("reset") => Self::Reset,
+            Some(_) => Self::Unknown,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Bypass => "bypass",
+            Self::Reset => "reset",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+#[cfg(target_os = "ios")]
+#[derive(Debug, Clone, Copy)]
+enum MobileWorkerCacheDecisionStatus {
+    Cold,
+    Bypass,
+    Reset,
+    UnsupportedPolicy,
+    Disabled,
+}
+
+#[cfg(target_os = "ios")]
+impl MobileWorkerCacheDecisionStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Cold => "cold",
+            Self::Bypass => "bypass",
+            Self::Reset => "reset",
+            Self::UnsupportedPolicy => "unsupported_policy",
+            Self::Disabled => "disabled",
+        }
+    }
+}
+
+#[cfg(target_os = "ios")]
+struct MobileWorkerCacheDecision {
+    session_hash: Option<String>,
+    policy: MobileWorkerCachePolicy,
+    status: MobileWorkerCacheDecisionStatus,
+    kv_reuse_enabled: bool,
+}
+
+#[cfg(target_os = "ios")]
+fn record_worker_cache_decision(
+    session_id: Option<&str>,
+    cache_policy: Option<&str>,
+) -> MobileWorkerCacheDecision {
+    let policy = MobileWorkerCachePolicy::parse(cache_policy);
+    let session_hash = session_id.map(short_session_hash);
+    let status = if session_hash.is_none() {
+        MobileWorkerCacheDecisionStatus::Disabled
+    } else {
+        match policy {
+            MobileWorkerCachePolicy::Auto => MobileWorkerCacheDecisionStatus::Cold,
+            MobileWorkerCachePolicy::Bypass => MobileWorkerCacheDecisionStatus::Bypass,
+            MobileWorkerCachePolicy::Reset => MobileWorkerCacheDecisionStatus::Reset,
+            MobileWorkerCachePolicy::Unknown => MobileWorkerCacheDecisionStatus::UnsupportedPolicy,
+        }
+    };
+
+    MobileWorkerCacheDecision {
+        session_hash,
+        policy,
+        status,
+        kv_reuse_enabled: false,
+    }
+}
+
+#[cfg(target_os = "ios")]
+fn short_session_hash(session_id: &str) -> String {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    hasher.update(session_id.as_bytes());
+    let digest = hasher.finalize();
+    hex::encode(&digest[..8])
+}
 
 fn derive_model_id_from_path(model_path: &str) -> String {
     let lower = model_path.to_ascii_lowercase();
     if lower.contains("llama-3") || lower.contains("llama3") {
         return "llama3".to_string();
+    }
+    if lower.contains("minicpm") {
+        return std::path::Path::new(model_path)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .filter(|stem| !stem.is_empty())
+            .unwrap_or("minicpm")
+            .to_string();
     }
     if lower.contains("qwen") {
         return "qwen".to_string();
@@ -38,7 +148,9 @@ static WORKER_TCP_STREAM: OnceLock<Mutex<Option<Arc<Mutex<MobileControlStream>>>
     OnceLock::new();
 static WORKER_SERVER_ADDR: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 static WORKER_CONTROL_PORT: OnceLock<Mutex<Option<u16>>> = OnceLock::new();
+static WORKER_PROXY_PORT: OnceLock<Mutex<Option<u16>>> = OnceLock::new();
 static WORKER_CONTROL_TLS: OnceLock<Mutex<MobileControlTlsConfig>> = OnceLock::new();
+static WORKER_PROXY_TLS: OnceLock<Mutex<MobileControlTlsConfig>> = OnceLock::new();
 static WORKER_CLIENT_ID: OnceLock<Mutex<Option<[u8; 16]>>> = OnceLock::new();
 static WORKER_STOP_SIGNAL: OnceLock<Arc<AtomicBool>> = OnceLock::new();
 static WORKER_CANCELLED_TASK: OnceLock<Mutex<Option<String>>> = OnceLock::new();
@@ -78,6 +190,17 @@ fn registered_remote_worker_user_data() -> *mut c_void {
         .unwrap_or(std::ptr::null_mut())
 }
 
+pub fn configure_remote_worker_proxy_tls(tls_config: MobileControlTlsConfig) -> i32 {
+    let slot = WORKER_PROXY_TLS.get_or_init(|| Mutex::new(default_proxy_tls_config()));
+    match slot.lock() {
+        Ok(mut guard) => {
+            *guard = tls_config;
+            0
+        }
+        Err(_) => -1,
+    }
+}
+
 fn os_type() -> OsType {
     #[cfg(target_os = "ios")]
     {
@@ -114,15 +237,50 @@ fn get_worker_control_tls_config() -> MobileControlTlsConfig {
         .unwrap_or_else(MobileControlTlsConfig::plaintext)
 }
 
+fn default_proxy_tls_config() -> MobileControlTlsConfig {
+    MobileControlTlsConfig {
+        enabled: true,
+        ca_cert_path: None,
+        server_name: Some(DEFAULT_PROXY_SERVER_NAME.to_string()),
+        cert_sha256_pin: None,
+    }
+}
+
+fn get_worker_proxy_tls_config() -> MobileControlTlsConfig {
+    WORKER_PROXY_TLS
+        .get()
+        .and_then(|m| m.lock().ok().map(|g| g.clone()))
+        .unwrap_or_else(default_proxy_tls_config)
+}
+
 pub async fn perform_login(
     server_addr: &str,
     control_port: u16,
     client_id_hex: &str,
     auto_models: bool,
 ) -> Result<()> {
-    perform_login_with_tls(
+    perform_login_with_tls_and_proxy(
         server_addr,
         control_port,
+        0,
+        client_id_hex,
+        auto_models,
+        MobileControlTlsConfig::plaintext(),
+    )
+    .await
+}
+
+pub async fn perform_login_with_proxy(
+    server_addr: &str,
+    control_port: u16,
+    proxy_port: u16,
+    client_id_hex: &str,
+    auto_models: bool,
+) -> Result<()> {
+    perform_login_with_tls_and_proxy(
+        server_addr,
+        control_port,
+        proxy_port,
         client_id_hex,
         auto_models,
         MobileControlTlsConfig::plaintext(),
@@ -133,6 +291,25 @@ pub async fn perform_login(
 pub async fn perform_login_with_tls(
     server_addr: &str,
     control_port: u16,
+    client_id_hex: &str,
+    auto_models: bool,
+    tls_config: MobileControlTlsConfig,
+) -> Result<()> {
+    perform_login_with_tls_and_proxy(
+        server_addr,
+        control_port,
+        0,
+        client_id_hex,
+        auto_models,
+        tls_config,
+    )
+    .await
+}
+
+pub async fn perform_login_with_tls_and_proxy(
+    server_addr: &str,
+    control_port: u16,
+    proxy_port: u16,
     client_id_hex: &str,
     auto_models: bool,
     tls_config: MobileControlTlsConfig,
@@ -202,6 +379,15 @@ pub async fn perform_login_with_tls(
         let slot = WORKER_CONTROL_PORT.get_or_init(|| Mutex::new(None));
         let mut guard = slot.lock().unwrap();
         *guard = Some(control_port);
+    }
+    {
+        let slot = WORKER_PROXY_PORT.get_or_init(|| Mutex::new(None));
+        let mut guard = slot.lock().unwrap();
+        *guard = if proxy_port == 0 {
+            None
+        } else {
+            Some(proxy_port)
+        };
     }
     {
         let slot =
@@ -462,6 +648,48 @@ pub async fn start_worker_tasks_with_callback_ptr(
                 };
 
                 match v1 {
+                    CommandV1::RequestNewProxyConn { proxy_conn_id } => {
+                        emit_callback(
+                            handler_callback,
+                            &format!("REQUEST_NEW_PROXY_CONN - {}", hex::encode(proxy_conn_id)),
+                        );
+
+                        let Some(proxy_port) = WORKER_PROXY_PORT
+                            .get()
+                            .and_then(|m| m.lock().ok().and_then(|g| *g))
+                        else {
+                            emit_callback(
+                                handler_callback,
+                                "PROXY_FAILED - proxy port not configured",
+                            );
+                            continue;
+                        };
+
+                        let proxy_server_addr = server_addr.clone();
+                        let proxy_tls = get_worker_proxy_tls_config();
+                        let proxy_callback = handler_callback;
+                        std::thread::spawn(move || {
+                            match handle_proxy_connection(
+                                &proxy_server_addr,
+                                proxy_port,
+                                &proxy_tls,
+                                proxy_conn_id,
+                            ) {
+                                Ok(()) => emit_callback(
+                                    proxy_callback,
+                                    &format!("PROXY_DONE - {}", hex::encode(proxy_conn_id)),
+                                ),
+                                Err(e) => emit_callback(
+                                    proxy_callback,
+                                    &format!(
+                                        "PROXY_FAILED - {} - error redacted ({} bytes)",
+                                        hex::encode(proxy_conn_id),
+                                        e.to_string().len()
+                                    ),
+                                ),
+                            }
+                        });
+                    }
                     CommandV1::LoginResult {
                         success,
                         pods_model: _,
@@ -544,6 +772,8 @@ pub async fn start_worker_tasks_with_callback_ptr(
                     }
                     CommandV1::InferenceTask {
                         task_id,
+                        session_id,
+                        cache_policy,
                         prompt,
                         max_tokens,
                         temperature,
@@ -553,6 +783,20 @@ pub async fn start_worker_tasks_with_callback_ptr(
                         ..
                     } => {
                         emit_callback(handler_callback, &format!("INFERENCE_TASK - {task_id}"));
+                        let cache_decision = record_worker_cache_decision(
+                            session_id.as_deref(),
+                            cache_policy.as_deref(),
+                        );
+                        emit_callback(
+                            handler_callback,
+                            &format!(
+                                "SESSION_CACHE - {task_id} session={} policy={} status={} kv_reuse={}",
+                                cache_decision.session_hash.as_deref().unwrap_or("none"),
+                                cache_decision.policy.as_str(),
+                                cache_decision.status.as_str(),
+                                cache_decision.kv_reuse_enabled
+                            ),
+                        );
                         let effective_max_tokens = std::cmp::min(max_tokens, 512);
                         if effective_max_tokens != max_tokens {
                             emit_callback(
@@ -599,6 +843,8 @@ pub async fn start_worker_tasks_with_callback_ptr(
                     }
                     CommandV1::ChatInferenceTask {
                         task_id,
+                        session_id,
+                        cache_policy,
                         model: _,
                         messages,
                         max_tokens,
@@ -611,6 +857,20 @@ pub async fn start_worker_tasks_with_callback_ptr(
                         emit_callback(
                             handler_callback,
                             &format!("CHAT_INFERENCE_TASK - {task_id}"),
+                        );
+                        let cache_decision = record_worker_cache_decision(
+                            session_id.as_deref(),
+                            cache_policy.as_deref(),
+                        );
+                        emit_callback(
+                            handler_callback,
+                            &format!(
+                                "SESSION_CACHE - {task_id} session={} policy={} status={} kv_reuse={}",
+                                cache_decision.session_hash.as_deref().unwrap_or("none"),
+                                cache_decision.policy.as_str(),
+                                cache_decision.status.as_str(),
+                                cache_decision.kv_reuse_enabled
+                            ),
                         );
                         let effective_max_tokens = std::cmp::min(max_tokens, 512);
                         if effective_max_tokens != max_tokens {
@@ -745,6 +1005,285 @@ fn build_chat_prompt_with_template(messages: &[common::ChatMessage]) -> String {
         prompt.push_str("assistant: ");
         prompt
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct MobileChatCompletionRequest {
+    model: Option<String>,
+    messages: Vec<MobileHttpChatMessage>,
+    max_tokens: Option<u32>,
+    temperature: Option<f32>,
+    top_k: Option<i32>,
+    top_p: Option<f32>,
+    repeat_penalty: Option<f32>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct MobileHttpChatMessage {
+    role: String,
+    content: String,
+}
+
+#[derive(Debug, Serialize)]
+struct MobileChatCompletionResponse {
+    id: String,
+    object: String,
+    created: u64,
+    model: String,
+    choices: Vec<MobileChatChoice>,
+    usage: MobileUsage,
+}
+
+#[derive(Debug, Serialize)]
+struct MobileChatChoice {
+    index: u32,
+    message: MobileHttpChatMessage,
+    finish_reason: String,
+}
+
+#[derive(Debug, Serialize)]
+struct MobileUsage {
+    prompt_tokens: u32,
+    completion_tokens: u32,
+    total_tokens: u32,
+}
+
+fn handle_proxy_connection(
+    server_addr: &str,
+    proxy_port: u16,
+    tls_config: &MobileControlTlsConfig,
+    proxy_conn_id: [u8; 16],
+) -> Result<()> {
+    let mut proxy_stream = connect_mobile_control_stream(server_addr, proxy_port, tls_config)?;
+    proxy_stream.set_read_timeout(Some(std::time::Duration::from_secs(120)))?;
+    proxy_stream.set_write_timeout(Some(std::time::Duration::from_secs(120)))?;
+
+    let notify_cmd = Command::V1(CommandV1::NewProxyConn { proxy_conn_id });
+    common::write_command_sync(&mut proxy_stream, &notify_cmd)
+        .map_err(|e| anyhow!("failed to send NewProxyConn: {e}"))?;
+    proxy_stream.flush().ok();
+
+    let request = read_http_request(&mut proxy_stream)?;
+    let response = handle_openai_chat_http(&request)?;
+    proxy_stream.write_all(response.as_bytes())?;
+    proxy_stream.flush()?;
+
+    Ok(())
+}
+
+fn read_http_request(stream: &mut MobileControlStream) -> Result<Vec<u8>> {
+    let mut buffer = Vec::with_capacity(16 * 1024);
+    let mut temp = [0u8; 2048];
+    let mut header_end = None;
+    let mut content_length = 0usize;
+
+    while buffer.len() < 10 * 1024 * 1024 {
+        let n = stream.read(&mut temp)?;
+        if n == 0 {
+            break;
+        }
+        buffer.extend_from_slice(&temp[..n]);
+
+        if header_end.is_none() {
+            if let Some(pos) = find_subsequence(&buffer, b"\r\n\r\n") {
+                let end = pos + 4;
+                content_length = parse_content_length(&buffer[..end]).unwrap_or(0);
+                header_end = Some(end);
+            }
+        }
+
+        if let Some(end) = header_end {
+            if buffer.len() >= end.saturating_add(content_length) {
+                return Ok(buffer);
+            }
+        }
+    }
+
+    if buffer.is_empty() {
+        anyhow::bail!("empty HTTP request from proxy");
+    }
+
+    Ok(buffer)
+}
+
+fn handle_openai_chat_http(request: &[u8]) -> Result<String> {
+    let header_end =
+        find_subsequence(request, b"\r\n\r\n").ok_or_else(|| anyhow!("invalid HTTP request"))? + 4;
+    let content_length = parse_content_length(&request[..header_end]).unwrap_or(0);
+    let body_end = header_end.saturating_add(content_length).min(request.len());
+    let body = &request[header_end..body_end];
+
+    let chat_request: MobileChatCompletionRequest = serde_json::from_slice(body)
+        .map_err(|e| anyhow!("invalid OpenAI chat completion request JSON: {e}"))?;
+
+    let model = chat_request.model.unwrap_or_else(|| "llama3".to_string());
+    let messages: Vec<common::ChatMessage> = chat_request
+        .messages
+        .iter()
+        .map(|message| common::ChatMessage {
+            role: message.role.clone(),
+            content: message.content.clone(),
+        })
+        .collect();
+    let prompt = build_chat_prompt_with_template(&messages);
+    let max_tokens = chat_request.max_tokens.unwrap_or(256).min(512);
+    let temperature = chat_request.temperature.unwrap_or(0.8);
+    let top_k = chat_request.top_k.unwrap_or(40);
+    let top_p = chat_request.top_p.unwrap_or(0.95);
+    let repeat_penalty = chat_request.repeat_penalty.unwrap_or(1.1);
+
+    let generated_text = generate_text_for_proxy(
+        &prompt,
+        max_tokens,
+        temperature,
+        top_k,
+        top_p,
+        repeat_penalty,
+    )?;
+
+    let prompt_tokens = estimate_token_count(&prompt);
+    let completion_tokens = estimate_token_count(&generated_text);
+    let response = MobileChatCompletionResponse {
+        id: format!("chatcmpl-{}", uuid::Uuid::new_v4()),
+        object: "chat.completion".to_string(),
+        created: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+        model,
+        choices: vec![MobileChatChoice {
+            index: 0,
+            message: MobileHttpChatMessage {
+                role: "assistant".to_string(),
+                content: generated_text,
+            },
+            finish_reason: "stop".to_string(),
+        }],
+        usage: MobileUsage {
+            prompt_tokens,
+            completion_tokens,
+            total_tokens: prompt_tokens.saturating_add(completion_tokens),
+        },
+    };
+
+    let body = serde_json::to_string(&response)?;
+    Ok(format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    ))
+}
+
+fn generate_text_for_proxy(
+    prompt: &str,
+    max_tokens: u32,
+    temperature: f32,
+    top_k: i32,
+    top_p: f32,
+    repeat_penalty: f32,
+) -> Result<String> {
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        use crate::{gpuf_start_generation_async, GLOBAL_CONTEXT_PTR, GLOBAL_INFERENCE_MUTEX};
+
+        let _lock = GLOBAL_INFERENCE_MUTEX.lock().unwrap();
+        let ctx_ptr = GLOBAL_CONTEXT_PTR.load(Ordering::SeqCst);
+        if ctx_ptr.is_null() {
+            anyhow::bail!("Model not loaded - please load a model first");
+        }
+
+        let prompt_c =
+            std::ffi::CString::new(prompt).map_err(|e| anyhow!("Invalid prompt: {}", e))?;
+
+        #[repr(C)]
+        struct ProxyGenerationState {
+            output: String,
+            completion_tokens: u32,
+        }
+
+        extern "C" fn on_token(token: *const c_char, user_data: *mut std::ffi::c_void) {
+            if token.is_null() || user_data.is_null() {
+                return;
+            }
+            let state = unsafe { &mut *(user_data as *mut ProxyGenerationState) };
+            let Ok(token_str) = (unsafe { std::ffi::CStr::from_ptr(token).to_str() }) else {
+                return;
+            };
+            if token_str.is_empty() {
+                return;
+            }
+            state.completion_tokens = state.completion_tokens.saturating_add(1);
+            state.output.push_str(&filter_control_tokens(token_str));
+        }
+
+        let mut state = ProxyGenerationState {
+            output: String::new(),
+            completion_tokens: 0,
+        };
+        let rc = gpuf_start_generation_async(
+            ctx_ptr,
+            prompt_c.as_ptr(),
+            max_tokens as i32,
+            temperature,
+            top_k,
+            top_p,
+            repeat_penalty,
+            Some(on_token),
+            (&mut state as *mut ProxyGenerationState) as *mut std::ffi::c_void,
+        );
+        if rc < 0 {
+            anyhow::bail!("proxy generation failed: {rc}");
+        }
+        Ok(state.output)
+    }
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let _ = (
+            prompt,
+            max_tokens,
+            temperature,
+            top_k,
+            top_p,
+            repeat_penalty,
+        );
+        anyhow::bail!("proxy generation is only implemented for mobile platforms");
+    }
+}
+
+fn filter_control_tokens(text: &str) -> String {
+    text.replace("<|end|>", "")
+        .replace("<|start|>", "")
+        .replace("<|channel|>", "")
+        .replace("<|message|>", "")
+        .replace("<|eot_id|>", "")
+        .replace("<|start_header_id|>", "")
+        .replace("<|end_header_id|>", "")
+}
+
+fn estimate_token_count(text: &str) -> u32 {
+    std::cmp::max(1, text.split_whitespace().count()) as u32
+}
+
+fn parse_content_length(headers: &[u8]) -> Option<usize> {
+    let headers = std::str::from_utf8(headers).ok()?;
+    headers.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        if name.trim().eq_ignore_ascii_case("content-length") {
+            value.trim().parse::<usize>().ok()
+        } else {
+            None
+        }
+    })
+}
+
+fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(0);
+    }
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
 #[cfg_attr(

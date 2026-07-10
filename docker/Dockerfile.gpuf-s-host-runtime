@@ -1,0 +1,13 @@
+FROM debian:13.4
+
+RUN useradd -m appuser && mkdir -p /app && chown -R appuser:appuser /app
+USER appuser
+WORKDIR /app
+
+COPY --chown=appuser:appuser target/release/gpuf-s /app/gpuf-s
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD pgrep -x gpuf-s >/dev/null || exit 1
+
+EXPOSE 17000 17001 18080 18081 8081
+ENTRYPOINT ["/app/gpuf-s"]

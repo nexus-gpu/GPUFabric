@@ -9,6 +9,10 @@ use config::GpuModelConfig;
 use std::fmt;
 use zeroize::Zeroize;
 
+pub const COMMAND_V1_BASE_VERSION: u32 = 1;
+pub const COMMAND_V1_EMBEDDING_TASKS_VERSION: u32 = 2;
+pub const CURRENT_COMMAND_V1_VERSION: u32 = COMMAND_V1_EMBEDDING_TASKS_VERSION;
+
 #[derive(Serialize, Deserialize, Encode, Decode, Debug, Clone)]
 pub struct Model {
     pub id: String,
@@ -74,6 +78,68 @@ pub enum DownloadStatus {
 pub struct ChatMessage {
     pub role: String,
     pub content: String,
+}
+
+#[derive(Serialize, Deserialize, Encode, Decode, Debug, Clone)]
+pub struct ChatMessageV2 {
+    pub role: String,
+    pub content: ChatMessageContent,
+}
+
+#[derive(Serialize, Deserialize, Encode, Decode, Debug, Clone)]
+#[serde(untagged)]
+pub enum ChatMessageContent {
+    Text(String),
+    Parts(Vec<ChatContentPart>),
+}
+
+impl ChatMessageContent {
+    pub fn as_text(&self) -> Option<&str> {
+        match self {
+            Self::Text(text) => Some(text),
+            Self::Parts(_) => None,
+        }
+    }
+
+    pub fn is_multimodal(&self) -> bool {
+        matches!(self, Self::Parts(parts) if parts.iter().any(ChatContentPart::is_image_like))
+    }
+}
+
+impl From<String> for ChatMessageContent {
+    fn from(value: String) -> Self {
+        Self::Text(value)
+    }
+}
+
+#[derive(Serialize, Deserialize, Encode, Decode, Debug, Clone)]
+pub struct ChatContentPart {
+    pub r#type: String,
+    pub text: Option<String>,
+    pub image_url: Option<ImageUrlValue>,
+    pub image: Option<String>,
+}
+
+impl ChatContentPart {
+    pub fn is_image_like(&self) -> bool {
+        matches!(self.r#type.as_str(), "image_url" | "image")
+    }
+}
+
+#[derive(Serialize, Deserialize, Encode, Decode, Debug, Clone)]
+#[serde(untagged)]
+pub enum ImageUrlValue {
+    Url(String),
+    Object { url: String, detail: Option<String> },
+}
+
+impl ImageUrlValue {
+    pub fn url(&self) -> &str {
+        match self {
+            Self::Url(url) => url,
+            Self::Object { url, .. } => url,
+        }
+    }
 }
 
 #[derive(Encode, Decode, Debug, Clone, Copy, PartialEq, Eq)]
@@ -213,6 +279,8 @@ pub enum CommandV1 {
     // Inference task from server to client
     InferenceTask {
         task_id: String,
+        session_id: Option<String>,
+        cache_policy: Option<String>,
         prompt: String,
         max_tokens: u32,
         temperature: f32,
@@ -226,6 +294,8 @@ pub enum CommandV1 {
     // Chat inference task from server to client
     ChatInferenceTask {
         task_id: String,
+        session_id: Option<String>,
+        cache_policy: Option<String>,
         model: String,
         messages: Vec<ChatMessage>,
         max_tokens: u32,
@@ -275,6 +345,23 @@ pub enum CommandV1 {
         speed_bps: u64,
         status: DownloadStatus,
         error: Option<String>,
+    },
+
+    // Embedding task from server to client. Keep new variants at the end so
+    // older CommandV1 discriminants stay compatible.
+    EmbeddingTask {
+        task_id: String,
+        model: String,
+        input: Vec<String>,
+        normalize: bool,
+    },
+
+    EmbeddingResult {
+        task_id: String,
+        success: bool,
+        embeddings: Vec<Vec<f32>>,
+        error: Option<String>,
+        prompt_tokens: u32,
     },
 }
 
@@ -376,6 +463,144 @@ pub enum CommandV2 {
         connection_id: [u8; 16],
         error: String,
     },
+
+    /// Chat inference task with OpenAI-compatible multimodal content parts.
+    ChatInferenceTask {
+        task_id: String,
+        session_id: Option<String>,
+        cache_policy: Option<String>,
+        model: String,
+        messages: Vec<ChatMessageV2>,
+        max_tokens: u32,
+        temperature: f32,
+        top_k: u32,
+        top_p: f32,
+        repeat_penalty: f32,
+        repeat_last_n: i32,
+        min_keep: u32,
+    },
+
+    /// P2P file transfer start metadata for OCR/chat attachments.
+    P2PFileStart {
+        connection_id: [u8; 16],
+        transfer_id: [u8; 16],
+        task_id: Option<String>,
+        purpose: P2PFilePurpose,
+        file_name: Option<String>,
+        mime_type: String,
+        byte_size: u64,
+        sha256: [u8; 32],
+    },
+
+    /// P2P file payload chunk. Integrity is covered by the signed data-plane envelope.
+    P2PFileChunk {
+        connection_id: [u8; 16],
+        transfer_id: [u8; 16],
+        seq: u32,
+        offset: u64,
+        data: Vec<u8>,
+    },
+
+    /// P2P file transfer completion marker.
+    P2PFileDone {
+        connection_id: [u8; 16],
+        transfer_id: [u8; 16],
+        byte_size: u64,
+        sha256: [u8; 32],
+    },
+
+    /// P2P file transfer acknowledgement for flow control and resume.
+    P2PFileAck {
+        connection_id: [u8; 16],
+        transfer_id: [u8; 16],
+        received_bytes: u64,
+        next_offset: u64,
+        done: bool,
+        error: Option<String>,
+    },
+
+    /// P2P file transfer cancellation.
+    P2PFileCancel {
+        connection_id: [u8; 16],
+        transfer_id: [u8; 16],
+        reason: String,
+    },
+
+    /// Consumer-only P2P session login. This is used by lightweight SDK/proxy
+    /// clients that need to initiate P2P data-plane sessions but must not be
+    /// registered as compute devices.
+    P2PConsumerLogin {
+        consumer_id: [u8; 16],
+        api_token: RedactedString,
+    },
+
+    P2PConsumerLoginResult {
+        success: bool,
+        error: Option<String>,
+    },
+
+    /// Usage reported by an authenticated consumer-only P2P proxy after a
+    /// real data-plane request completes. gpuf-s must bind this to the
+    /// authenticated consumer session; token_hash/client ownership is never
+    /// trusted from this payload.
+    P2PUsageReport {
+        consumer_id: [u8; 16],
+        target_client_id: [u8; 16],
+        connection_id: [u8; 16],
+        task_id: String,
+        request_id: Option<String>,
+        model: String,
+        endpoint: String,
+        transport: P2PUsageTransport,
+        stream: bool,
+        multimodal: bool,
+        prompt_tokens: u32,
+        completion_tokens: u32,
+        total_tokens: u32,
+        analysis_tokens: u32,
+        final_tokens: u32,
+        bytes_up: u64,
+        bytes_down: u64,
+        chunk_count: u32,
+        retry_count: u32,
+        connect_ms: u64,
+        ttft_ms: Option<u64>,
+        total_ms: u64,
+        success: bool,
+        error: Option<String>,
+        output_sha256: Option<[u8; 32]>,
+    },
+
+    /// Usage receipt emitted by the target compute client. gpuf-s records
+    /// consumer P2P usage only when this receipt matches the consumer report.
+    P2PUsageReceipt {
+        source_client_id: [u8; 16],
+        target_client_id: [u8; 16],
+        connection_id: [u8; 16],
+        task_id: String,
+        prompt_tokens: u32,
+        completion_tokens: u32,
+        total_tokens: u32,
+        analysis_tokens: u32,
+        final_tokens: u32,
+        success: bool,
+        error: Option<String>,
+        output_sha256: Option<[u8; 32]>,
+    },
+}
+
+#[derive(Encode, Decode, Debug, Clone, PartialEq, Eq)]
+pub enum P2PFilePurpose {
+    OcrImage,
+    ChatImage,
+    GenericAttachment,
+}
+
+#[derive(Encode, Decode, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum P2PUsageTransport {
+    DirectUdp,
+    RelayUdp,
+    FallbackHttp,
 }
 
 #[derive(Encode, Decode, Clone, PartialEq, Eq)]
@@ -904,5 +1129,260 @@ async fn test_command_serialization_roundtrip() {
             }
         }
         _ => panic!("Command version mismatch"),
+    }
+}
+
+#[tokio::test]
+async fn test_inference_task_preserves_session_fields() {
+    let inference_cmd = Command::V1(CommandV1::InferenceTask {
+        task_id: "task-1".to_string(),
+        session_id: Some("session-1234567890".to_string()),
+        cache_policy: Some("reset".to_string()),
+        prompt: "hello".to_string(),
+        max_tokens: 16,
+        temperature: 0.2,
+        top_k: 8,
+        top_p: 0.9,
+        repeat_penalty: 1.05,
+        repeat_last_n: 32,
+        min_keep: 1,
+    });
+
+    let chat_cmd = Command::V1(CommandV1::ChatInferenceTask {
+        task_id: "task-2".to_string(),
+        session_id: Some("session-2234567890".to_string()),
+        cache_policy: Some("bypass".to_string()),
+        model: "gpuf".to_string(),
+        messages: vec![ChatMessage {
+            role: "user".to_string(),
+            content: "ping".to_string(),
+        }],
+        max_tokens: 32,
+        temperature: 0.3,
+        top_k: 16,
+        top_p: 0.95,
+        repeat_penalty: 1.0,
+        repeat_last_n: 8,
+        min_keep: 1,
+    });
+
+    let config = bincode_config::standard()
+        .with_big_endian()
+        .with_fixed_int_encoding();
+
+    let encoded_inference = bincode::encode_to_vec(&inference_cmd, config).unwrap();
+    let (decoded_inference, _) =
+        bincode::decode_from_slice::<Command, _>(&encoded_inference, config).unwrap();
+
+    let encoded_chat = bincode::encode_to_vec(&chat_cmd, config).unwrap();
+    let (decoded_chat, _) =
+        bincode::decode_from_slice::<Command, _>(&encoded_chat, config).unwrap();
+
+    match decoded_inference {
+        Command::V1(CommandV1::InferenceTask {
+            session_id,
+            cache_policy,
+            ..
+        }) => {
+            assert_eq!(session_id.as_deref(), Some("session-1234567890"));
+            assert_eq!(cache_policy.as_deref(), Some("reset"));
+        }
+        _ => panic!("unexpected inference variant"),
+    }
+
+    match decoded_chat {
+        Command::V1(CommandV1::ChatInferenceTask {
+            session_id,
+            cache_policy,
+            ..
+        }) => {
+            assert_eq!(session_id.as_deref(), Some("session-2234567890"));
+            assert_eq!(cache_policy.as_deref(), Some("bypass"));
+        }
+        _ => panic!("unexpected chat variant"),
+    }
+}
+
+#[tokio::test]
+async fn test_chat_inference_v2_multimodal_roundtrip() {
+    let chat_cmd = Command::V2(CommandV2::ChatInferenceTask {
+        task_id: "task-mm-1".to_string(),
+        session_id: None,
+        cache_policy: None,
+        model: "PaddleOCR-VL-1.6-GGUF".to_string(),
+        messages: vec![ChatMessageV2 {
+            role: "user".to_string(),
+            content: ChatMessageContent::Parts(vec![
+                ChatContentPart {
+                    r#type: "text".to_string(),
+                    text: Some("OCR this image".to_string()),
+                    image_url: None,
+                    image: None,
+                },
+                ChatContentPart {
+                    r#type: "image_url".to_string(),
+                    text: None,
+                    image_url: Some(ImageUrlValue::Object {
+                        url: "file:///tmp/demo.png".to_string(),
+                        detail: Some("auto".to_string()),
+                    }),
+                    image: None,
+                },
+            ]),
+        }],
+        max_tokens: 32,
+        temperature: 0.0,
+        top_k: 16,
+        top_p: 0.95,
+        repeat_penalty: 1.0,
+        repeat_last_n: 8,
+        min_keep: 1,
+    });
+
+    let config = bincode_config::standard()
+        .with_big_endian()
+        .with_fixed_int_encoding();
+    let encoded = bincode::encode_to_vec(&chat_cmd, config).unwrap();
+    let (decoded, _) = bincode::decode_from_slice::<Command, _>(&encoded, config).unwrap();
+
+    match decoded {
+        Command::V2(CommandV2::ChatInferenceTask { messages, .. }) => {
+            assert_eq!(messages.len(), 1);
+            assert!(messages[0].content.is_multimodal());
+        }
+        _ => panic!("unexpected chat v2 variant"),
+    }
+}
+
+#[tokio::test]
+async fn test_p2p_file_transfer_roundtrip() {
+    let connection_id = [1u8; 16];
+    let transfer_id = [2u8; 16];
+    let sha256 = [3u8; 32];
+    let start = Command::V2(CommandV2::P2PFileStart {
+        connection_id,
+        transfer_id,
+        task_id: Some("ocr-task-1".to_string()),
+        purpose: P2PFilePurpose::OcrImage,
+        file_name: Some("screen.png".to_string()),
+        mime_type: "image/png".to_string(),
+        byte_size: 6,
+        sha256,
+    });
+    let chunk = Command::V2(CommandV2::P2PFileChunk {
+        connection_id,
+        transfer_id,
+        seq: 0,
+        offset: 0,
+        data: b"screen".to_vec(),
+    });
+    let done = Command::V2(CommandV2::P2PFileDone {
+        connection_id,
+        transfer_id,
+        byte_size: 6,
+        sha256,
+    });
+    let ack = Command::V2(CommandV2::P2PFileAck {
+        connection_id,
+        transfer_id,
+        received_bytes: 6,
+        next_offset: 6,
+        done: true,
+        error: None,
+    });
+
+    let config = bincode_config::standard()
+        .with_big_endian()
+        .with_fixed_int_encoding();
+
+    for command in [start, chunk, done, ack] {
+        let encoded = bincode::encode_to_vec(&command, config).unwrap();
+        let (decoded, _) = bincode::decode_from_slice::<Command, _>(&encoded, config).unwrap();
+        match decoded {
+            Command::V2(CommandV2::P2PFileStart {
+                purpose,
+                mime_type,
+                byte_size,
+                ..
+            }) => {
+                assert_eq!(purpose, P2PFilePurpose::OcrImage);
+                assert_eq!(mime_type, "image/png");
+                assert_eq!(byte_size, 6);
+            }
+            Command::V2(CommandV2::P2PFileChunk { data, offset, .. }) => {
+                assert_eq!(offset, 0);
+                assert_eq!(data, b"screen");
+            }
+            Command::V2(CommandV2::P2PFileDone { sha256, .. }) => {
+                assert_eq!(sha256, [3u8; 32]);
+            }
+            Command::V2(CommandV2::P2PFileAck { done, error, .. }) => {
+                assert!(done);
+                assert!(error.is_none());
+            }
+            _ => panic!("unexpected p2p file variant"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_embedding_task_result_roundtrip() {
+    let task = Command::V1(CommandV1::EmbeddingTask {
+        task_id: "embed-task-1".to_string(),
+        model: "bge-m3-q8_0".to_string(),
+        input: vec!["hello".to_string(), "world".to_string()],
+        normalize: true,
+    });
+
+    let result = Command::V1(CommandV1::EmbeddingResult {
+        task_id: "embed-task-1".to_string(),
+        success: true,
+        embeddings: vec![vec![0.1, 0.2], vec![0.3, 0.4]],
+        error: None,
+        prompt_tokens: 4,
+    });
+
+    let config = bincode_config::standard()
+        .with_big_endian()
+        .with_fixed_int_encoding();
+
+    let encoded_task = bincode::encode_to_vec(&task, config).unwrap();
+    let (decoded_task, _) =
+        bincode::decode_from_slice::<Command, _>(&encoded_task, config).unwrap();
+
+    let encoded_result = bincode::encode_to_vec(&result, config).unwrap();
+    let (decoded_result, _) =
+        bincode::decode_from_slice::<Command, _>(&encoded_result, config).unwrap();
+
+    match decoded_task {
+        Command::V1(CommandV1::EmbeddingTask {
+            task_id,
+            model,
+            input,
+            normalize,
+        }) => {
+            assert_eq!(task_id, "embed-task-1");
+            assert_eq!(model, "bge-m3-q8_0");
+            assert_eq!(input.len(), 2);
+            assert!(normalize);
+        }
+        _ => panic!("unexpected embedding task variant"),
+    }
+
+    match decoded_result {
+        Command::V1(CommandV1::EmbeddingResult {
+            task_id,
+            success,
+            embeddings,
+            error,
+            prompt_tokens,
+        }) => {
+            assert_eq!(task_id, "embed-task-1");
+            assert!(success);
+            assert_eq!(embeddings.len(), 2);
+            assert!(error.is_none());
+            assert_eq!(prompt_tokens, 4);
+        }
+        _ => panic!("unexpected embedding result variant"),
     }
 }

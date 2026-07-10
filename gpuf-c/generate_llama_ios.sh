@@ -29,10 +29,6 @@ PROJECT_ROOT="$SCRIPT_DIR"
 WORKSPACE_ROOT="$(cd "$PROJECT_ROOT/.." && pwd)"
 
 LLAMA_CPP_ROOT="${LLAMA_CPP_ROOT:-$WORKSPACE_ROOT/llama.cpp}"
-if ! command -v git >/dev/null 2>&1; then
-    echo "❌ git not found. Please install git to fetch llama.cpp sources."
-    exit 1
-fi
 
 # Version selection:
 # - Set LLAMA_CPP_REF to a tag/branch/commit (preferred)
@@ -40,6 +36,10 @@ fi
 LLAMA_CPP_REF="${LLAMA_CPP_REF:-${LLAMA_CPP_COMMIT:-16cc3c606efe1640a165f666df0e0dc7cc2ad869}}"
 
 if [ ! -d "$LLAMA_CPP_ROOT" ]; then
+    if ! command -v git >/dev/null 2>&1; then
+        echo "❌ git not found. Please install git to fetch llama.cpp sources."
+        exit 1
+    fi
     echo "📥 llama.cpp not found, cloning into: $LLAMA_CPP_ROOT"
     echo "🔒 Using llama.cpp ref: $LLAMA_CPP_REF"
     git clone https://github.com/ggerganov/llama.cpp.git "$LLAMA_CPP_ROOT"
@@ -47,16 +47,29 @@ fi
 
 cd "$LLAMA_CPP_ROOT"
 
-echo "🔍 Ensuring llama.cpp ref is checked out: $LLAMA_CPP_REF"
+if [ -d "$LLAMA_CPP_ROOT/.git" ]; then
+    if ! command -v git >/dev/null 2>&1; then
+        echo "❌ git not found. Please install git to fetch llama.cpp sources."
+        exit 1
+    fi
 
-# Fetch to make sure tags/commits are available; best-effort to keep script robust.
-git fetch --all --tags >/dev/null 2>&1 || true
+    echo "🔍 Ensuring llama.cpp ref is checked out: $LLAMA_CPP_REF"
 
-if git rev-parse --verify "$LLAMA_CPP_REF" >/dev/null 2>&1; then
-    git checkout "$LLAMA_CPP_REF" >/dev/null 2>&1 || git checkout -f "$LLAMA_CPP_REF"
+    # Fetch to make sure tags/commits are available; best-effort to keep script robust.
+    git fetch --all --tags >/dev/null 2>&1 || true
+
+    if git rev-parse --verify "$LLAMA_CPP_REF" >/dev/null 2>&1; then
+        git checkout "$LLAMA_CPP_REF" >/dev/null 2>&1 || git checkout -f "$LLAMA_CPP_REF"
+    else
+        # If it's a remote branch name, try origin/<ref>
+        git checkout "$LLAMA_CPP_REF" >/dev/null 2>&1 || git checkout -f "origin/$LLAMA_CPP_REF"
+    fi
 else
-    # If it's a remote branch name, try origin/<ref>
-    git checkout "$LLAMA_CPP_REF" >/dev/null 2>&1 || git checkout -f "origin/$LLAMA_CPP_REF"
+    if [ ! -f "$LLAMA_CPP_ROOT/CMakeLists.txt" ]; then
+        echo "❌ LLAMA_CPP_ROOT is not a llama.cpp source tree: $LLAMA_CPP_ROOT"
+        exit 1
+    fi
+    echo "🔍 Using non-git llama.cpp source tree: $LLAMA_CPP_ROOT"
 fi
 
 FEATURES="${FEATURES:-metal}"
@@ -95,11 +108,14 @@ build_one() {
     cmake -S "$LLAMA_CPP_ROOT" -B "$build_dir" -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DBUILD_SHARED_LIBS=OFF \
+        -DLLAMA_BUILD_COMMON=OFF \
         -DLLAMA_BUILD_TESTS=OFF \
         -DLLAMA_BUILD_EXAMPLES=OFF \
+        -DLLAMA_BUILD_TOOLS=OFF \
         -DGGML_BUILD_TESTS=OFF \
         -DGGML_BUILD_EXAMPLES=OFF \
         -DGGML_METAL="$metal_flag" \
+        -DGGML_BLAS=OFF \
         -DLLAMA_CURL="$llama_curl_flag" \
         -DCMAKE_OSX_SYSROOT="$sysroot" \
         -DCMAKE_OSX_ARCHITECTURES="$arch" \
@@ -111,6 +127,7 @@ build_one() {
     local out_dir="$OUT_ROOT/$triple"
 
     echo "📦 Collecting libraries into: $out_dir"
+    rm -f "$out_dir"/lib*.a
 
     for lib in libllama.a libggml.a libggml-base.a libggml-cpu.a; do
         local found

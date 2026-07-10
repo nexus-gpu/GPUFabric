@@ -155,7 +155,7 @@ services:
     networks:
       - gpuf-s-test-net
     healthcheck:
-      test: ["CMD", "pgrep", "-x", "gpuf-s"]
+      test: ["CMD-SHELL", 'test "$$(cat /proc/1/comm)" = gpuf-s']
       interval: 30s
       timeout: 10s
       retries: 5

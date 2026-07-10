@@ -232,6 +232,9 @@ build_rust_library() {
     export CC_aarch64_linux_android="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API}-clang"
     export CXX_aarch64_linux_android="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API}-clang++"
     export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$CC_aarch64_linux_android"
+    # The Android package copies the checked-in public header. Avoid rewriting it
+    # from the Linux build host and producing duplicate cfg-gated declarations.
+    export GPUF_SKIP_CBINDGEN="${GPUF_SKIP_CBINDGEN:-1}"
 
     echo "🔧 Building static library with multimodal support..."
     cargo rustc --target $TARGET_ARCH --release --lib --crate-type=staticlib \
@@ -546,12 +549,9 @@ create_sdk_package() {
     # Copy main files
     cp libgpuf_c_sdk_v9.so "$SDK_RELEASE_DIR/libs/"
     
-    # Copy dependency libraries
-    LIBCXX_SHARED="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/$TARGET_ARCH/libc++_shared.so"
-    if [ ! -f "$LIBCXX_SHARED" ]; then
-        handle_error "Android libc++_shared.so not found: $LIBCXX_SHARED"
-    fi
-    cp "$LIBCXX_SHARED" "$SDK_RELEASE_DIR/libs/"
+    # Do not package libc++_shared.so. libgpuf_c_sdk_v9.so does not declare a
+    # libc++ dependency, and bundling our NDK's C++ runtime can override the
+    # host app/React Native/fbjni runtime during APK merge.
     
     # Copy header files (if any)
     if [ -f "gpuf_c.h" ]; then
@@ -590,22 +590,65 @@ EOF
     
     if [ ! -f "$SDK_RELEASE_DIR/examples/test_jni_symbols.c" ]; then
         cat > "$SDK_RELEASE_DIR/examples/test_jni_symbols.c" << 'EOF'
-// Placeholder C JNI Test
 #include <stdio.h>
 #include <dlfcn.h>
 
-int main() {
-    void *handle = dlopen("libgpuf_c_sdk_v9.so", RTLD_LAZY);
-    if (!handle) {
-        fprintf(stderr, "Failed to load library: %s\n", dlerror());
+static int require_symbol(void *handle, const char *name) {
+    dlerror();
+    void *sym = dlsym(handle, name);
+    const char *err = dlerror();
+    if (err != NULL || sym == NULL) {
+        fprintf(stderr, "missing symbol: %s (%s)\n", name, err ? err : "null");
         return 1;
     }
-    
-    printf("✅ Library loaded successfully\n");
+    printf("symbol ok: %s\n", name);
+    return 0;
+}
+
+int main() {
+    void *handle = dlopen("/data/local/tmp/gpuf-sdk/libgpuf_c_sdk_v9.so", RTLD_NOW | RTLD_LOCAL);
+    if (!handle) {
+        fprintf(stderr, "dlopen failed: %s\n", dlerror());
+        return 1;
+    }
+
+    int failed = 0;
+    failed |= require_symbol(handle, "start_remote_worker");
+    failed |= require_symbol(handle, "start_remote_worker_tasks");
+    failed |= require_symbol(handle, "start_remote_worker_with_tls");
+    failed |= require_symbol(handle, "gpuf_validate_mobile_tls_policy");
+    failed |= require_symbol(handle, "gpuf_configure_remote_worker_proxy_tls");
+    failed |= require_symbol(handle, "Java_com_gpuf_c_RemoteWorker_startRemoteWorker");
+    failed |= require_symbol(handle, "Java_com_gpuf_c_RemoteWorker_startRemoteWorkerWithTls");
+
     dlclose(handle);
+    if (failed) {
+        fprintf(stderr, "GPUFabric Android SDK smoke test FAILED\n");
+        return 1;
+    }
+    printf("GPUFabric Android SDK smoke test OK\n");
     return 0;
 }
 EOF
+    fi
+
+    # Copy integration docs into the distributable SDK package.
+    mkdir -p "$SDK_RELEASE_DIR/docs"
+    if [ -f "$WORKSPACE_ROOT/docs/mobile-sdk/ANDROID_TLS_SDK_INTEGRATION_CN.md" ]; then
+        cp "$WORKSPACE_ROOT/docs/mobile-sdk/ANDROID_TLS_SDK_INTEGRATION_CN.md" "$SDK_RELEASE_DIR/docs/"
+    fi
+    if [ -f "$WORKSPACE_ROOT/docs/mobile-sdk/INTEGRATION_GUIDE_EN.md" ]; then
+        cp "$WORKSPACE_ROOT/docs/mobile-sdk/INTEGRATION_GUIDE_EN.md" "$SDK_RELEASE_DIR/docs/"
+    fi
+
+    TEST_CLANG="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/$TARGET_ARCH$ANDROID_API-clang"
+    if [ -x "$TEST_CLANG" ]; then
+        "$TEST_CLANG" "$SDK_RELEASE_DIR/examples/test_jni_symbols.c" \
+            -o "$SDK_RELEASE_DIR/examples/test_jni_symbols" \
+            -ldl
+        chmod +x "$SDK_RELEASE_DIR/examples/test_jni_symbols"
+    else
+        echo "⚠️ Android test compiler not found: $TEST_CLANG"
     fi
     
     # Create README
@@ -617,12 +660,17 @@ GPUFabric Android SDK is a high-performance LLM inference library integrated wit
 
 ## File Description
 - `libs/libgpuf_c_sdk_v9.so` - Main dynamic library
-- `libs/libc++_shared.so` - C++ runtime library
 - `examples/` - Example code
+
+## Android C++ Runtime
+This package intentionally does not include `libc++_shared.so`.
+`libgpuf_c_sdk_v9.so` does not declare a `libc++_shared.so` dependency; host
+apps that use React Native/fbjni should keep the libc++ runtime from their own
+Android/React Native dependency set to avoid duplicate-runtime symbol conflicts.
 
 ## Quick Start
 1. Push library files from `libs/` directory to Android device
-2. Set LD_PRELOAD environment variable
+2. Load `gpuf_c_sdk_v9` from the Android app
 3. Call JNI API or C API
 
 ## JNI API
@@ -658,18 +706,25 @@ if ! adb devices | grep -q "device$"; then
     exit 1
 fi
 
+REMOTE_DIR=/data/local/tmp/gpuf-sdk
+adb shell "rm -rf $REMOTE_DIR && mkdir -p $REMOTE_DIR"
+
 # Push library files
 echo "📤 Pushing library files to device..."
-adb push libs/libgpuf_c_sdk_v9.so /data/local/tmp/libgpuf_c.so
-adb push libs/libc++_shared.so /data/local/tmp/ndk_shared_libcpp.so
+adb push libs/libgpuf_c_sdk_v9.so "$REMOTE_DIR/"
 
 # Push examples
 echo "📤 Pushing example programs..."
-adb push examples/test_jni_symbols /data/local/tmp/
+if [ -f examples/test_jni_symbols ]; then
+    adb push examples/test_jni_symbols "$REMOTE_DIR/"
+else
+    echo "⚠️ examples/test_jni_symbols not found; skipping native smoke test"
+    exit 0
+fi
 
 # Run tests
 echo "🧪 Running functionality tests..."
-adb shell "LD_PRELOAD=/data/local/tmp/ndk_shared_libcpp.so /data/local/tmp/test_jni_symbols"
+adb shell "chmod 755 $REMOTE_DIR/test_jni_symbols && LD_LIBRARY_PATH=$REMOTE_DIR $REMOTE_DIR/test_jni_symbols"
 
 echo "✅ Deployment completed!"
 EOF

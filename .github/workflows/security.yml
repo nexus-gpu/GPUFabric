@@ -12,10 +12,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - name: Install security tools
         run: |
-          cargo install cargo-audit --locked
-          cargo install cargo-deny --locked
+          cargo install cargo-audit --version 0.22.2 --locked
+          cargo install cargo-deny --version 0.19.8 --locked
+      - name: Verify committed lockfile is current
+        run: cargo metadata --locked --format-version 1 > /dev/null
       - name: Cargo audit
         run: cargo audit --ignore RUSTSEC-2023-0071
       - name: Cargo deny advisories/licenses
@@ -24,21 +29,21 @@ jobs:
         run: cargo fmt --all --check
       - name: Compile gpuf-c and gpuf-s
         run: |
-          cargo check -p gpuf-c --lib
-          cargo check -p gpuf-c --bin gpuf-c
-          cargo check -p gpuf-s
+          cargo check --locked -p gpuf-c --lib
+          cargo check --locked -p gpuf-c --bin gpuf-c
+          cargo check --locked -p gpuf-s
       - name: Targeted security tests
         run: |
-          cargo test -p gpuf-c handle::handle_udp::p2p_security_tests
-          cargo test -p gpuf-c llm_engine::llama_server::tests
-          cargo test -p gpuf-c llm_engine::anthropic_server::tests
-          cargo test -p gpuf-c util::safe_command::tests
-          cargo test -p gpuf-c util::security_metrics::tests
-          cargo test -p gpuf-c util::model_downloader::tests
-          cargo test -p gpuf-c util::config::tests
-          cargo test -p gpuf-c handle::handle_tcp::control_stream_tests
-          cargo test -p gpuf-c util::cmd::tests
-          cargo test -p gpuf-s util::cmd::tests
+          cargo test --locked -p gpuf-c handle::handle_udp::p2p_security_tests
+          cargo test --locked -p gpuf-c llm_engine::llama_server::tests
+          cargo test --locked -p gpuf-c llm_engine::anthropic_server::tests
+          cargo test --locked -p gpuf-c util::safe_command::tests
+          cargo test --locked -p gpuf-c util::security_metrics::tests
+          cargo test --locked -p gpuf-c util::model_downloader::tests
+          cargo test --locked -p gpuf-c util::config::tests
+          cargo test --locked -p gpuf-c handle::handle_tcp::control_stream_tests
+          cargo test --locked -p gpuf-c util::cmd::tests
+          cargo test --locked -p gpuf-s util::cmd::tests
       - name: Source security grep gate
         run: |
           ! rg -n --glob '!**/target/**' --glob '!**/DerivedData/**' \
@@ -71,8 +76,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2
+      - name: Install gitleaks CLI
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_VERSION: 8.30.1
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        run: |
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" -o "$RUNNER_TEMP/gitleaks.tar.gz"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tar.gz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/gitleaks-bin"
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP/gitleaks-bin" gitleaks
+          echo "$RUNNER_TEMP/gitleaks-bin" >> "$GITHUB_PATH"
+      - name: Secret scan
+        run: gitleaks detect --no-git --source . --redact --no-banner

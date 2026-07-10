@@ -11,6 +11,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use base64::{engine::general_purpose, Engine as _};
 use futures_util::{stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -102,7 +103,10 @@ impl SecurityLimits {
             max_max_tokens: read_usize_env("GPUF_MAX_MAX_TOKENS", 4096),
             max_concurrent_generations: read_usize_env("GPUF_MAX_CONCURRENT_GENERATIONS", 2),
             max_sse_connections: read_usize_env("GPUF_MAX_SSE_CONNECTIONS", 8),
-            request_body_limit_bytes: read_usize_env("GPUF_REQUEST_BODY_LIMIT_BYTES", 1024 * 1024),
+            request_body_limit_bytes: read_usize_env(
+                "GPUF_REQUEST_BODY_LIMIT_BYTES",
+                32 * 1024 * 1024,
+            ),
         }
     }
 }
@@ -203,7 +207,63 @@ pub struct ChatCompletionRequest {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ChatMessage {
     pub role: String,
+    pub content: ChatMessageContent,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(untagged)]
+pub enum ChatMessageContent {
+    Text(String),
+    Parts(Vec<ChatContentPart>),
+}
+
+impl From<String> for ChatMessageContent {
+    fn from(value: String) -> Self {
+        Self::Text(value)
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct ChatContentPart {
+    pub r#type: String,
+    #[serde(default)]
+    pub text: Option<String>,
+    #[serde(default)]
+    pub image_url: Option<ImageUrlValue>,
+    #[serde(default)]
+    pub image: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(untagged)]
+pub enum ImageUrlValue {
+    Url(String),
+    Object {
+        url: String,
+        #[serde(default)]
+        detail: Option<String>,
+    },
+}
+
+impl ImageUrlValue {
+    fn url(&self) -> &str {
+        match self {
+            Self::Url(url) => url,
+            Self::Object { url, .. } => url,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PreparedChatMessage {
+    pub role: String,
     pub content: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PreparedChatInput {
+    pub(crate) messages: Vec<PreparedChatMessage>,
+    pub(crate) image_urls: Vec<String>,
 }
 
 /// OpenAI compatible chat completion response
@@ -403,6 +463,170 @@ async fn security_metrics_handler() -> Json<security_metrics::SecurityMetricsSna
     Json(security_metrics::snapshot())
 }
 
+const MTMD_MEDIA_MARKER: &str = "<__media__>";
+
+pub(crate) fn prepare_chat_messages(
+    messages: &[ChatMessage],
+) -> Result<PreparedChatInput, AppError> {
+    let mut prepared = Vec::with_capacity(messages.len());
+    let mut image_urls = Vec::new();
+
+    for message in messages {
+        let content = match &message.content {
+            ChatMessageContent::Text(text) => text.clone(),
+            ChatMessageContent::Parts(parts) => {
+                let mut content = String::new();
+                for part in parts {
+                    match part.r#type.as_str() {
+                        "text" => {
+                            let text = part.text.as_deref().ok_or_else(|| {
+                                AppError::bad_request("text content part missing text")
+                            })?;
+                            content.push_str(text);
+                        }
+                        "image_url" | "image" => {
+                            let url = part
+                                .image_url
+                                .as_ref()
+                                .map(ImageUrlValue::url)
+                                .or(part.image.as_deref())
+                                .ok_or_else(|| {
+                                    AppError::bad_request("image content part missing image_url")
+                                })?;
+                            image_urls.push(url.to_string());
+                            content.push_str(MTMD_MEDIA_MARKER);
+                        }
+                        "media_marker" => {
+                            content.push_str(MTMD_MEDIA_MARKER);
+                        }
+                        other => {
+                            return Err(AppError::bad_request(format!(
+                                "unsupported chat content part type '{}'",
+                                other
+                            )));
+                        }
+                    }
+                }
+                content
+            }
+        };
+
+        prepared.push(PreparedChatMessage {
+            role: message.role.clone(),
+            content,
+        });
+    }
+
+    Ok(PreparedChatInput {
+        messages: prepared,
+        image_urls,
+    })
+}
+
+fn max_image_bytes() -> usize {
+    read_usize_env("GPUF_MAX_IMAGE_BYTES", 32 * 1024 * 1024)
+}
+
+fn max_images_per_request() -> usize {
+    read_usize_env("GPUF_MAX_IMAGES_PER_REQUEST", 8)
+}
+
+pub(crate) async fn load_chat_images(urls: &[String]) -> Result<Vec<Vec<u8>>, AppError> {
+    if urls.is_empty() {
+        return Ok(Vec::new());
+    }
+    let max_images = max_images_per_request();
+    if urls.len() > max_images {
+        return Err(AppError::bad_request(format!(
+            "too many images: {} exceeds limit {}",
+            urls.len(),
+            max_images
+        )));
+    }
+
+    let mut images = Vec::with_capacity(urls.len());
+    for url in urls {
+        let image = load_chat_image(url, max_image_bytes()).await?;
+        images.push(image);
+    }
+    Ok(images)
+}
+
+async fn load_chat_image(url: &str, max_bytes: usize) -> Result<Vec<u8>, AppError> {
+    let url = url.trim();
+    if url.starts_with("data:") {
+        let (_, encoded) = url.split_once(',').ok_or_else(|| {
+            AppError::bad_request("invalid data URI image: missing comma separator")
+        })?;
+        let decoded = general_purpose::STANDARD
+            .decode(encoded)
+            .map_err(|_| AppError::bad_request("invalid base64 image data"))?;
+        if decoded.len() > max_bytes {
+            return Err(AppError::payload_too_large(format!(
+                "image too large: {} bytes exceeds limit {}",
+                decoded.len(),
+                max_bytes
+            )));
+        }
+        return Ok(decoded);
+    }
+
+    if url.starts_with("http://") || url.starts_with("https://") {
+        let response = reqwest::get(url)
+            .await
+            .map_err(|e| AppError::bad_request(format!("failed to fetch image: {}", e)))?;
+        if !response.status().is_success() {
+            return Err(AppError::bad_request(format!(
+                "failed to fetch image: HTTP {}",
+                response.status()
+            )));
+        }
+        if let Some(len) = response.content_length() {
+            if len as usize > max_bytes {
+                return Err(AppError::payload_too_large(format!(
+                    "image too large: {} bytes exceeds limit {}",
+                    len, max_bytes
+                )));
+            }
+        }
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|e| AppError::bad_request(format!("failed to read image: {}", e)))?;
+        if bytes.len() > max_bytes {
+            return Err(AppError::payload_too_large(format!(
+                "image too large: {} bytes exceeds limit {}",
+                bytes.len(),
+                max_bytes
+            )));
+        }
+        return Ok(bytes.to_vec());
+    }
+
+    if let Some(path) = url.strip_prefix("file://") {
+        if !read_bool_env("GPUF_ALLOW_FILE_IMAGE_URLS") {
+            return Err(AppError::bad_request(
+                "file image URLs are disabled; set GPUF_ALLOW_FILE_IMAGE_URLS=1 to enable",
+            ));
+        }
+        let bytes = tokio::fs::read(path)
+            .await
+            .map_err(|e| AppError::bad_request(format!("failed to read image file: {}", e)))?;
+        if bytes.len() > max_bytes {
+            return Err(AppError::payload_too_large(format!(
+                "image too large: {} bytes exceeds limit {}",
+                bytes.len(),
+                max_bytes
+            )));
+        }
+        return Ok(bytes);
+    }
+
+    Err(AppError::bad_request(
+        "unsupported image URL; use data:, http://, https://, or enabled file://",
+    ))
+}
+
 /// Chat completion
 async fn chat_completions(
     State(state): State<ApiServerState>,
@@ -414,10 +638,26 @@ async fn chat_completions(
         req.stream
     );
 
-    // Build prompt
-    let prompt = build_chat_prompt(&req.messages);
+    let prepared = prepare_chat_messages(&req.messages)?;
+    let fallback_prompt = build_chat_prompt_from_prepared(&prepared.messages);
+    let role_content = prepared
+        .messages
+        .iter()
+        .map(|message| (message.role.clone(), message.content.clone()))
+        .collect::<Vec<_>>();
+    let prompt = {
+        let engine = state.engine.read().await.clone();
+        engine
+            .render_chat_prompt(&role_content, true)
+            .await
+            .unwrap_or_else(|err| {
+                info!("Falling back to built-in chat prompt template: {}", err);
+                fallback_prompt
+            })
+    };
     validate_prompt_and_tokens(&state.security.limits, &prompt, req.max_tokens)?;
     validate_content_safety(&state.security.content_safety, &prompt, "prompt")?;
+    let image_data = load_chat_images(&prepared.image_urls).await?;
 
     let max_tokens = req.max_tokens.unwrap_or(100);
     let mut sampling = SamplingParams::default();
@@ -454,6 +694,45 @@ async fn chat_completions(
         let generation_permit = state.try_generation_permit()?;
         let sse_permit = state.try_sse_permit()?;
         let engine = state.engine.read().await;
+
+        if !image_data.is_empty() {
+            let (response_text, _prompt_tokens, _completion_tokens) = engine
+                .generate_multimodal_with_cached_model_sampling(
+                    &prompt, image_data, max_tokens, &sampling,
+                )
+                .await?;
+            validate_content_safety(&state.security.content_safety, &response_text, "output")?;
+
+            let chunk = ChatCompletionChunk {
+                id: id.clone(),
+                object: "chat.completion.chunk".to_string(),
+                created,
+                model: model_name.clone(),
+                choices: vec![ChatChoiceChunk {
+                    index: 0,
+                    delta: ChatMessageDelta {
+                        role: "assistant".to_string(),
+                        content: response_text,
+                    },
+                    finish_reason: None,
+                }],
+            };
+            let permits = Arc::new((generation_permit, sse_permit));
+            let events = vec![
+                sse::Event::default().json_data(chunk).unwrap_or_else(|_| {
+                    sse::Event::default()
+                        .event("error")
+                        .data("json serialization failed")
+                }),
+                sse::Event::default().data("[DONE]"),
+            ];
+            let stream = stream::iter(events.into_iter().map(Ok::<_, std::convert::Infallible>))
+                .map(move |event| {
+                    let _keep_permits_alive = &permits;
+                    event
+                });
+            return Ok(sse::Sse::new(stream).into_response());
+        }
 
         // True streaming: use stream_with_cached_model_sampling
         // When SSE disconnects, the channel send fails and inference stops
@@ -554,9 +833,17 @@ async fn chat_completions(
         let engine = state.engine.read().await;
 
         // Non-streaming response
-        let (response_text, prompt_tokens, completion_tokens) = engine
-            .generate_with_cached_model_sampling(&prompt, max_tokens, &sampling)
-            .await?;
+        let (response_text, prompt_tokens, completion_tokens) = if image_data.is_empty() {
+            engine
+                .generate_with_cached_model_sampling(&prompt, max_tokens, &sampling)
+                .await?
+        } else {
+            engine
+                .generate_multimodal_with_cached_model_sampling(
+                    &prompt, image_data, max_tokens, &sampling,
+                )
+                .await?
+        };
         validate_content_safety(&state.security.content_safety, &response_text, "output")?;
 
         let response = ChatCompletionResponse {
@@ -568,7 +855,7 @@ async fn chat_completions(
                 index: 0,
                 message: ChatMessage {
                     role: "assistant".to_string(),
-                    content: response_text,
+                    content: ChatMessageContent::Text(response_text),
                 },
                 finish_reason: "stop".to_string(),
             }],
@@ -652,6 +939,30 @@ async fn completions(
 /// Build chat prompt using various popular formats
 /// You can set CHAT_TEMPLATE env var to: chatml, llama3, alpaca, or simple (default)
 pub(crate) fn build_chat_prompt(messages: &[ChatMessage]) -> String {
+    let prepared = messages
+        .iter()
+        .map(|message| PreparedChatMessage {
+            role: message.role.clone(),
+            content: match &message.content {
+                ChatMessageContent::Text(text) => text.clone(),
+                ChatMessageContent::Parts(parts) => parts
+                    .iter()
+                    .filter_map(|part| match part.r#type.as_str() {
+                        "text" => part.text.clone(),
+                        "image_url" | "image" | "media_marker" => {
+                            Some(MTMD_MEDIA_MARKER.to_string())
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join(""),
+            },
+        })
+        .collect::<Vec<_>>();
+    build_chat_prompt_from_prepared(&prepared)
+}
+
+pub(crate) fn build_chat_prompt_from_prepared(messages: &[PreparedChatMessage]) -> String {
     let template = std::env::var("CHAT_TEMPLATE").unwrap_or_else(|_| "simple".to_string());
 
     match template.to_lowercase().as_str() {
@@ -663,7 +974,7 @@ pub(crate) fn build_chat_prompt(messages: &[ChatMessage]) -> String {
 }
 
 /// ChatML format (Qwen, GPT-4, etc.)
-pub(crate) fn build_chatml_prompt(messages: &[ChatMessage]) -> String {
+pub(crate) fn build_chatml_prompt(messages: &[PreparedChatMessage]) -> String {
     let mut prompt = String::new();
     for msg in messages {
         prompt.push_str(&format!(
@@ -676,7 +987,7 @@ pub(crate) fn build_chatml_prompt(messages: &[ChatMessage]) -> String {
 }
 
 /// Llama 3 format
-pub(crate) fn build_llama3_prompt(messages: &[ChatMessage]) -> String {
+pub(crate) fn build_llama3_prompt(messages: &[PreparedChatMessage]) -> String {
     let mut prompt = String::from("<|begin_of_text|>");
     for msg in messages {
         prompt.push_str(&format!(
@@ -689,7 +1000,7 @@ pub(crate) fn build_llama3_prompt(messages: &[ChatMessage]) -> String {
 }
 
 /// Alpaca/Vicuna format (broad compatibility)
-pub(crate) fn build_alpaca_prompt(messages: &[ChatMessage]) -> String {
+pub(crate) fn build_alpaca_prompt(messages: &[PreparedChatMessage]) -> String {
     let mut prompt = String::new();
     for msg in messages {
         match msg.role.as_str() {
@@ -704,7 +1015,7 @@ pub(crate) fn build_alpaca_prompt(messages: &[ChatMessage]) -> String {
 }
 
 /// Simple format (most universal, works with almost any model)
-pub(crate) fn build_simple_prompt(messages: &[ChatMessage]) -> String {
+pub(crate) fn build_simple_prompt(messages: &[PreparedChatMessage]) -> String {
     let mut prompt = String::new();
     for msg in messages {
         prompt.push_str(&format!(
@@ -1040,6 +1351,48 @@ mod tests {
         assert!(validate_content_safety(&enabled, "<|im_start|>", "output").is_err());
         let after = security_metrics::snapshot();
         assert!(after.content_filter_rejections >= before.content_filter_rejections + 2);
+    }
+
+    #[test]
+    fn prepares_openai_vision_parts_for_mtmd() {
+        let messages = vec![ChatMessage {
+            role: "user".to_string(),
+            content: ChatMessageContent::Parts(vec![
+                ChatContentPart {
+                    r#type: "text".to_string(),
+                    text: Some("OCR:".to_string()),
+                    image_url: None,
+                    image: None,
+                },
+                ChatContentPart {
+                    r#type: "image_url".to_string(),
+                    text: None,
+                    image_url: Some(ImageUrlValue::Object {
+                        url: "data:image/png;base64,AA==".to_string(),
+                        detail: None,
+                    }),
+                    image: None,
+                },
+            ]),
+        }];
+
+        let prepared = prepare_chat_messages(&messages).unwrap();
+        assert_eq!(prepared.image_urls, vec!["data:image/png;base64,AA=="]);
+        assert_eq!(
+            prepared.messages[0].content,
+            format!("OCR:{MTMD_MEDIA_MARKER}")
+        );
+    }
+
+    #[test]
+    fn string_chat_content_still_builds_prompt() {
+        let messages = vec![ChatMessage {
+            role: "user".to_string(),
+            content: ChatMessageContent::Text("hello".to_string()),
+        }];
+
+        let prompt = build_chat_prompt(&messages);
+        assert!(prompt.contains("hello"));
     }
 
     #[test]

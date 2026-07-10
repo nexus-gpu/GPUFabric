@@ -77,6 +77,22 @@ This crate can act as a compute node in the GPUFabric network.
 # Output: target/gpufabric-android-sdk-v9.0.0.tar.gz
 ```
 
+## 🔌 Optional DLLM Plugin Probe
+
+Linux/macOS `gpuf-c` builds can probe a local DLLM shared library at startup:
+
+```bash
+cargo run --release --bin gpuf-c -- \
+  --client-id <client-id-32-hex> \
+  --dllm-enable \
+  --dllm-lib-path /opt/dllm/lib/libdllm.so \
+  --dllm-server-key 0xA1FDFFFFFF01FAFAFAFA
+```
+
+This only verifies the DLLM C ABI and `server-key` parsing. It does not put
+DLLM calls in the inference hot path, and failure falls back to normal
+GPUFabric behavior.
+
 ## 📦 SDK Contents
 
 - `libgpuf_c_sdk_v9.so` - Main library (51MB)
